@@ -1,0 +1,3 @@
+import type {Metadata} from 'next';import './globals.css';
+export const metadata:Metadata={title:'Skyway Sprint — Five-Lane Runner',description:'Dodge cars, logs, and rocks. Collect coins. Survive the ever-faster skyway.',openGraph:{title:'Skyway Sprint',description:'Dodge. Dash. Survive.',images:[{url:'/og.png',width:1732,height:910}]},twitter:{card:'summary_large_image',title:'Skyway Sprint',description:'Dodge. Dash. Survive.',images:['/og.png']}};
+export default function RootLayout({children}:{children:React.ReactNode}){return <html lang="en"><body>{children}</body></html>}
