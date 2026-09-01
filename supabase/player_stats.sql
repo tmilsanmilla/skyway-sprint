@@ -1,6 +1,6 @@
 create table if not exists public.player_stats (
   user_id uuid primary key references auth.users(id) on delete cascade,
-  total_coins bigint not null default 0 check (total_coins >= 0),
+  total_gems bigint not null default 0 check (total_gems >= 0),
   high_score bigint not null default 0 check (high_score >= 0),
   updated_at timestamptz not null default now()
 );
