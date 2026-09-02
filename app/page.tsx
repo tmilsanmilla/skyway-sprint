@@ -269,7 +269,7 @@ const CHARACTER_ABILITIES = {
   tank_hammer: {
     name: "DEMOLITION",
     description:
-      "The first barrel hit each wave is destroyed without dealing damage. Later barrels deal 0.5 HP and logs deal 1 HP.",
+      "Max HP is 5. Every log deals only 0.5 HP. The first barrel hit each wave is destroyed for 0 damage; later barrels deal 0.5 HP.",
   },
   tank_sentinel: {
     name: "LAST STAND",
@@ -383,7 +383,7 @@ const INVENTORY_CLASSES: ReadonlyArray<{
     key: "tank",
     label: "TANK",
     description:
-      `NORMAL ONLY: 4 starting/max HP · heal only 0.5 HP after each wave. ${BASE_DAMAGE_DESCRIPTION} Tanks are unavailable in Hardcore and Impossible.`,
+      `NORMAL ONLY: 4 starting/max HP, except Hammer has 5 max HP · heal only 0.5 HP after each wave. ${BASE_DAMAGE_DESCRIPTION} Hammer always takes 0.5 HP from logs and destroys the first barrel each wave for 0 damage. Tanks are unavailable in Hardcore and Impossible.`,
   },
   {
     key: "trickster",
@@ -706,7 +706,7 @@ export default function Home() {
   const maxHearts =
     mode === "impossible" || mode === "hardcore"
       ? 1
-      : activeClass === "medic"
+      : activeCharacter === "tank_hammer" || activeClass === "medic"
         ? 5
         : baseHearts;
   const modeMultiplier =
@@ -1706,7 +1706,7 @@ export default function Home() {
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
-              showAbilityNotice("DEMOLITION · BARREL DESTROYED");
+              showAbilityNotice("DEMOLITION · FIRST BARREL 0 DAMAGE");
               return [];
             } else if (
               invincibleUntilRef.current > Date.now()
@@ -1736,6 +1736,8 @@ export default function Home() {
                     ? 2
                     : n.kind === "barrel"
                       ? 0.5
+                      : activeCharacter === "tank_hammer" && n.kind === "log"
+                        ? 0.5
                       : 1;
               let abilityAdjustedDamage =
                 activeCharacter === "tank_anchor" && n.kind === "rock"
