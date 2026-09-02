@@ -1,6 +1,7 @@
 "use client";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
+import { audioEngine, type Soundtrack } from "./audio-engine";
 type Kind =
   "gem" | "coin" | "car" | "log" | "snowflake" | "rock" | "barrel" | "spikes";
 type Item = {
@@ -50,6 +51,22 @@ type ExtractionResult = Unlock & {
 };
 type BoxType = "regular" | "legendary";
 type PlayScope = "single" | "versus";
+const AUDIO_PREFERENCES_KEY = "skyway.audio.v1";
+const SOUNDTRACKS: ReadonlyArray<{
+  id: Soundtrack;
+  name: string;
+  description: string;
+  icon: string;
+}> = [
+  { id: "jazz", name: "JAZZ", description: "Swing · keys · bass", icon: "♬" },
+  { id: "calm", name: "CALM", description: "Soft · dreamy · slow", icon: "☁" },
+  {
+    id: "energetic",
+    name: "ENERGETIC",
+    description: "Fast · bright · driving",
+    icon: "⚡",
+  },
+];
 type VersusPhase =
   "idle" | "searching" | "ready" | "playing" | "intermission" | "finished";
 const CLASS_CHARACTERS = {
@@ -179,6 +196,7 @@ export default function Home() {
     [wave, setWave] = useState(1),
     [running, setRunning] = useState(false),
     [paused, setPaused] = useState(false),
+    [pauseMenuOpen, setPauseMenuOpen] = useState(false),
     [wavePause, setWavePause] = useState(false),
     [waveMessage, setWaveMessage] = useState(""),
     [over, setOver] = useState(false),
@@ -190,6 +208,9 @@ export default function Home() {
     [extractBusy, setExtractBusy] = useState(false),
     [leaderboardOpen, setLeaderboardOpen] = useState(false),
     [leaders, setLeaders] = useState<Leader[]>([]);
+  const [soundtrack, setSoundtrack] = useState<Soundtrack>("energetic"),
+    [musicVolume, setMusicVolume] = useState(0.45),
+    [sfxVolume, setSfxVolume] = useState(0.7);
   const id = useRef(0),
     last = useRef(0),
     userIdRef = useRef<string | null>(null),
@@ -206,8 +227,8 @@ export default function Home() {
     realtimeRef = useRef<ReturnType<typeof supabase.channel> | null>(null),
     incomingAttacksRef = useRef<Kind[]>([]),
     versusFinishedRef = useRef(false),
-    state = useRef({ lane, running, paused, wavePause });
-  state.current = { lane, running, paused, wavePause };
+    state = useRef({ lane, running, paused, pauseMenuOpen, wavePause });
+  state.current = { lane, running, paused, pauseMenuOpen, wavePause };
   gemsRef.current = gems;
   scoreRef.current = score;
   highScoreRef.current = highScore;
@@ -218,6 +239,45 @@ export default function Home() {
     },
     [],
   );
+  useEffect(() => {
+    let savedTrack: Soundtrack = "energetic";
+    let savedMusic = 0.45;
+    let savedSfx = 0.7;
+    try {
+      const raw = window.localStorage.getItem(AUDIO_PREFERENCES_KEY);
+      const saved = raw
+        ? (JSON.parse(raw) as {
+            soundtrack?: unknown;
+            musicVolume?: unknown;
+            sfxVolume?: unknown;
+          })
+        : null;
+      if (
+        saved?.soundtrack === "jazz" ||
+        saved?.soundtrack === "calm" ||
+        saved?.soundtrack === "energetic"
+      )
+        savedTrack = saved.soundtrack;
+      if (typeof saved?.musicVolume === "number")
+        savedMusic = Math.max(0, Math.min(1, saved.musicVolume));
+      if (typeof saved?.sfxVolume === "number")
+        savedSfx = Math.max(0, Math.min(1, saved.sfxVolume));
+    } catch {
+      // Invalid or blocked storage falls back to the game defaults.
+    }
+    audioEngine.setTrack(savedTrack);
+    audioEngine.setMusicVolume(savedMusic);
+    audioEngine.setSfxVolume(savedSfx);
+    const applyPreferences = window.setTimeout(() => {
+      setSoundtrack(savedTrack);
+      setMusicVolume(savedMusic);
+      setSfxVolume(savedSfx);
+    }, 0);
+    return () => {
+      window.clearTimeout(applyPreferences);
+      audioEngine.stop();
+    };
+  }, []);
   const [authReady, setAuthReady] = useState(false),
     [guest, setGuest] = useState(false),
     [userEmail, setUserEmail] = useState<string | null>(null),
@@ -280,7 +340,44 @@ export default function Home() {
     mode === "impossible" ? 1 : activeClass === "medic" ? 5 : baseHearts;
   const modeMultiplier =
     mode === "impossible" ? 3 : mode === "hardcore" ? 1.75 : 1;
+  const saveAudioPreferences = (
+    nextTrack: Soundtrack,
+    nextMusic: number,
+    nextSfx: number,
+  ) => {
+    try {
+      window.localStorage.setItem(
+        AUDIO_PREFERENCES_KEY,
+        JSON.stringify({
+          soundtrack: nextTrack,
+          musicVolume: nextMusic,
+          sfxVolume: nextSfx,
+        }),
+      );
+    } catch {
+      // Audio still works when storage is disabled; it just will not persist.
+    }
+  };
+  const chooseSoundtrack = (nextTrack: Soundtrack) => {
+    setSoundtrack(nextTrack);
+    audioEngine.setTrack(nextTrack);
+    saveAudioPreferences(nextTrack, musicVolume, sfxVolume);
+    void audioEngine.playSfx("click");
+  };
+  const changeMusicVolume = (nextVolume: number) => {
+    const volume = Math.max(0, Math.min(1, nextVolume));
+    setMusicVolume(volume);
+    audioEngine.setMusicVolume(volume);
+    saveAudioPreferences(soundtrack, volume, sfxVolume);
+  };
+  const changeSfxVolume = (nextVolume: number) => {
+    const volume = Math.max(0, Math.min(1, nextVolume));
+    setSfxVolume(volume);
+    audioEngine.setSfxVolume(volume);
+    saveAudioPreferences(soundtrack, musicVolume, volume);
+  };
   const announceWave = useCallback((number: number) => {
+    void audioEngine.playSfx("wave");
     setWaveMessage(`WAVE ${number}`);
     setWavePause(true);
     setTimeout(() => {
@@ -296,6 +393,7 @@ export default function Home() {
     setWave(1);
     setOver(false);
     setPaused(false);
+    setPauseMenuOpen(false);
     setInvincible(false);
     setSlowed(false);
     invincibleUntilRef.current = 0;
@@ -308,8 +406,9 @@ export default function Home() {
     damageLockedRef.current = false;
     setRunning(true);
     last.current = 0;
+    void audioEngine.start(soundtrack);
     announceWave(1);
-  }, [announceWave, maxHearts]);
+  }, [announceWave, maxHearts, soundtrack]);
   const backToMenu = () => {
     if (playScope === "versus") {
       if (versusMatchRef.current) void supabase.rpc("leave_1v1");
@@ -320,6 +419,7 @@ export default function Home() {
     }
     setRunning(false);
     setPaused(false);
+    setPauseMenuOpen(false);
     setOver(false);
     setItems([]);
     setScore(0);
@@ -354,8 +454,10 @@ export default function Home() {
           state.current.running &&
           !state.current.paused &&
           !state.current.wavePause
-        )
+        ) {
           setLane(destination);
+          void audioEngine.playSfx("move");
+        }
         setSlowed(false);
         turnLockedRef.current = false;
         delayedMoveTimerRef.current = null;
@@ -363,7 +465,31 @@ export default function Home() {
       return;
     }
     setLane(destination);
+    void audioEngine.playSfx("move");
   }, []);
+  const toggleManualPause = useCallback(() => {
+    if (
+      playScope === "versus" ||
+      !state.current.running ||
+      (state.current.paused && !state.current.pauseMenuOpen)
+    )
+      return;
+    const nextOpen = !state.current.pauseMenuOpen;
+    setPauseMenuOpen(nextOpen);
+    setPaused(nextOpen);
+    void audioEngine.playSfx("click");
+    if (!nextOpen) void audioEngine.resume();
+  }, [playScope]);
+  const resumeFromPause = () => {
+    setPauseMenuOpen(false);
+    setPaused(false);
+    void audioEngine.playSfx("click");
+    void audioEngine.resume();
+  };
+  const returnHomeFromPause = () => {
+    void audioEngine.playSfx("click");
+    backToMenu();
+  };
   const closeVersusChannel = () => {
     if (realtimeRef.current) {
       void supabase.removeChannel(realtimeRef.current);
@@ -499,6 +625,7 @@ export default function Home() {
     closeVersusChannel();
     setVersusPhase("idle");
     setVersusOpen(false);
+    setPaused(false);
   };
   const sendVersusAttack = async (kind: "barrel" | "log" | "car" | "rock") => {
     if (!versusMatchRef.current || versusPhase !== "intermission") return;
@@ -516,7 +643,11 @@ export default function Home() {
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target?.matches('input, textarea, select, [contenteditable="true"]'))
+      if (
+        target?.matches(
+          'button, input, textarea, select, [contenteditable="true"]',
+        )
+      )
         return;
       if (["ArrowLeft", "a", "A"].includes(e.key)) {
         e.preventDefault();
@@ -528,13 +659,13 @@ export default function Home() {
       }
       if (e.key === " " && state.current.running && playScope !== "versus") {
         e.preventDefault();
-        setPaused((v) => !v);
+        toggleManualPause();
       }
       if (e.key === "Enter" && !state.current.running) reset();
     };
     addEventListener("keydown", key);
     return () => removeEventListener("keydown", key);
-  }, [move, reset, playScope]);
+  }, [move, reset, playScope, toggleManualPause]);
   useEffect(() => {
     if (!running || paused || wavePause) return;
     let raf = 0,
@@ -592,6 +723,7 @@ export default function Home() {
             n.y < 91
           ) {
             if (n.kind === "gem") {
+              void audioEngine.playSfx("gem");
               const total = gemsRef.current + 1;
               gemsRef.current = total;
               setGems(total);
@@ -612,6 +744,7 @@ export default function Home() {
                     }
                   });
             } else if (n.kind === "coin") {
+              void audioEngine.playSfx("coin");
               if (playScope === "versus" && versusMatchRef.current) {
                 setVersusPoints((v) => v + 2);
                 void supabase
@@ -630,6 +763,7 @@ export default function Home() {
                   });
               }
             } else if (n.kind === "snowflake") {
+              void audioEngine.playSfx("freeze");
               freezeNextMoveRef.current = true;
               setSlowed(true);
               setFlash("freeze-hit");
@@ -642,6 +776,7 @@ export default function Home() {
               return [];
             } else {
               damageLockedRef.current = true;
+              void audioEngine.playSfx("hit");
               const rawDamage =
                 mode === "impossible"
                   ? 1
@@ -658,6 +793,7 @@ export default function Home() {
                 const h = v - damage;
                 if (h <= 0) {
                   setRunning(false);
+                  setPauseMenuOpen(false);
                   setOver(true);
                   if (guest) {
                     setGems(0);
@@ -997,6 +1133,7 @@ export default function Home() {
     setVersusOpen(false);
     setRunning(false);
     setPaused(false);
+    setPauseMenuOpen(false);
     setWavePause(false);
     setSlowed(false);
     freezeNextMoveRef.current = false;
@@ -1015,12 +1152,15 @@ export default function Home() {
     setLeaderboardOpen(false);
     setGuest(false);
     userIdRef.current = null;
+    audioEngine.stop();
     if (userEmail) {
       setUserEmail(null);
       await supabase.auth.signOut();
     }
   };
   const playGuest = () => {
+    void audioEngine.start(soundtrack);
+    void audioEngine.playSfx("click");
     setGuest(true);
     setGems(0);
     setHighScore(0);
@@ -1080,6 +1220,7 @@ export default function Home() {
       .order("created_at", { ascending: false });
     setReports((data ?? []) as PlayerReport[]);
     setAdminTab("reports");
+    setPauseMenuOpen(false);
     setPaused(true);
     setAdminOpen(true);
   };
@@ -1374,6 +1515,7 @@ export default function Home() {
             disabled={playScope === "versus"}
             onClick={() => {
               void loadLeaderboard();
+              setPauseMenuOpen(false);
               setPaused(true);
             }}
           >
@@ -1383,7 +1525,11 @@ export default function Home() {
           <button
             className="action-versus"
             disabled={playScope === "versus"}
-            onClick={() => setVersusOpen(true)}
+            onClick={() => {
+              setPauseMenuOpen(false);
+              setPaused(true);
+              setVersusOpen(true);
+            }}
           >
             <span>⚔</span>
             <b>1V1</b>
@@ -1393,6 +1539,7 @@ export default function Home() {
             disabled={playScope === "versus"}
             onClick={() => {
               setShopOpen(true);
+              setPauseMenuOpen(false);
               setPaused(true);
               setShopStatus("");
               void loadCollection();
@@ -1410,6 +1557,7 @@ export default function Home() {
               className="action-settings"
               onClick={() => {
                 setSettingsOpen(true);
+                setPauseMenuOpen(false);
                 setPaused(true);
               }}
             >
@@ -1614,10 +1762,84 @@ export default function Home() {
                 )}
               </div>
             )}
-            {paused && versusPhase !== "intermission" && (
-              <div className="overlay compact">
-                <h1>PAUSED</h1>
-                <button onClick={() => setPaused(false)}>KEEP RUNNING</button>
+            {running && paused && pauseMenuOpen && playScope !== "versus" && (
+              <div
+                className="overlay compact pause-overlay"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Pause menu"
+              >
+                <section className="pause-menu">
+                  <p>RUN PAUSED</p>
+                  <h1>PAUSED</h1>
+                  <div className="soundtrack-picker">
+                    <h2>SOUNDTRACK</h2>
+                    <div className="soundtrack-grid">
+                      {SOUNDTRACKS.map((track) => (
+                        <button
+                          key={track.id}
+                          className={soundtrack === track.id ? "selected" : ""}
+                          onClick={() => chooseSoundtrack(track.id)}
+                          aria-pressed={soundtrack === track.id}
+                        >
+                          <span aria-hidden="true">{track.icon}</span>
+                          <b>{track.name}</b>
+                          <small>{track.description}</small>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="audio-controls">
+                    <label>
+                      <span>
+                        <b>MUSIC</b>
+                        <output>
+                          {musicVolume === 0
+                            ? "MUTED"
+                            : `${Math.round(musicVolume * 100)}%`}
+                        </output>
+                      </span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={musicVolume}
+                        onChange={(event) =>
+                          changeMusicVolume(Number(event.target.value))
+                        }
+                        aria-label="Music volume"
+                      />
+                    </label>
+                    <label>
+                      <span>
+                        <b>SFX</b>
+                        <output>
+                          {sfxVolume === 0
+                            ? "MUTED"
+                            : `${Math.round(sfxVolume * 100)}%`}
+                        </output>
+                      </span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={sfxVolume}
+                        onChange={(event) =>
+                          changeSfxVolume(Number(event.target.value))
+                        }
+                        aria-label="SFX volume"
+                      />
+                    </label>
+                  </div>
+                  <div className="pause-actions">
+                    <button onClick={resumeFromPause}>KEEP RUNNING</button>
+                    <button className="pause-home" onClick={returnHomeFromPause}>
+                      RETURN HOME
+                    </button>
+                  </div>
+                </section>
               </div>
             )}
           </div>
@@ -1651,13 +1873,15 @@ export default function Home() {
             </div>
             <button
               className="pause"
-              disabled={playScope === "versus"}
-              onClick={() =>
-                running && playScope !== "versus" && setPaused((v) => !v)
+              disabled={
+                !running ||
+                playScope === "versus" ||
+                (paused && !pauseMenuOpen)
               }
-              aria-label="Pause"
+              onClick={toggleManualPause}
+              aria-label={pauseMenuOpen ? "Resume" : "Pause"}
             >
-              {playScope === "versus" ? "⚔" : paused ? "▶" : "Ⅱ"}
+              {playScope === "versus" ? "⚔" : pauseMenuOpen ? "▶" : "Ⅱ"}
             </button>
           </footer>
         </section>
@@ -1823,7 +2047,7 @@ export default function Home() {
                   if (versusPhase === "searching") void cancelVersus();
                   else {
                     setVersusOpen(false);
-                    if (playScope === "versus") setPaused(false);
+                    setPaused(false);
                   }
                 }}
               >
