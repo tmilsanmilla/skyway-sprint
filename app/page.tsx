@@ -1805,8 +1805,8 @@ export default function Home() {
                         max="1"
                         step="0.05"
                         value={musicVolume}
-                        onChange={(event) =>
-                          changeMusicVolume(Number(event.target.value))
+                        onInput={(event) =>
+                          changeMusicVolume(Number(event.currentTarget.value))
                         }
                         aria-label="Music volume"
                       />
@@ -1826,8 +1826,8 @@ export default function Home() {
                         max="1"
                         step="0.05"
                         value={sfxVolume}
-                        onChange={(event) =>
-                          changeSfxVolume(Number(event.target.value))
+                        onInput={(event) =>
+                          changeSfxVolume(Number(event.currentTarget.value))
                         }
                         aria-label="SFX volume"
                       />
