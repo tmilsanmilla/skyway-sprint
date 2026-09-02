@@ -1,6 +1,13 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 type PlayerSummary = {
@@ -85,6 +92,7 @@ const BASE_COMMANDS = [
   "/bann [account + device + score] for INFINITE",
   "/unban [",
 ];
+const PLAYER_LOOKUP_IDLE_MS = 5 * 60 * 1000;
 const PROTECTED_STARTER_CHARACTERS = new Set([
   "runner_ace",
   "medic_patch",
@@ -270,9 +278,11 @@ const formatActor = (
 export function AdminPlayerEditor({
   supabase,
   isMainAdmin,
+  isActive,
 }: {
   supabase: SupabaseClient;
   isMainAdmin: boolean;
+  isActive: boolean;
 }) {
   const [search, setSearch] = useState("");
   const [searching, setSearching] = useState(false);
@@ -289,6 +299,77 @@ export function AdminPlayerEditor({
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
   const detailRequestRef = useRef(0);
   const searchRequestRef = useRef(0);
+  const lookupGenerationRef = useRef(0);
+  const inactiveSinceRef = useRef<number | null>(null);
+  const inactivityTimerRef = useRef<number | null>(null);
+
+  const clearLookup = useCallback(() => {
+    ++searchRequestRef.current;
+    ++detailRequestRef.current;
+    ++lookupGenerationRef.current;
+    if (inactivityTimerRef.current !== null)
+      window.clearTimeout(inactivityTimerRef.current);
+    inactivityTimerRef.current = null;
+    inactiveSinceRef.current = null;
+    setSearch("");
+    setSearching(false);
+    setPlayers([]);
+    setSelected(null);
+    setDetail(null);
+    setLoadingDetail(false);
+    setCommand("");
+    setCommandBusy(false);
+    setCommandFeedback(null);
+    setCatalog({});
+    setSelectedDeviceId("");
+    setStatus("Player lookup cleared after 5 minutes away.");
+  }, []);
+
+  const hasLookupState = Boolean(
+    search ||
+      players.length ||
+      selected ||
+      detail ||
+      command ||
+      commandFeedback ||
+      selectedDeviceId,
+  );
+
+  useEffect(() => {
+    const cancelTimer = () => {
+      if (inactivityTimerRef.current !== null)
+        window.clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
+    };
+    cancelTimer();
+
+    if (isActive) {
+      const inactiveSince = inactiveSinceRef.current;
+      inactiveSinceRef.current = null;
+      if (
+        inactiveSince !== null &&
+        Date.now() - inactiveSince >= PLAYER_LOOKUP_IDLE_MS &&
+        hasLookupState
+      )
+        clearLookup();
+      return;
+    }
+
+    if (!hasLookupState) {
+      inactiveSinceRef.current = null;
+      return;
+    }
+
+    inactiveSinceRef.current ??= Date.now();
+    const remaining =
+      PLAYER_LOOKUP_IDLE_MS - (Date.now() - inactiveSinceRef.current);
+    if (remaining <= 0) {
+      clearLookup();
+      return;
+    }
+    inactivityTimerRef.current = window.setTimeout(clearLookup, remaining);
+    return cancelTimer;
+  }, [clearLookup, hasLookupState, isActive]);
 
   const runSearch = async (event?: FormEvent) => {
     event?.preventDefault();
@@ -497,6 +578,7 @@ export function AdminPlayerEditor({
   const executeCommand = async (event: FormEvent) => {
     event.preventDefault();
     if (!isMainAdmin) return;
+    const lookupGeneration = lookupGenerationRef.current;
     setCommandBusy(true);
     setCommandFeedback(null);
     setStatus("");
@@ -507,6 +589,7 @@ export function AdminPlayerEditor({
           "Enter an exact username or email in the command when no player is selected.",
         );
       const target = await resolveTarget(parsed.targetText);
+      if (lookupGeneration !== lookupGenerationRef.current) return;
       let commandDeviceId: string | null = null;
       if (parsed.banScopes?.includes("device")) {
         const targetIsSelected = target.user_id === selected?.user_id;
@@ -533,6 +616,7 @@ export function AdminPlayerEditor({
           p_selected_user_id: target.user_id,
           p_limit: 50,
         });
+        if (lookupGeneration !== lookupGenerationRef.current) return;
         if (error) throw new Error(error.message);
         const items = ((data as CommandSuggestions | null)?.items ?? []);
         item = items.find(
@@ -560,20 +644,24 @@ export function AdminPlayerEditor({
           p_command_text: command,
         },
       );
+      if (lookupGeneration !== lookupGenerationRef.current) return;
       if (error) throw new Error(error.message);
       const result = data as { ok?: boolean; error?: string } | null;
       if (!result?.ok) throw new Error(result?.error || "Command was rejected.");
       const completedMessage = `${parsed.action.toUpperCase()} completed for ${target.username || target.email}.`;
       setCommand("");
       await choosePlayer(target);
+      if (lookupGeneration !== lookupGenerationRef.current) return;
       setCommandFeedback({ tone: "success", message: completedMessage });
     } catch (error) {
+      if (lookupGeneration !== lookupGenerationRef.current) return;
       setCommandFeedback({
         tone: "error",
         message: error instanceof Error ? error.message : "Command failed.",
       });
     } finally {
-      setCommandBusy(false);
+      if (lookupGeneration === lookupGenerationRef.current)
+        setCommandBusy(false);
     }
   };
 

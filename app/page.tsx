@@ -3296,8 +3296,12 @@ export default function Home() {
             </section>
           </div>
         )}
-        {adminOpen && isAdmin && (
-          <div className="report-backdrop">
+        {isAdmin && (
+          <div
+            className="report-backdrop"
+            aria-hidden={!adminOpen}
+            style={adminOpen ? undefined : { display: "none" }}
+          >
             <section
               className={`admin-inbox${adminTab === "players" ? " player-editor-shell" : ""}`}
               role="dialog"
@@ -3444,12 +3448,14 @@ export default function Home() {
                     ))}
                   </div>
                 </div>
-              ) : (
+              ) : null}
+              <div hidden={adminTab !== "players"}>
                 <AdminPlayerEditor
                   supabase={supabase}
                   isMainAdmin={adminRole === "main"}
+                  isActive={adminOpen && adminTab === "players"}
                 />
-              )}
+              </div>
             </section>
           </div>
         )}
