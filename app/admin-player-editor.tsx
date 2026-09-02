@@ -65,6 +65,10 @@ type CommandContext = {
   stage: "command" | "item" | "target";
   fragment: string;
 };
+type CommandFeedback = {
+  tone: "error" | "success";
+  message: string;
+};
 
 const BASE_COMMANDS = [
   "/grant cosmetic [",
@@ -74,7 +78,7 @@ const BASE_COMMANDS = [
   "/set gems 100",
   "/set high score 25000",
   "/set coins 10",
-  "/bann [account + device + score] for 7 days",
+  "/bann [account + device + score] for INFINITE",
   "/unban [",
 ];
 const PROTECTED_STARTER_CHARACTERS = new Set([
@@ -103,7 +107,7 @@ const getCommandContext = (raw: string): CommandContext => {
   if (!actionMatch) return { stage: "command", fragment: raw.trim() };
   const action = actionMatch[1].toLowerCase() as "grant" | "revoke";
   const kind = raw.match(/^\/(?:grant|revoke)\s+(\w+)/i)?.[1]?.toLowerCase();
-  const target = raw.match(/\]\s+(?:(?:from|to)\s+)?(.+)$/i);
+  const target = raw.match(/\]\s+(?:(?:from|to)\s*)?(.*)$/i);
   if (target)
     return { action, kind, stage: "target", fragment: target[1].trim() };
   const openItem = raw.match(/\[([^\]]*)$/);
@@ -127,14 +131,23 @@ const getPlayerSuggestionFragment = (raw: string) => {
 
   const openBan = raw.match(/^\/bann?\s+\[([^\]]*)$/i);
   if (!openBan) return null;
-  return openBan[1]
-    .replace(/\b(account|device|score|leaderboard)\b/gi, "")
-    .replaceAll("+", " ")
+  const inside = openBan[1].trim();
+  const firstScope = Array.from(
+    inside.matchAll(
+      /(?:^|[+\s])\s*(account|device|score|leaderboard)(?=\s*(?:\+|$))/gi,
+    ),
+  )[0];
+  return (firstScope ? inside.slice(0, firstScope.index) : inside)
+    .replace(/\s*\+\s*$/, "")
     .trim();
 };
 
 const parseDuration = (raw: string) => {
-  if (normalize(raw) === "permanently")
+  if (
+    ["permanently", "permanent", "infinite", "infinity", "infnite"].includes(
+      normalize(raw),
+    )
+  )
     return { permanent: true, seconds: undefined };
   const units: Record<string, { order: number; seconds: number }> = {
     year: { order: 0, seconds: 31_536_000 },
@@ -196,19 +209,23 @@ const parseCommand = (raw: string): ParsedCommand => {
   match = command.match(/^\/bann?\s+\[([^\]]+)\]\s+for\s+(.+)$/i);
   if (match) {
     const inside = match[1].trim();
-    const scopes = Array.from(
-      inside.matchAll(/\b(account|device|score|leaderboard)\b/gi),
-      (result) =>
-        result[1].toLowerCase() === "score"
-          ? "leaderboard"
-          : result[1].toLowerCase(),
+    const scopeMatches = Array.from(
+      inside.matchAll(
+        /(?:^|[+\s])\s*(account|device|score|leaderboard)(?=\s*(?:\+|$))/gi,
+      ),
+    );
+    const scopes = scopeMatches.map((scopeMatch) =>
+      scopeMatch[1].toLowerCase() === "score"
+        ? "leaderboard"
+        : scopeMatch[1].toLowerCase(),
     );
     if (!scopes.length)
       throw new Error("Choose account, device, score, or a combination with +.");
-    const targetText = inside
-      .replace(/\b(account|device|score|leaderboard)\b/gi, "")
-      .replaceAll("+", " ")
-      .trim();
+    const firstScope = scopeMatches[0].index ?? 0;
+    const targetText =
+      firstScope <= 0
+        ? ""
+        : inside.slice(0, firstScope).replace(/\s*\+\s*$/, "").trim();
     const duration = parseDuration(match[2]);
     return {
       action: "bann",
@@ -219,8 +236,13 @@ const parseCommand = (raw: string): ParsedCommand => {
     };
   }
 
-  match = command.match(/^\/unban\s+\[?(\d+)\]?$/i);
-  if (match) return { action: "unban", banId: Number(match[1]) };
+  match = command.match(/^\/unban\s+\[?(\d+)\]?(?:\s+(.+))?$/i);
+  if (match)
+    return {
+      action: "unban",
+      banId: Number(match[1]),
+      targetText: match[2]?.trim(),
+    };
 
   throw new Error(
     "Unknown command. Pick one of the suggestions above the command box.",
@@ -291,6 +313,8 @@ export function AdminPlayerEditor({
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [command, setCommand] = useState("");
   const [commandBusy, setCommandBusy] = useState(false);
+  const [commandFeedback, setCommandFeedback] =
+    useState<CommandFeedback | null>(null);
   const [status, setStatus] = useState("");
   const [catalog, setCatalog] = useState<CommandSuggestions>({});
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
@@ -308,6 +332,7 @@ export function AdminPlayerEditor({
     setDetail(null);
     setSelectedDeviceId("");
     setCommand("");
+    setCommandFeedback(null);
     setLoadingDetail(false);
     const { data, error } = await supabase.rpc("admin_player_search", {
       p_query: search.trim(),
@@ -331,6 +356,7 @@ export function AdminPlayerEditor({
     setDetail(null);
     setSelectedDeviceId("");
     setCommand("");
+    setCommandFeedback(null);
     setLoadingDetail(true);
     setStatus("");
     const { data, error } = await supabase.rpc("admin_get_player", {
@@ -371,7 +397,20 @@ export function AdminPlayerEditor({
 
   const suggestionLines = useMemo(() => {
     const input = command.toLowerCase();
-    if (!input) return BASE_COMMANDS;
+    if (!input)
+      return selected
+        ? BASE_COMMANDS
+        : [
+            "/grant cosmetic [",
+            "/grant character [",
+            "/revoke cosmetic [",
+            "/revoke character [",
+            "/set gems 100 username/email",
+            "/set high score 25000 username/email",
+            "/set coins 10 username/email",
+            "/bann [username/email account + device + score] for INFINITE",
+            "/unban [ban id] username/email",
+          ];
     if (input.startsWith("/grant") || input.startsWith("/revoke")) {
       const context = getCommandContext(command);
       const action = context.action ?? "grant";
@@ -394,13 +433,15 @@ export function AdminPlayerEditor({
         .filter(
           (item) =>
             action === "grant" ||
-            (ownedKeys.has(item.item_key) &&
-              !PROTECTED_STARTER_CHARACTERS.has(item.item_key)),
+            (!PROTECTED_STARTER_CHARACTERS.has(item.item_key) &&
+              (!selected || ownedKeys.has(item.item_key))),
         )
         .slice(0, 8)
         .map(
           (item) =>
-            `/${action} ${item.command_kind} [${item.display_name}]`,
+            `/${action} ${item.command_kind} [${item.display_name}]${
+              selected ? "" : action === "revoke" ? " from " : " "
+            }`,
         );
     }
     if (input.startsWith("/set")) {
@@ -412,9 +453,9 @@ export function AdminPlayerEditor({
           (player) => `${targetMatch[1]}${player.username || player.email}`,
         );
       return [
-        "/set gems 100",
-        "/set high score 25000",
-        "/set coins 10",
+        `/set gems 100${selected ? "" : " username/email"}`,
+        `/set high score 25000${selected ? "" : " username/email"}`,
+        `/set coins 10${selected ? "" : " username/email"}`,
       ];
     }
     if (input.startsWith("/ban")) {
@@ -428,23 +469,28 @@ export function AdminPlayerEditor({
           ];
         });
       return [
-        "/bann [account] for 24 hours",
-        "/bann [device + score] for 7 days",
-        "/bann [account + device + score] for permanently",
-        "/bann [account + score] for 1 year + 10 days + 10 minutes",
+        `/bann [${selected ? "" : "username/email "}account] for 24 hours`,
+        `/bann [${selected ? "" : "username/email "}device + score] for 7 days`,
+        `/bann [${selected ? "" : "username/email "}account + device + score] for INFINITE`,
+        `/bann [${selected ? "" : "username/email "}account + score] for 1 year + 10 days + 10 minutes`,
       ];
     }
-    if (input.startsWith("/unban"))
+    if (input.startsWith("/unban")) {
+      if (!selected) return ["/unban [ban id] username/email"];
       return (detail?.bans ?? [])
         .filter((ban) => Boolean(ban.active ?? true))
         .map((ban) => `/unban [${String(ban.id)}]`)
         .slice(0, 8);
+    }
     return (catalog.commands ?? BASE_COMMANDS).slice(0, 8);
-  }, [catalog, command, detail]);
+  }, [catalog, command, detail, selected]);
 
   const resolveTarget = async (targetText?: string) => {
     if (!targetText) {
-      if (!selected) throw new Error("Select a player first or add their username/email.");
+      if (!selected)
+        throw new Error(
+          "Enter an exact username or email when no player is selected.",
+        );
       return selected;
     }
     const cleanTarget = targetText.replace(/^(?:from|to)\s+/i, "").trim();
@@ -460,9 +506,10 @@ export function AdminPlayerEditor({
         player.username?.toLowerCase() === cleanTarget.toLowerCase(),
     );
     if (exact) return exact;
-    if (matches.length === 1) return matches[0];
     throw new Error(
-      matches.length ? "That player name is ambiguous." : "Player not found.",
+      matches.length
+        ? "Enter the player's complete username or email. Partial matches are not accepted."
+        : "Player not found.",
     );
   };
 
@@ -470,9 +517,14 @@ export function AdminPlayerEditor({
     event.preventDefault();
     if (!isMainAdmin) return;
     setCommandBusy(true);
+    setCommandFeedback(null);
     setStatus("");
     try {
       const parsed = parseCommand(command);
+      if (!selected && !parsed.targetText?.trim())
+        throw new Error(
+          "Enter an exact username or email in the command when no player is selected.",
+        );
       const target = await resolveTarget(parsed.targetText);
       let commandDeviceId: string | null = null;
       if (parsed.banScopes?.includes("device")) {
@@ -530,11 +582,15 @@ export function AdminPlayerEditor({
       if (error) throw new Error(error.message);
       const result = data as { ok?: boolean; error?: string } | null;
       if (!result?.ok) throw new Error(result?.error || "Command was rejected.");
-      setStatus(`${parsed.action.toUpperCase()} completed for ${target.username || target.email}.`);
+      const completedMessage = `${parsed.action.toUpperCase()} completed for ${target.username || target.email}.`;
       setCommand("");
       await choosePlayer(target);
+      setCommandFeedback({ tone: "success", message: completedMessage });
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Command failed.");
+      setCommandFeedback({
+        tone: "error",
+        message: error instanceof Error ? error.message : "Command failed.",
+      });
     } finally {
       setCommandBusy(false);
     }
@@ -580,6 +636,100 @@ export function AdminPlayerEditor({
 
       {status && <div className="player-editor-status" role="status">{status}</div>}
 
+      {isMainAdmin && (
+        <section className="command-console">
+          <header>
+            <div>
+              <small>MAIN ADMIN ONLY</small>
+              <h3>PLAYER COMMANDS</h3>
+            </div>
+            <span>
+              {selected
+                ? `DEFAULT TARGET: ${selected.username || selected.email}`
+                : "NO DEFAULT · TYPE AN EXACT USERNAME OR EMAIL"}
+            </span>
+          </header>
+          {(detail?.devices?.length ?? 0) > 0 && (
+            <label className="command-device">
+              DEVICE TARGET
+              <select
+                value={selectedDeviceId}
+                onChange={(event) => setSelectedDeviceId(event.target.value)}
+              >
+                {detail!.devices!.length > 1 && (
+                  <option value="">CHOOSE A LINKED DEVICE</option>
+                )}
+                {detail!.devices!.map((device) => (
+                  <option
+                    key={String(device.device_id)}
+                    value={String(device.device_id)}
+                  >
+                    {String(device.label ?? "Web browser")} · {String(
+                      device.token_hint ?? device.device_id,
+                    )}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <div className="command-suggestions" aria-label="Command suggestions">
+            {suggestionLines.map((suggestion) => (
+              <button
+                key={suggestion}
+                type="button"
+                onClick={() => {
+                  setCommand(suggestion);
+                  setCommandFeedback(null);
+                }}
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+          <form onSubmit={executeCommand}>
+            <span aria-hidden="true">&gt;</span>
+            <input
+              aria-describedby={
+                commandFeedback
+                  ? "admin-player-command-help admin-player-command-feedback"
+                  : "admin-player-command-help"
+              }
+              aria-label="Admin player command"
+              value={command}
+              onChange={(event) => {
+                setCommand(event.target.value);
+                setCommandFeedback(null);
+              }}
+              placeholder={
+                selected
+                  ? "/grant cosmetic [Dark Caves]"
+                  : "/grant cosmetic [Dark Caves] username/email"
+              }
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <button disabled={commandBusy || !command.trim()}>
+              {commandBusy ? "RUNNING…" : "RUN"}
+            </button>
+          </form>
+          {commandFeedback && (
+            <div
+              id="admin-player-command-feedback"
+              className={`command-feedback ${commandFeedback.tone}`}
+              role={commandFeedback.tone === "error" ? "alert" : "status"}
+            >
+              {commandFeedback.message}
+            </div>
+          )}
+          <p id="admin-player-command-help">
+            Use brackets around exact item names. Without a selected player,
+            include an exact username or email. Ban durations must go from largest
+            to smallest; use INFINITE for a permanent ban. Commands are validated
+            actions, never SQL.
+          </p>
+        </section>
+      )}
+
       {selected && (
         <>
           <header className="player-editor-selected">
@@ -590,71 +740,6 @@ export function AdminPlayerEditor({
             </div>
             <code>{selected.user_id}</code>
           </header>
-
-          {isMainAdmin && (
-            <section className="command-console">
-              <header>
-                <div>
-                  <small>MAIN ADMIN ONLY</small>
-                  <h3>PLAYER COMMANDS</h3>
-                </div>
-                <span>SELECTED PLAYER IS THE DEFAULT TARGET</span>
-              </header>
-              {(detail?.devices?.length ?? 0) > 0 && (
-                <label className="command-device">
-                  DEVICE TARGET
-                  <select
-                    value={selectedDeviceId}
-                    onChange={(event) => setSelectedDeviceId(event.target.value)}
-                  >
-                    {detail!.devices!.length > 1 && (
-                      <option value="">CHOOSE A LINKED DEVICE</option>
-                    )}
-                    {detail!.devices!.map((device) => (
-                      <option
-                        key={String(device.device_id)}
-                        value={String(device.device_id)}
-                      >
-                        {String(device.label ?? "Web browser")} · {String(
-                          device.token_hint ?? device.device_id,
-                        )}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-              <div className="command-suggestions" aria-label="Command suggestions">
-                {suggestionLines.map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    type="button"
-                    onClick={() => setCommand(suggestion)}
-                  >
-                    {suggestion}
-                  </button>
-                ))}
-              </div>
-              <form onSubmit={executeCommand}>
-                <span aria-hidden="true">&gt;</span>
-                <input
-                  aria-describedby="admin-player-command-help"
-                  aria-label="Admin player command"
-                  value={command}
-                  onChange={(event) => setCommand(event.target.value)}
-                  placeholder="/grant cosmetic [Dark Caves]"
-                  spellCheck={false}
-                  autoComplete="off"
-                />
-                <button disabled={commandBusy || !command.trim()}>
-                  {commandBusy ? "RUNNING…" : "RUN"}
-                </button>
-              </form>
-              <p id="admin-player-command-help">
-                Use brackets around exact item names. Ban durations must go from
-                largest to smallest. Commands are validated actions, never SQL.
-              </p>
-            </section>
-          )}
 
           {loadingDetail ? (
             <div className="player-editor-empty">Loading every player record…</div>
