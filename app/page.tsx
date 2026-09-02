@@ -197,21 +197,27 @@ export default function Home() {
     scoreRef = useRef(0),
     highScoreRef = useRef(0),
     invincibleUntilRef = useRef(0),
-    slowUntilRef = useRef(0),
     turnLockedRef = useRef(false),
+    delayedMoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     damageLockedRef = useRef(false),
-    slowedRef = useRef(false),
+    freezeNextMoveRef = useRef(false),
     versusMatchRef = useRef<string | null>(null),
     versusSearchingRef = useRef(false),
     realtimeRef = useRef<ReturnType<typeof supabase.channel> | null>(null),
     incomingAttacksRef = useRef<Kind[]>([]),
     versusFinishedRef = useRef(false),
-    state = useRef({ lane, running, paused });
-  state.current = { lane, running, paused };
+    state = useRef({ lane, running, paused, wavePause });
+  state.current = { lane, running, paused, wavePause };
   gemsRef.current = gems;
   scoreRef.current = score;
   highScoreRef.current = highScore;
-  slowedRef.current = slowed;
+  useEffect(
+    () => () => {
+      if (delayedMoveTimerRef.current)
+        clearTimeout(delayedMoveTimerRef.current);
+    },
+    [],
+  );
   const [authReady, setAuthReady] = useState(false),
     [guest, setGuest] = useState(false),
     [userEmail, setUserEmail] = useState<string | null>(null),
@@ -293,7 +299,12 @@ export default function Home() {
     setInvincible(false);
     setSlowed(false);
     invincibleUntilRef.current = 0;
-    slowUntilRef.current = 0;
+    freezeNextMoveRef.current = false;
+    turnLockedRef.current = false;
+    if (delayedMoveTimerRef.current) {
+      clearTimeout(delayedMoveTimerRef.current);
+      delayedMoveTimerRef.current = null;
+    }
     damageLockedRef.current = false;
     setRunning(true);
     last.current = 0;
@@ -317,21 +328,41 @@ export default function Home() {
     setInvincible(false);
     setSlowed(false);
     invincibleUntilRef.current = 0;
-    slowUntilRef.current = 0;
+    freezeNextMoveRef.current = false;
+    turnLockedRef.current = false;
+    if (delayedMoveTimerRef.current) {
+      clearTimeout(delayedMoveTimerRef.current);
+      delayedMoveTimerRef.current = null;
+    }
     damageLockedRef.current = false;
   };
   const move = useCallback((d: number) => {
-    if (!state.current.running || state.current.paused || turnLockedRef.current)
+    if (
+      !state.current.running ||
+      state.current.paused ||
+      state.current.wavePause ||
+      turnLockedRef.current
+    )
       return;
-    if (slowedRef.current) {
+    const destination = Math.max(0, Math.min(4, state.current.lane + d));
+    if (destination === state.current.lane) return;
+    if (freezeNextMoveRef.current) {
+      freezeNextMoveRef.current = false;
       turnLockedRef.current = true;
-      setTimeout(() => {
-        setLane((v) => Math.max(0, Math.min(4, v + d)));
+      delayedMoveTimerRef.current = setTimeout(() => {
+        if (
+          state.current.running &&
+          !state.current.paused &&
+          !state.current.wavePause
+        )
+          setLane(destination);
+        setSlowed(false);
         turnLockedRef.current = false;
-      }, 100);
+        delayedMoveTimerRef.current = null;
+      }, 200);
       return;
     }
-    setLane((v) => Math.max(0, Math.min(4, v + d)));
+    setLane(destination);
   }, []);
   const closeVersusChannel = () => {
     if (realtimeRef.current) {
@@ -599,12 +630,12 @@ export default function Home() {
                   });
               }
             } else if (n.kind === "snowflake") {
-              const until = Date.now() + 5000;
-              slowUntilRef.current = until;
+              freezeNextMoveRef.current = true;
               setSlowed(true);
+              setFlash("freeze-hit");
               setTimeout(() => {
-                if (slowUntilRef.current <= Date.now()) setSlowed(false);
-              }, 5050);
+                setFlash((value) => (value === "freeze-hit" ? "" : value));
+              }, 700);
             } else if (invincibleUntilRef.current > Date.now()) {
               setFlash("shield");
               setTimeout(() => setFlash(""), 120);
@@ -968,7 +999,12 @@ export default function Home() {
     setPaused(false);
     setWavePause(false);
     setSlowed(false);
-    slowUntilRef.current = 0;
+    freezeNextMoveRef.current = false;
+    turnLockedRef.current = false;
+    if (delayedMoveTimerRef.current) {
+      clearTimeout(delayedMoveTimerRef.current);
+      delayedMoveTimerRef.current = null;
+    }
     damageLockedRef.current = false;
     setItems([]);
     setOver(false);
@@ -1443,16 +1479,6 @@ export default function Home() {
                 <strong>{waveMessage}</strong>
               </div>
             )}
-            <div className="sky">
-              <i />
-              <i />
-              <i />
-            </div>
-            <div className="horizon">
-              {[0, 1, 2, 3, 4].map((n) => (
-                <span key={n} />
-              ))}
-            </div>
             <div className="road">
               {[0, 1, 2, 3].map((n) => (
                 <i className={`line l${n}`} key={n} />
@@ -1476,7 +1502,7 @@ export default function Home() {
                 </div>
               ))}
               <div
-                className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${invincible ? " invincible" : ""}`}
+                className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}`}
                 style={{ left: `${(lane + 0.5) * 20}%` }}
               >
                 <div className="head" />
