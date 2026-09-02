@@ -2,6 +2,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { audioEngine, type Soundtrack } from "./audio-engine";
+import { AdminPlayerEditor } from "./admin-player-editor";
 type Kind =
   "gem" | "coin" | "car" | "log" | "snowflake" | "rock" | "barrel" | "spikes";
 type Item = {
@@ -24,6 +25,18 @@ type AdminUser = {
   email: string;
   username: string | null;
   role: "main" | "co_admin";
+};
+type PlayerAccess = {
+  device_id?: string;
+  account_banned: boolean;
+  device_banned: boolean;
+  leaderboard_banned: boolean;
+  active_bans?: Array<{
+    id: number;
+    scope: string;
+    expires_at: string | null;
+    reason: string | null;
+  }>;
 };
 type Leader = { rank: number; username: string; high_score: number };
 type Rarity =
@@ -58,6 +71,18 @@ type StoredLoadout = {
 type BoxType = "regular" | "legendary";
 type PlayScope = "single" | "versus";
 const AUDIO_PREFERENCES_KEY = "skyway.audio.v1";
+const DEVICE_TOKEN_KEY = "skyway.device.v1";
+const getOrCreateDeviceToken = () => {
+  try {
+    const stored = window.localStorage.getItem(DEVICE_TOKEN_KEY);
+    if (stored && /^[a-f0-9-]{36}$/i.test(stored)) return stored;
+    const token = window.crypto.randomUUID();
+    window.localStorage.setItem(DEVICE_TOKEN_KEY, token);
+    return token;
+  } catch {
+    return window.crypto.randomUUID();
+  }
+};
 const SOUNDTRACKS: ReadonlyArray<{
   id: Soundtrack;
   name: string;
@@ -100,11 +125,11 @@ const CLASS_CHARACTERS = {
 const CHARACTER_ABILITIES = {
   runner_ace: {
     name: "MOMENTUM",
-    description: "Run score builds 10% faster.",
+    description: "All run score is multiplied by 1.25.",
   },
   runner_scout: {
     name: "QUICKSTEP",
-    description: "Snowflake turn delay is reduced from 0.2s to 0.08s.",
+    description: "Snowflakes cannot delay your next lane change.",
   },
   runner_ranger: {
     name: "PICKUP MAGNET",
@@ -149,6 +174,30 @@ const CHARACTER_ABILITIES = {
   },
 } as const;
 type CharacterKey = keyof typeof CHARACTER_ABILITIES;
+const STARTER_CHARACTER_KEYS: ReadonlySet<CharacterKey> = new Set([
+  "runner_ace",
+  "medic_patch",
+  "tank_bulwark",
+  "trickster_rogue",
+]);
+const isStarterCharacter = (characterKey?: string | null) =>
+  Boolean(
+    characterKey &&
+      STARTER_CHARACTER_KEYS.has(characterKey as CharacterKey),
+  );
+const isCharacterOwned = (
+  owned: Unlock[],
+  characterKey?: string | null,
+) =>
+  Boolean(
+    characterKey &&
+      (isStarterCharacter(characterKey) ||
+        owned.some(
+          (item) =>
+            item.item_type === "character" &&
+            item.item_key === characterKey,
+        )),
+  );
 const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
   const owns = (itemType: Unlock["item_type"], itemKey?: string | null) =>
     Boolean(
@@ -161,7 +210,7 @@ const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
   const requestedCharacter = loadout?.character_key ?? "runner_ace";
   const characterKey =
     requestedCharacter in CHARACTER_ABILITIES &&
-    (requestedCharacter === "runner_ace" || owns("character", requestedCharacter))
+    isCharacterOwned(owned, requestedCharacter)
       ? requestedCharacter
       : "runner_ace";
   const inferredClass = characterKey.split("_")[0];
@@ -319,6 +368,7 @@ export default function Home() {
     [flash, setFlash] = useState(""),
     [invincible, setInvincible] = useState(false),
     [slowed, setSlowed] = useState(false),
+    [abilityNotice, setAbilityNotice] = useState(""),
     [shopOpen, setShopOpen] = useState(false),
     [shopStatus, setShopStatus] = useState(""),
     [inventoryOpen, setInventoryOpen] = useState(false),
@@ -338,6 +388,7 @@ export default function Home() {
     aceScoreCarryRef = useRef(0),
     invincibleUntilRef = useRef(0),
     invincibilityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
+    abilityNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     waveAnnouncementTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
       null,
     ),
@@ -379,6 +430,8 @@ export default function Home() {
         clearTimeout(delayedMoveTimerRef.current);
       if (invincibilityTimerRef.current)
         clearTimeout(invincibilityTimerRef.current);
+      if (abilityNoticeTimerRef.current)
+        clearTimeout(abilityNoticeTimerRef.current);
       if (waveAnnouncementTimerRef.current)
         clearTimeout(waveAnnouncementTimerRef.current);
     },
@@ -426,6 +479,9 @@ export default function Home() {
   const [authReady, setAuthReady] = useState(false),
     [guest, setGuest] = useState(false),
     [userEmail, setUserEmail] = useState<string | null>(null),
+    [playerAccess, setPlayerAccess] = useState<PlayerAccess | null>(null),
+    [playerAccessError, setPlayerAccessError] = useState(""),
+    [playerAccessChecking, setPlayerAccessChecking] = useState(false),
     [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [confirmPassword, setConfirmPassword] = useState(""),
@@ -436,7 +492,9 @@ export default function Home() {
     [adminOpen, setAdminOpen] = useState(false),
     [isAdmin, setIsAdmin] = useState(false),
     [adminRole, setAdminRole] = useState<string | null>(null),
-    [adminTab, setAdminTab] = useState<"reports" | "admins">("reports"),
+    [adminTab, setAdminTab] = useState<"reports" | "admins" | "players">(
+      "reports",
+    ),
     [admins, setAdmins] = useState<AdminUser[]>([]),
     [adminTarget, setAdminTarget] = useState(""),
     [adminStatus, setAdminStatus] = useState(""),
@@ -532,6 +590,80 @@ export default function Home() {
     audioEngine.setSfxVolume(volume);
     saveAudioPreferences(soundtrack, musicVolume, volume);
   };
+  const refreshPlayerAccess = useCallback(async (blocking = false) => {
+    if (!userIdRef.current) return null;
+    if (blocking) setPlayerAccessChecking(true);
+    const { data, error } = await supabase.rpc("register_player_device", {
+      p_device_token: getOrCreateDeviceToken(),
+      p_label: "Web browser",
+    });
+    if (error) {
+      console.error("Could not verify player access:", error.message);
+      setPlayerAccessError(error.message);
+      setRunning(false);
+      audioEngine.stop();
+      setPlayerAccessChecking(false);
+      return null;
+    }
+    if (!data || typeof data !== "object") {
+      setPlayerAccessError("The access service returned an invalid response.");
+      setRunning(false);
+      setPlayerAccessChecking(false);
+      audioEngine.stop();
+      return null;
+    }
+    const access = data as PlayerAccess;
+    setPlayerAccessError("");
+    setPlayerAccess(access);
+    if (access.account_banned || access.device_banned) {
+      setRunning(false);
+      setPaused(false);
+      setPauseMenuOpen(false);
+      setWavePause(false);
+      audioEngine.stop();
+    }
+    setPlayerAccessChecking(false);
+    return access;
+  }, []);
+  const refreshGuestDeviceAccess = useCallback(async () => {
+    const { data, error } = await supabase.rpc("check_player_device", {
+      p_device_token: getOrCreateDeviceToken(),
+    });
+    if (error) {
+      setPlayerAccessError(error.message);
+      setRunning(false);
+      audioEngine.stop();
+      return null;
+    }
+    const access = {
+      account_banned: false,
+      device_banned: Boolean(data?.device_banned),
+      leaderboard_banned: false,
+      active_bans: data?.active_bans ?? [],
+    } satisfies PlayerAccess;
+    setPlayerAccessError("");
+    setPlayerAccess(access);
+    if (access.device_banned) {
+      setRunning(false);
+      setPaused(false);
+      setPauseMenuOpen(false);
+      audioEngine.stop();
+      return false;
+    }
+    return true;
+  }, []);
+  const showAbilityNotice = useCallback(
+    (message: string, durationMs = 950) => {
+      setAbilityNotice(message);
+      if (abilityNoticeTimerRef.current)
+        clearTimeout(abilityNoticeTimerRef.current);
+      abilityNoticeTimerRef.current = setTimeout(() => {
+        setAbilityNotice("");
+        abilityNoticeTimerRef.current = null;
+      }, durationMs);
+    },
+    [],
+  );
   const grantInvincibility = useCallback((durationMs: number) => {
     const now = Date.now();
     const until = Math.max(invincibleUntilRef.current, now + durationMs);
@@ -556,12 +688,18 @@ export default function Home() {
       waveAnnouncementTimerRef.current = setTimeout(() => {
         setWaveMessage("");
         setWavePause(false);
-        if (activeCharacter === "trickster_jester")
+        if (number === 1)
+          showAbilityNotice(`${activeAbility.name} · ACTIVE`, 1400);
+        if (activeCharacter === "runner_ace")
+          showAbilityNotice("MOMENTUM · SCORE ×1.25", 1400);
+        if (activeCharacter === "trickster_jester") {
           grantInvincibility(2000);
+          showAbilityNotice("ENCORE · 2 SECOND SHIELD", 1400);
+        }
         waveAnnouncementTimerRef.current = null;
       }, 1250);
     },
-    [activeCharacter, grantInvincibility],
+    [activeAbility.name, activeCharacter, grantInvincibility, showAbilityNotice],
   );
   const reset = useCallback(() => {
     setLane(2);
@@ -574,10 +712,15 @@ export default function Home() {
     setPauseMenuOpen(false);
     setInvincible(false);
     setSlowed(false);
+    setAbilityNotice("");
     invincibleUntilRef.current = 0;
     if (invincibilityTimerRef.current) {
       clearTimeout(invincibilityTimerRef.current);
       invincibilityTimerRef.current = null;
+    }
+    if (abilityNoticeTimerRef.current) {
+      clearTimeout(abilityNoticeTimerRef.current);
+      abilityNoticeTimerRef.current = null;
     }
     if (waveAnnouncementTimerRef.current) {
       clearTimeout(waveAnnouncementTimerRef.current);
@@ -618,10 +761,15 @@ export default function Home() {
     setHearts(maxHearts);
     setInvincible(false);
     setSlowed(false);
+    setAbilityNotice("");
     invincibleUntilRef.current = 0;
     if (invincibilityTimerRef.current) {
       clearTimeout(invincibilityTimerRef.current);
       invincibilityTimerRef.current = null;
+    }
+    if (abilityNoticeTimerRef.current) {
+      clearTimeout(abilityNoticeTimerRef.current);
+      abilityNoticeTimerRef.current = null;
     }
     if (waveAnnouncementTimerRef.current) {
       clearTimeout(waveAnnouncementTimerRef.current);
@@ -667,12 +815,13 @@ export default function Home() {
           ) {
             rogueAbilityCooldownUntilRef.current = Date.now() + 1500;
             grantInvincibility(300);
+            showAbilityNotice("SHADOWSTEP · 0.3 SECOND SHIELD");
           }
         }
         setSlowed(false);
         turnLockedRef.current = false;
         delayedMoveTimerRef.current = null;
-      }, activeCharacter === "runner_scout" ? 80 : 200);
+      }, 200);
       return;
     }
     setLane(destination);
@@ -683,8 +832,9 @@ export default function Home() {
     ) {
       rogueAbilityCooldownUntilRef.current = Date.now() + 1500;
       grantInvincibility(300);
+      showAbilityNotice("SHADOWSTEP · 0.3 SECOND SHIELD");
     }
-  }, [activeCharacter, grantInvincibility]);
+  }, [activeCharacter, grantInvincibility, showAbilityNotice]);
   const toggleManualPause = useCallback(() => {
     if (
       playScope === "versus" ||
@@ -938,12 +1088,16 @@ export default function Home() {
             activeCharacter === "runner_ranger" &&
             (n.kind === "gem" || n.kind === "coin") &&
             Math.abs(n.lane - state.current.lane) <= 1;
+          const rangerPulled =
+            rangerPickup && n.lane !== state.current.lane;
           if (
             !damageLockedRef.current &&
             (n.lane === state.current.lane || rangerPickup) &&
             n.y > 65 &&
             n.y < 91
           ) {
+            if (rangerPulled)
+              showAbilityNotice("PICKUP MAGNET · ADJACENT PICKUP");
             if (n.kind === "gem") {
               void audioEngine.playSfx("gem");
               const total = gemsRef.current + 1;
@@ -952,8 +1106,10 @@ export default function Home() {
               setGemBump(false);
               requestAnimationFrame(() => setGemBump(true));
               setTimeout(() => setGemBump(false), 500);
-              if (activeCharacter === "medic_vial")
+              if (activeCharacter === "medic_vial") {
                 grantInvincibility(2000);
+                showAbilityNotice("CRYSTAL TONIC · 2 SECOND SHIELD", 1200);
+              }
               if (userIdRef.current)
                 void supabase
                   .rpc("increment_player_gems")
@@ -987,13 +1143,22 @@ export default function Home() {
                   });
               }
             } else if (n.kind === "snowflake") {
-              void audioEngine.playSfx("freeze");
-              freezeNextMoveRef.current = true;
-              setSlowed(true);
-              setFlash("freeze-hit");
-              setTimeout(() => {
-                setFlash((value) => (value === "freeze-hit" ? "" : value));
-              }, 700);
+              if (activeCharacter === "runner_scout") {
+                void audioEngine.playSfx("shield");
+                freezeNextMoveRef.current = false;
+                setSlowed(false);
+                showAbilityNotice("QUICKSTEP · SLOW BLOCKED");
+              } else {
+                void audioEngine.playSfx("freeze");
+                freezeNextMoveRef.current = true;
+                setSlowed(true);
+                setFlash("freeze-hit");
+                setTimeout(() => {
+                  setFlash((value) =>
+                    value === "freeze-hit" ? "" : value,
+                  );
+                }, 700);
+              }
             } else if (
               activeCharacter === "tank_hammer" &&
               n.kind === "barrel"
@@ -1001,12 +1166,14 @@ export default function Home() {
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
+              showAbilityNotice("DEMOLITION · BARREL DESTROYED");
               return [];
             } else if (
               invincibleUntilRef.current > Date.now()
             ) {
               setFlash("shield");
               setTimeout(() => setFlash(""), 120);
+              showAbilityNotice(`${activeAbility.name} · HIT BLOCKED`);
               return [];
             } else if (
               activeCharacter === "trickster_phantom" &&
@@ -1016,6 +1183,7 @@ export default function Home() {
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
+              showAbilityNotice("PHASE VEIL · HIT PHASED");
               return [];
             } else {
               clearRecoveryZone = true;
@@ -1034,6 +1202,12 @@ export default function Home() {
                   ? 0.5
                   : rawDamage;
               if (
+                activeCharacter === "tank_hammer" &&
+                n.kind === "log" &&
+                rawDamage > abilityAdjustedDamage
+              )
+                showAbilityNotice("DEMOLITION · LOG DAMAGE 0.5 HP");
+              if (
                 activeCharacter === "medic_mercy" &&
                 abilityAdjustedDamage > 0.5 &&
                 mercyGuardWaveRef.current !== wave
@@ -1043,14 +1217,19 @@ export default function Home() {
                   0.5,
                   abilityAdjustedDamage - 0.5,
                 );
+                showAbilityNotice("GRACE GUARD · BLOCKED 0.5 HP");
               }
-              if (activeCharacter === "tank_bulwark")
+              if (activeCharacter === "tank_bulwark") {
+                const damageBeforePlate = abilityAdjustedDamage;
                 abilityAdjustedDamage = Math.max(
                   0.5,
                   abilityAdjustedDamage - 0.5,
                 );
+                if (abilityAdjustedDamage < damageBeforePlate)
+                  showAbilityNotice("HEAVY PLATE · BLOCKED 0.5 HP");
+              }
               const damage =
-                mode !== "impossible" && activeClass === "trickster"
+                mode === "normal" && activeClass === "trickster"
                   ? abilityAdjustedDamage * 2
                   : abilityAdjustedDamage;
               let nextHearts = state.current.hearts - damage;
@@ -1061,6 +1240,7 @@ export default function Home() {
               ) {
                 sentinelLastStandUsedRef.current = true;
                 nextHearts = 0.5;
+                showAbilityNotice("LAST STAND · SURVIVED AT 0.5 HP", 1400);
               }
               setHearts(Math.max(0, nextHearts));
               if (nextHearts <= 0) {
@@ -1126,7 +1306,7 @@ export default function Home() {
       );
       let scoreGain = baseScoreGain;
       if (activeCharacter === "runner_ace") {
-        aceScoreCarryRef.current += baseScoreGain * 0.1;
+        aceScoreCarryRef.current += baseScoreGain * 0.25;
         const bonus = Math.floor(aceScoreCarryRef.current);
         aceScoreCarryRef.current -= bonus;
         scoreGain += bonus;
@@ -1149,13 +1329,20 @@ export default function Home() {
     playScope,
     modeMultiplier,
     grantInvincibility,
+    showAbilityNotice,
+    activeAbility.name,
   ]);
   useEffect(() => {
     if (!running) return;
     const next = Math.floor(score / 2250) + 1;
     if (next !== wave) {
       setWave(next);
-      if (mode === "normal")
+      if (mode === "normal") {
+        if (
+          activeCharacter === "medic_patch" &&
+          state.current.hearts < maxHearts
+        )
+          showAbilityNotice("FIELD DRESSING · +1.5 HP", 1200);
         setHearts((v) =>
           Math.min(
             maxHearts,
@@ -1167,6 +1354,7 @@ export default function Home() {
                   : 1),
           ),
         );
+      }
       if (playScope === "versus" && versusMatchRef.current) {
         setVersusPoints((v) => v + 3);
         setVersusCountdown(15);
@@ -1194,6 +1382,7 @@ export default function Home() {
     activeClass,
     activeCharacter,
     playScope,
+    showAbilityNotice,
   ]);
   useEffect(() => {
     if (versusPhase !== "intermission") return;
@@ -1263,8 +1452,14 @@ export default function Home() {
     ) => {
       const user = session?.user ?? null;
       userIdRef.current = user?.id ?? null;
+      if (user) {
+        setPlayerAccess(null);
+        setPlayerAccessError("");
+        setPlayerAccessChecking(true);
+      }
       setUserEmail(user?.email ?? null);
       if (user) {
+        await refreshPlayerAccess();
         const [
           { data: stats, error: statsError },
           { data: profile },
@@ -1305,11 +1500,11 @@ export default function Home() {
           setGems(stats.total_gems);
           setHighScore(stats.high_score);
         } else {
-          const { error } = await supabase
-            .from("player_stats")
-            .insert({ user_id: user.id });
-          if (error)
-            console.error("Could not create account stats:", error.message);
+          gemsRef.current = 0;
+          highScoreRef.current = 0;
+          setGems(0);
+          setHighScore(0);
+          console.error("Account stats were not provisioned for this player.");
         }
         if (profile) {
           setUsername(profile.username);
@@ -1327,6 +1522,9 @@ export default function Home() {
         setObstacleCosmetic(safeLoadout.obstacleCosmetic);
         setEnvironmentCosmetic(safeLoadout.environmentCosmetic);
       } else {
+        setPlayerAccess(null);
+        setPlayerAccessError("");
+        setPlayerAccessChecking(false);
         setUsername("");
         setUsernameRequired(false);
         setIsAdmin(false);
@@ -1355,7 +1553,20 @@ export default function Home() {
       void applySession(session);
     });
     return () => data.subscription.unsubscribe();
-  }, []);
+  }, [refreshPlayerAccess]);
+  useEffect(() => {
+    if (!userEmail && !guest) return;
+    const verify = () => {
+      if (userEmail) void refreshPlayerAccess();
+      else void refreshGuestDeviceAccess();
+    };
+    const interval = window.setInterval(verify, 30_000);
+    window.addEventListener("focus", verify);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", verify);
+    };
+  }, [guest, refreshGuestDeviceAccess, refreshPlayerAccess, userEmail]);
   const submitAuth = async (e: FormEvent) => {
     e.preventDefault();
     setAuthBusy(true);
@@ -1417,10 +1628,15 @@ export default function Home() {
     setWavePause(false);
     setInvincible(false);
     setSlowed(false);
+    setAbilityNotice("");
     invincibleUntilRef.current = 0;
     if (invincibilityTimerRef.current) {
       clearTimeout(invincibilityTimerRef.current);
       invincibilityTimerRef.current = null;
+    }
+    if (abilityNoticeTimerRef.current) {
+      clearTimeout(abilityNoticeTimerRef.current);
+      abilityNoticeTimerRef.current = null;
     }
     if (waveAnnouncementTimerRef.current) {
       clearTimeout(waveAnnouncementTimerRef.current);
@@ -1447,6 +1663,9 @@ export default function Home() {
     setInventoryOpen(false);
     setLeaderboardOpen(false);
     setGuest(false);
+    setPlayerAccess(null);
+    setPlayerAccessError("");
+    setPlayerAccessChecking(false);
     setUnlocks([]);
     setPlayerClass("runner");
     setSelectedCharacter("runner_ace");
@@ -1461,7 +1680,15 @@ export default function Home() {
       await supabase.auth.signOut();
     }
   };
-  const playGuest = () => {
+  const playGuest = async () => {
+    setAuthMessage("Checking this browser profile…");
+    const allowed = await refreshGuestDeviceAccess();
+    if (allowed !== true) {
+      if (allowed === null)
+        setAuthMessage("Could not verify this browser profile. Try again.");
+      return;
+    }
+    setAuthMessage("");
     void audioEngine.start(soundtrack);
     void audioEngine.playSfx("click");
     setGuest(true);
@@ -1671,12 +1898,7 @@ export default function Home() {
       setInventoryStatus("Healer and Tank cannot be used in Hardcore mode.");
       return;
     }
-    const owned =
-      characterKey === "runner_ace" ||
-      unlocks.some(
-        (item) =>
-          item.item_type === "character" && item.item_key === characterKey,
-      );
+    const owned = isCharacterOwned(unlocks, characterKey);
     if (!owned) {
       setInventoryStatus("That character is locked. Extract it in the Shop first.");
       return;
@@ -1749,13 +1971,7 @@ export default function Home() {
     inventoryCharacter.classKey
   ].find((character) => character.key === inventoryCharacter.characterKey);
   const focusedCharacterOwned = Boolean(
-    focusedCharacter &&
-      (focusedCharacter.key === "runner_ace" ||
-        unlocks.some(
-          (item) =>
-            item.item_type === "character" &&
-            item.item_key === focusedCharacter.key,
-        )),
+    focusedCharacter && isCharacterOwned(unlocks, focusedCharacter.key),
   );
   const focusedCharacterAbility = focusedCharacter
     ? CHARACTER_ABILITIES[focusedCharacter.key as CharacterKey]
@@ -1766,6 +1982,89 @@ export default function Home() {
         <div className="auth-card loading">Loading Skyway Sprint…</div>
       </main>
     );
+  if (userEmail && playerAccessChecking)
+    return (
+      <main className="auth-shell">
+        <div className="auth-card loading">Verifying account and device…</div>
+      </main>
+    );
+  if ((userEmail || guest) && playerAccessError)
+    return (
+      <main className="auth-shell">
+        <section className="auth-card ban-card access-error-card">
+          <div className="auth-logo">?</div>
+          <p>ACCESS CHECK</p>
+          <h1>COULD NOT VERIFY</h1>
+          <span>
+            Skyway Sprint could not verify this account or device. No run will
+            start until the check succeeds.
+          </span>
+          <div className="access-error-actions">
+            <button
+              onClick={() =>
+                void (userEmail
+                  ? refreshPlayerAccess(true)
+                  : refreshGuestDeviceAccess())
+              }
+            >
+              TRY AGAIN
+            </button>
+            <button onClick={() => void signOut()}>SIGN OUT</button>
+          </div>
+        </section>
+      </main>
+    );
+  if (userEmail && !playerAccess)
+    return (
+      <main className="auth-shell">
+        <div className="auth-card loading">Verifying account and device…</div>
+      </main>
+    );
+  if (
+    playerAccess &&
+    (playerAccess.account_banned || playerAccess.device_banned)
+  ) {
+    const blockingBans = (playerAccess.active_bans ?? []).filter(
+      (ban) => ban.scope === "account" || ban.scope === "device",
+    );
+    return (
+      <main className="auth-shell">
+        <section className="auth-card ban-card">
+          <div className="auth-logo">!</div>
+          <p>ACCESS RESTRICTED</p>
+          <h1>PLAYER BANNED</h1>
+          <span>
+            {playerAccess.account_banned
+              ? "This account is banned from Skyway Sprint."
+              : "This browser device is banned from Skyway Sprint."}
+          </span>
+          {blockingBans.map((ban) => (
+            <article key={ban.id}>
+              <b>{ban.scope.toUpperCase()} BAN</b>
+              <small>
+                {ban.expires_at
+                  ? `ENDS ${new Date(ban.expires_at).toLocaleString()}`
+                  : "PERMANENT"}
+              </small>
+              {ban.reason && <p>{ban.reason}</p>}
+            </article>
+          ))}
+          <button
+            onClick={() => {
+              if (userEmail) void signOut();
+              else {
+                setPlayerAccess(null);
+                setPlayerAccessError("");
+                setAuthMessage("");
+              }
+            }}
+          >
+            {userEmail ? "SIGN OUT" : "BACK TO SIGN IN"}
+          </button>
+        </section>
+      </main>
+    );
+  }
   if (!userEmail && !guest)
     return (
       <main className="auth-shell">
@@ -2051,7 +2350,13 @@ export default function Home() {
             >
               <small>ABILITY</small>
               <b>{activeAbility.name}</b>
+              <span>{activeAbility.description}</span>
             </div>
+            {abilityNotice && (
+              <div className="ability-proc" role="status" aria-live="polite">
+                {abilityNotice}
+              </div>
+            )}
             <div className="road">
               {[0, 1, 2, 3].map((n) => (
                 <i className={`line l${n}`} key={n} />
@@ -2610,28 +2915,6 @@ export default function Home() {
                   ))}
                 </div>
               )}
-              <div className="shop-inventory-callout">
-                <b>OPENED SOMETHING NEW?</b>
-                <small>
-                  Characters and cosmetics now live in your Inventory.
-                </small>
-                <button
-                  onClick={() => {
-                    setShopOpen(false);
-                    setInventoryOpen(true);
-                    setInventoryStatus("");
-                    setInventoryCharacter({
-                      classKey: (activeClass in CLASS_CHARACTERS
-                        ? activeClass
-                        : "runner") as keyof typeof CLASS_CHARACTERS,
-                      characterKey: activeCharacter,
-                    });
-                    void loadCollection();
-                  }}
-                >
-                  OPEN INVENTORY →
-                </button>
-              </div>
               <strong className="shop-balance">BALANCE: ♦ {gems}</strong>
               {shopStatus && <div className="report-status">{shopStatus}</div>}
             </section>
@@ -2789,8 +3072,10 @@ export default function Home() {
                                 item.item_type === "character" &&
                                 item.item_key === character.key,
                             );
-                            const owned =
-                              character.key === "runner_ace" || Boolean(unlock);
+                            const owned = isCharacterOwned(
+                              unlocks,
+                              character.key,
+                            );
                             const focused =
                               sectionFocused &&
                               inventoryCharacter.characterKey === character.key;
@@ -2830,11 +3115,24 @@ export default function Home() {
                                 <span className="inventory-character-name">
                                   <b>{character.name}</b>
                                   <small>{character.weapon}</small>
+                                  <em>
+                                    {
+                                      CHARACTER_ABILITIES[
+                                        character.key as CharacterKey
+                                      ].name
+                                    }
+                                    {" · "}
+                                    {
+                                      CHARACTER_ABILITIES[
+                                        character.key as CharacterKey
+                                      ].description
+                                    }
+                                  </em>
                                 </span>
                                 <small
                                   className={`character-rarity ${unlock?.rarity ?? "common"}`}
                                 >
-                                  {character.key === "runner_ace"
+                                  {isStarterCharacter(character.key)
                                     ? "STARTER"
                                     : unlock?.rarity ?? "LOCKED"}
                                 </small>
@@ -2924,7 +3222,7 @@ export default function Home() {
                               {ownedPlayerCosmetics.length === 0 ? (
                                 <div className="inventory-empty">
                                   {guest
-                                    ? "Guest loadouts only include Runner Ace. Sign in to build a permanent collection."
+                                    ? "Guest loadouts include all four starter characters. Sign in to build a permanent cosmetic collection."
                                     : "No runner cosmetics collected yet. Open a box in the Shop."}
                                 </div>
                               ) : (
@@ -3000,9 +3298,15 @@ export default function Home() {
         )}
         {adminOpen && isAdmin && (
           <div className="report-backdrop">
-            <section className="admin-inbox">
+            <section
+              className={`admin-inbox${adminTab === "players" ? " player-editor-shell" : ""}`}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="admin-dialog-title"
+            >
               <button
                 className="report-close"
+                aria-label="Close admin controls"
                 onClick={() => {
                   setAdminOpen(false);
                   setPaused(false);
@@ -3011,7 +3315,13 @@ export default function Home() {
                 ×
               </button>
               <p>ADMIN CONTROL</p>
-              <h2>{adminTab === "reports" ? "REPORT INBOX" : "ADMIN TEAM"}</h2>
+              <h2 id="admin-dialog-title">
+                {adminTab === "reports"
+                  ? "REPORT INBOX"
+                  : adminTab === "admins"
+                    ? "ADMIN TEAM"
+                    : "PLAYER EDITOR"}
+              </h2>
               <div className="admin-tabs">
                 <button
                   className={adminTab === "reports" ? "active" : ""}
@@ -3024,6 +3334,16 @@ export default function Home() {
                   onClick={loadAdmins}
                 >
                   ADMINS
+                </button>
+                <button
+                  className={adminTab === "players" ? "active" : ""}
+                  onClick={() => {
+                    setAdminTab("players");
+                    setPauseMenuOpen(false);
+                    setPaused(true);
+                  }}
+                >
+                  PLAYER EDITOR
                 </button>
               </div>
               {adminTab === "reports" ? (
@@ -3060,7 +3380,7 @@ export default function Home() {
                     )}
                   </div>
                 </>
-              ) : (
+              ) : adminTab === "admins" ? (
                 <div className="admin-team">
                   {adminRole === "main" && (
                     <form
@@ -3124,6 +3444,11 @@ export default function Home() {
                     ))}
                   </div>
                 </div>
+              ) : (
+                <AdminPlayerEditor
+                  supabase={supabase}
+                  isMainAdmin={adminRole === "main"}
+                />
               )}
             </section>
           </div>
