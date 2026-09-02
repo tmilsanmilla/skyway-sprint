@@ -68,7 +68,6 @@ type ParsedCommand = {
   banScopes?: string[];
   durationSeconds?: number;
   permanent?: boolean;
-  banId?: number;
 };
 type CommandContext = {
   action?: "grant" | "revoke";
@@ -90,7 +89,7 @@ const BASE_COMMANDS = [
   "/set high score 25000",
   "/set coins 10",
   "/bann [account + device + score] for INFINITE",
-  "/unban [",
+  "/unban username/email",
 ];
 const PLAYER_LOOKUP_IDLE_MS = 5 * 60 * 1000;
 const PROTECTED_STARTER_CHARACTERS = new Set([
@@ -210,6 +209,9 @@ const getCommandContext = (raw: string): CommandContext => {
 };
 
 const getPlayerSuggestionFragment = (raw: string) => {
+  const unbanTarget = raw.match(/^\/unban(?:\s+(.*))?$/i);
+  if (unbanTarget) return unbanTarget[1]?.trim() ?? "";
+
   const setTarget = raw.match(
     /^\/set\s+(?:high[_ ]score|gems|coins)\s+\d+\s+(.+)$/i,
   );
@@ -323,13 +325,20 @@ const parseCommand = (raw: string): ParsedCommand => {
     };
   }
 
-  match = command.match(/^\/unban\s+\[?(\d+)\]?(?:\s+(.+))?$/i);
-  if (match)
+  match = command.match(/^\/unban\s+(.+)$/i);
+  if (match) {
+    const targetText = match[1].trim();
+    if (/^\[\d+\]$/.test(targetText))
+      throw new Error(
+        "Ban IDs are not needed. Use /unban followed by the player's username or email.",
+      );
     return {
       action: "unban",
-      banId: Number(match[1]),
-      targetText: match[2]?.trim(),
+      targetText,
     };
+  }
+  if (/^\/unban\s*$/i.test(command))
+    throw new Error("Enter /unban followed by the player's username or email.");
 
   throw new Error(
     "Unknown command. Pick one of the suggestions above the command box.",
@@ -536,7 +545,10 @@ export function AdminPlayerEditor({
     const input = command.toLowerCase();
     if (!input)
       return selected
-        ? BASE_COMMANDS
+        ? [
+            ...BASE_COMMANDS.slice(0, -1),
+            `/unban ${selected.username || selected.email}`,
+          ]
         : [
             "/grant cosmetic [",
             "/grant character [",
@@ -546,7 +558,7 @@ export function AdminPlayerEditor({
             "/set high score 25000 username/email",
             "/set coins 10 username/email",
             "/bann [username/email account + device + score] for INFINITE",
-            "/unban [ban id] username/email",
+            "/unban username/email",
           ];
     if (input.startsWith("/grant") || input.startsWith("/revoke")) {
       const context = getCommandContext(command);
@@ -613,13 +625,21 @@ export function AdminPlayerEditor({
       ];
     }
     if (input.startsWith("/unban")) {
-      if (!selected) return ["/unban [ban id] username/email"];
-      return (detail?.bans ?? [])
-        .filter((ban) => Boolean(ban.active ?? true))
-        .map((ban) => `/unban [${String(ban.id)}]`)
-        .slice(0, 8);
+      if ((catalog.players?.length ?? 0) > 0)
+        return catalog.players!.slice(0, 8).map(
+          (player) => `/unban ${player.username || player.email}`,
+        );
+      return [
+        `/unban ${selected?.username || selected?.email || "username/email"}`,
+      ];
     }
-    return (catalog.commands ?? BASE_COMMANDS).slice(0, 8);
+    return (catalog.commands ?? BASE_COMMANDS)
+      .map((suggestion) =>
+        suggestion.toLowerCase().startsWith("/unban")
+          ? `/unban ${selected?.username || selected?.email || "username/email"}`
+          : suggestion,
+      )
+      .slice(0, 8);
   }, [catalog, command, detail, selected]);
 
   const resolveTarget = async (targetText?: string) => {
@@ -701,29 +721,41 @@ export function AdminPlayerEditor({
         );
         if (!item) throw new Error("Choose an exact item from the suggestions.");
       }
-      const { data, error } = await supabase.rpc(
-        "admin_execute_player_command",
-        {
-          p_action: parsed.action,
-          p_target_user_id: target.user_id,
-          p_item_kind: parsed.itemKind ?? null,
-          p_item_key: item?.item_key ?? null,
-          p_stat_key: parsed.statKey ?? null,
-          p_value: parsed.value ?? null,
-          p_ban_scopes: parsed.banScopes ?? null,
-          p_device_id: commandDeviceId,
-          p_duration_seconds: parsed.durationSeconds ?? null,
-          p_permanent: parsed.permanent ?? false,
-          p_ban_id: parsed.banId ?? null,
-          p_reason: "Issued from Admin Player Editor",
-          p_command_text: command,
-        },
-      );
+      const commandResult =
+        parsed.action === "unban"
+          ? await supabase.rpc("admin_unban_player", {
+              p_target_user_id: target.user_id,
+              p_reason: "Issued from Admin Player Editor",
+              p_command_text: command,
+            })
+          : await supabase.rpc("admin_execute_player_command", {
+              p_action: parsed.action,
+              p_target_user_id: target.user_id,
+              p_item_kind: parsed.itemKind ?? null,
+              p_item_key: item?.item_key ?? null,
+              p_stat_key: parsed.statKey ?? null,
+              p_value: parsed.value ?? null,
+              p_ban_scopes: parsed.banScopes ?? null,
+              p_device_id: commandDeviceId,
+              p_duration_seconds: parsed.durationSeconds ?? null,
+              p_permanent: parsed.permanent ?? false,
+              p_ban_id: null,
+              p_reason: "Issued from Admin Player Editor",
+              p_command_text: command,
+            });
       if (lookupGeneration !== lookupGenerationRef.current) return;
+      const { data, error } = commandResult;
       if (error) throw new Error(error.message);
-      const result = data as { ok?: boolean; error?: string } | null;
+      const result = data as {
+        ok?: boolean;
+        error?: string;
+        revoked_count?: number;
+      } | null;
       if (!result?.ok) throw new Error(result?.error || "Command was rejected.");
-      const completedMessage = `${parsed.action.toUpperCase()} completed for ${target.username || target.email}.`;
+      const completedMessage =
+        parsed.action === "unban"
+          ? `UNBAN completed for ${target.username || target.email}. ${result.revoked_count ?? 0} active ban${result.revoked_count === 1 ? "" : "s"} removed.`
+          : `${parsed.action.toUpperCase()} completed for ${target.username || target.email}.`;
       setCommand("");
       await choosePlayer(target);
       if (lookupGeneration !== lookupGenerationRef.current) return;
@@ -917,7 +949,8 @@ export function AdminPlayerEditor({
           <p id="admin-player-command-help">
             Use brackets around exact item names. Without a selected player,
             include an exact username or email. Ban durations must go from largest
-            to smallest; use INFINITE for a permanent ban. Commands are validated
+            to smallest; use INFINITE for a permanent ban. Use /unban username/email
+            to remove all of that player&apos;s active bans. Commands are validated
             actions, never SQL.
           </p>
         </section>
