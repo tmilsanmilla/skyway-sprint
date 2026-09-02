@@ -99,6 +99,81 @@ const PROTECTED_STARTER_CHARACTERS = new Set([
   "tank_bulwark",
   "trickster_rogue",
 ]);
+const PLAYER_INVENTORY_GROUPS = [
+  {
+    key: "obstacle",
+    label: "OBSTACLES",
+    description: "Owned hazard appearances.",
+  },
+  {
+    key: "environment",
+    label: "ENVIRONMENTS",
+    description: "Owned maps and track appearances.",
+  },
+  {
+    key: "player",
+    label: "PLAYER LOOKS",
+    description: "Cosmetics usable across owned characters.",
+  },
+  {
+    key: "runner",
+    label: "RUNNER",
+    description: "Owned Runner characters and legacy unlocks.",
+  },
+  {
+    key: "medic",
+    label: "HEALER",
+    description: "Owned Healer characters and legacy unlocks.",
+  },
+  {
+    key: "tank",
+    label: "TANK",
+    description: "Owned Tank characters and legacy unlocks.",
+  },
+  {
+    key: "trickster",
+    label: "TRICKSTER",
+    description: "Owned Trickster characters and legacy unlocks.",
+  },
+  {
+    key: "other",
+    label: "OTHER",
+    description: "Older or unclassified owned items.",
+  },
+] as const;
+type PlayerInventoryGroupKey = (typeof PLAYER_INVENTORY_GROUPS)[number]["key"];
+const CHARACTER_CLASS_KEYS = new Set(["runner", "medic", "tank", "trickster"]);
+const RARITY_SORT_ORDER: Record<string, number> = {
+  mythic: 0,
+  legendary: 1,
+  epic: 2,
+  rare: 3,
+  uncommon: 4,
+  common: 5,
+};
+
+const getPlayerInventoryGroup = (
+  item: Record<string, unknown>,
+): PlayerInventoryGroupKey => {
+  const itemType = String(item.item_type ?? "").toLowerCase();
+  if (itemType === "obstacle") return "obstacle";
+  if (itemType === "environment") return "environment";
+  if (itemType === "player") return "player";
+  if (itemType === "character") {
+    const catalogClass = String(item.character_class ?? "").toLowerCase();
+    if (CHARACTER_CLASS_KEYS.has(catalogClass))
+      return catalogClass as PlayerInventoryGroupKey;
+    const keyPrefix = String(item.item_key ?? "").toLowerCase().split("_")[0];
+    if (CHARACTER_CLASS_KEYS.has(keyPrefix))
+      return keyPrefix as PlayerInventoryGroupKey;
+  }
+  if (itemType === "class") {
+    const legacyClass = String(item.item_key ?? "").toLowerCase();
+    if (CHARACTER_CLASS_KEYS.has(legacyClass))
+      return legacyClass as PlayerInventoryGroupKey;
+  }
+  return "other";
+};
 
 const humanize = (value: unknown) =>
   String(value ?? "—")
@@ -670,7 +745,32 @@ export function AdminPlayerEditor({
     String(detail?.profile?.username ?? selected?.username ?? "NO USERNAME");
   const devices = detail?.devices ?? [];
   const receipts = detail?.extractions ?? [];
-  const inventory = detail?.unlocks ?? [];
+  const inventory = useMemo(() => detail?.unlocks ?? [], [detail?.unlocks]);
+  const inventoryGroups = useMemo(() => {
+    const grouped = new Map<
+      PlayerInventoryGroupKey,
+      Array<Record<string, unknown>>
+    >(PLAYER_INVENTORY_GROUPS.map((group) => [group.key, []]));
+    inventory.forEach((item) =>
+      grouped.get(getPlayerInventoryGroup(item))!.push(item),
+    );
+    return PLAYER_INVENTORY_GROUPS.map((group) => ({
+      ...group,
+      items: grouped.get(group.key)!.sort((left, right) => {
+        const typeDifference =
+          (String(left.item_type) === "class" ? 0 : 1) -
+          (String(right.item_type) === "class" ? 0 : 1);
+        if (typeDifference) return typeDifference;
+        const rarityDifference =
+          (RARITY_SORT_ORDER[String(left.rarity).toLowerCase()] ?? 99) -
+          (RARITY_SORT_ORDER[String(right.rarity).toLowerCase()] ?? 99);
+        if (rarityDifference) return rarityDifference;
+        return String(left.display_name ?? left.item_key).localeCompare(
+          String(right.display_name ?? right.item_key),
+        );
+      }),
+    })).filter((group) => group.key !== "other" || group.items.length > 0);
+  }, [inventory]);
   const moderationBans = detail?.record?.bans ?? [];
   const moderationCommands = detail?.record?.commands ?? [];
   const recordEntries = [
@@ -916,21 +1016,52 @@ export function AdminPlayerEditor({
               {inventory.length === 0 ? (
                 <div className="player-editor-empty">Inventory is empty.</div>
               ) : (
-                <div className="player-inventory-list">
-                  {inventory.map((item, index) => (
-                    <article key={String(item.item_key ?? index)}>
-                      <header>
-                        <strong>{String(item.display_name ?? humanize(item.item_key))}</strong>
-                        <span>{humanize(item.rarity)}</span>
-                      </header>
-                      <p>
-                        {humanize(item.item_type)}
-                        {item.character_class
-                          ? ` · ${humanize(item.character_class)}`
-                          : ""}
-                      </p>
-                      <small>Unlocked {formatDate(item.unlocked_at)}</small>
-                    </article>
+                <div className="player-inventory-groups">
+                  {inventoryGroups.map((group, groupIndex) => (
+                    <details
+                      className={`player-inventory-group group-${group.key}`}
+                      key={group.key}
+                    >
+                      <summary>
+                        <span>{String(groupIndex + 1).padStart(2, "0")}</span>
+                        <span>
+                          <strong>{group.label}</strong>
+                          <small>{group.description}</small>
+                        </span>
+                        <em>{group.items.length}</em>
+                      </summary>
+                      {group.items.length === 0 ? (
+                        <div className="player-editor-empty">
+                          No owned items in this category.
+                        </div>
+                      ) : (
+                        <div className="player-inventory-list">
+                          {group.items.map((item, index) => (
+                            <article key={String(item.item_key ?? index)}>
+                              <header>
+                                <strong>
+                                  {String(
+                                    item.display_name ?? humanize(item.item_key),
+                                  )}
+                                </strong>
+                                <span>{humanize(item.rarity)}</span>
+                              </header>
+                              <p>
+                                {String(item.item_type) === "class"
+                                  ? "Legacy Class Unlock"
+                                  : humanize(item.item_type)}
+                                {item.character_class
+                                  ? ` · ${humanize(item.character_class)}`
+                                  : ""}
+                              </p>
+                              <small>
+                                Unlocked {formatDate(item.unlocked_at)}
+                              </small>
+                            </article>
+                          ))}
+                        </div>
+                      )}
+                    </details>
                   ))}
                 </div>
               )}

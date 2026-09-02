@@ -2955,20 +2955,20 @@ export default function Home() {
                 <span>05 TRICKSTER</span>
               </div>
               <div className="inventory-scroll">
-                <section
+                <details
                   className="inventory-section inventory-obstacles"
                   id="inventory-obstacle"
                 >
-                  <header className="inventory-section-heading">
-                    <span>01</span>
-                    <div>
-                      <h3>OBSTACLE</h3>
-                      <p>
+                  <summary className="inventory-section-heading">
+                    <span className="inventory-section-number">01</span>
+                    <span className="inventory-section-copy">
+                      <strong>OBSTACLE</strong>
+                      <small>
                         Equip a collected look across hazards, or change the
                         track around them.
-                      </p>
-                    </div>
-                  </header>
+                      </small>
+                    </span>
+                  </summary>
                   <div
                     className={`inventory-obstacle-preview obstacle-${obstacleCosmetic || "default"}`}
                     aria-hidden="true"
@@ -3045,7 +3045,7 @@ export default function Home() {
                       ))
                     )}
                   </div>
-                </section>
+                </details>
 
                 {INVENTORY_CLASSES.map(
                   ({ key: classKey, label, description }, classIndex) => {
@@ -3053,18 +3053,20 @@ export default function Home() {
                     const sectionFocused =
                       inventoryCharacter.classKey === classKey;
                     return (
-                      <section
+                      <details
                         className={`inventory-section inventory-characters inventory-${classKey}`}
                         id={`inventory-${classKey}`}
                         key={classKey}
                       >
-                        <header className="inventory-section-heading">
-                          <span>0{classIndex + 2}</span>
-                          <div>
-                            <h3>{label}</h3>
-                            <p>{description}</p>
-                          </div>
-                        </header>
+                        <summary className="inventory-section-heading">
+                          <span className="inventory-section-number">
+                            0{classIndex + 2}
+                          </span>
+                          <span className="inventory-section-copy">
+                            <strong>{label}</strong>
+                            <small>{description}</small>
+                          </span>
+                        </summary>
                         <div className="inventory-roster">
                           {roster.map((character) => {
                             const unlock = unlocks.find(
@@ -3250,7 +3252,7 @@ export default function Home() {
                             </div>
                           </div>
                         )}
-                      </section>
+                      </details>
                     );
                   },
                 )}
