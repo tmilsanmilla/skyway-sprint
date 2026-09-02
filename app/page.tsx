@@ -731,7 +731,7 @@ export default function Home() {
     [passwordStatus, setPasswordStatus] = useState("");
   const [editUsername, setEditUsername] = useState(false),
     [editPassword, setEditPassword] = useState(false);
-  const [mode, setMode] = useState<GameMode>("normal");
+  const [endlessMode, setEndlessMode] = useState<GameMode>("normal");
   const [mainView, setMainView] = useState<MainView>("endless"),
     [playScope, setPlayScope] = useState<PlayScope>("single"),
     [versusPhase, setVersusPhase] = useState<VersusPhase>("idle"),
@@ -750,6 +750,7 @@ export default function Home() {
   const isOnlineVersus = playScope === "versus";
   const isBotPractice = playScope === "practice";
   const isVersusRun = playScope !== "single";
+  const mode: GameMode = mainView === "versus" ? "normal" : endlessMode;
   const [playerClass, setPlayerClass] = useState("runner"),
     [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
     [inventoryCharacter, setInventoryCharacter] = useState<{
@@ -787,6 +788,10 @@ export default function Home() {
   const activeAbility =
     CHARACTER_ABILITIES[activeCharacter as CharacterKey] ??
     CHARACTER_ABILITIES.runner_ace;
+  useEffect(() => {
+    if (mainView === "endless" && !running && !over)
+      setHearts(startingHearts);
+  }, [mainView, over, running, startingHearts]);
   const saveAudioPreferences = (
     nextTrack: Soundtrack,
     nextMusic: number,
@@ -3553,7 +3558,7 @@ export default function Home() {
                   <div className="mode-select">
                     <button
                       className={mode === "normal" ? "selected" : ""}
-                      onClick={() => setMode("normal")}
+                      onClick={() => setEndlessMode("normal")}
                     >
                       <b>NORMAL</b>
                       <small>
@@ -3563,7 +3568,7 @@ export default function Home() {
                     </button>
                     <button
                       className={mode === "hardcore" ? "selected" : ""}
-                      onClick={() => setMode("hardcore")}
+                      onClick={() => setEndlessMode("hardcore")}
                     >
                       <b>HARDCORE</b>
                       <small>
@@ -3573,7 +3578,7 @@ export default function Home() {
                     </button>
                     <button
                       className={mode === "impossible" ? "selected" : ""}
-                      onClick={() => setMode("impossible")}
+                      onClick={() => setEndlessMode("impossible")}
                     >
                       <b>IMPOSSIBLE</b>
                       <small>
