@@ -479,7 +479,7 @@ begin
     raise exception 'Sign in required';
   end if;
   if p_device_token is null
-     or p_device_token !~ '^[A-Za-z0-9._~+/=-]{24,256}$' then
+     or p_device_token !~ '^[A-Za-z0-9._~+/=-]{24,128}$' then
     raise exception 'Invalid app device token';
   end if;
   if v_label is not null and char_length(v_label) > 80 then
@@ -563,7 +563,7 @@ declare
   v_bans jsonb := '[]'::jsonb;
 begin
   if p_device_token is null
-     or p_device_token !~ '^[A-Za-z0-9._~+/=-]{24,256}$' then
+     or p_device_token !~ '^[A-Za-z0-9._~+/=-]{24,128}$' then
     raise exception 'Invalid app device token';
   end if;
 
