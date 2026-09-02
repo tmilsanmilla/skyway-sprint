@@ -642,19 +642,19 @@ export default function Home() {
               return [];
             } else {
               damageLockedRef.current = true;
+              const rawDamage =
+                mode === "impossible"
+                  ? 1
+                  : n.kind === "rock"
+                    ? 2
+                    : n.kind === "barrel"
+                      ? 0.5
+                      : 1;
+              const damage =
+                mode !== "impossible" && activeClass === "trickster"
+                  ? rawDamage * 2
+                  : rawDamage;
               setHearts((v) => {
-                const rawDamage =
-                  mode === "impossible"
-                    ? 1
-                    : n.kind === "rock"
-                      ? 2
-                      : n.kind === "barrel"
-                        ? 0.5
-                        : 1;
-                const damage =
-                  mode !== "impossible" && activeClass === "trickster"
-                    ? rawDamage * 2
-                    : rawDamage;
                 const h = v - damage;
                 if (h <= 0) {
                   setRunning(false);
@@ -712,9 +712,9 @@ export default function Home() {
               if (safe.length) setLane(safe[0]);
               setPaused(true);
               setFlash(
-                n.kind === "barrel"
+                damage <= 0.5
                   ? "life-half"
-                  : n.kind === "rock"
+                  : damage >= 2
                     ? "life-two"
                     : "life-lost",
               );
