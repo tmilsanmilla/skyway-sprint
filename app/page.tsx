@@ -14,7 +14,7 @@ function Obstacle({kind}:{kind:Kind}){
  if(kind==='barrel')return <div className="barrel-shape"><i/><b/><em/></div>;
  if(kind==='car')return <div className="car-shape"><i className="windshield"/><i className="light left"/><i className="light right"/><i className="wheel left"/><i className="wheel right"/><b/></div>;
  if(kind==='snowflake')return <span>❄</span>;
- return <div className="rock-shape"><i/><b/><em/></div>;
+ return <div className="rock-shape"><u/><i/><b/><em/></div>;
 }
 export default function Home(){
  const [lane,setLane]=useState(2),[items,setItems]=useState<Item[]>([]),[score,setScore]=useState(0),[gems,setGems]=useState(0),[highScore,setHighScore]=useState(0),[gemBump,setGemBump]=useState(false),[hearts,setHearts]=useState(3),[wave,setWave]=useState(1),[running,setRunning]=useState(false),[paused,setPaused]=useState(false),[wavePause,setWavePause]=useState(false),[waveMessage,setWaveMessage]=useState(''),[over,setOver]=useState(false),[flash,setFlash]=useState(''),[invincible,setInvincible]=useState(false),[slowed,setSlowed]=useState(false),[shopOpen,setShopOpen]=useState(false),[shopStatus,setShopStatus]=useState(''),[leaderboardOpen,setLeaderboardOpen]=useState(false),[leaders,setLeaders]=useState<Leader[]>([]);
