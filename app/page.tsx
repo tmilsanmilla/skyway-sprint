@@ -2,7 +2,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 type Kind =
-  "gem" | "boost" | "log" | "snowflake" | "rock" | "barrel" | "spikes";
+  "gem" | "boost" | "car" | "log" | "snowflake" | "rock" | "barrel" | "spikes";
 type Item = { id: number; lane: number; y: number; kind: Kind };
 type GameMode = "normal" | "hardcore" | "impossible";
 type PlayerReport = {
@@ -25,6 +25,9 @@ type Unlock = {
   item_type: "class" | "player" | "obstacle" | "environment";
   rarity: string;
 };
+type PlayScope = "single" | "versus";
+type VersusPhase =
+  "idle" | "searching" | "ready" | "playing" | "intermission" | "finished";
 const supabase = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
@@ -39,6 +42,17 @@ function Obstacle({ kind }: { kind: Kind }) {
         <i />
         <b />
         <em />
+      </div>
+    );
+  if (kind === "car")
+    return (
+      <div className="car-shape">
+        <i className="windshield" />
+        <i className="light left" />
+        <i className="light right" />
+        <i className="wheel left" />
+        <i className="wheel right" />
+        <b />
       </div>
     );
   if (kind === "spikes")
@@ -100,6 +114,11 @@ export default function Home() {
     slowUntilRef = useRef(0),
     turnLockedRef = useRef(false),
     slowedRef = useRef(false),
+    versusMatchRef = useRef<string | null>(null),
+    versusSearchingRef = useRef(false),
+    realtimeRef = useRef<ReturnType<typeof supabase.channel> | null>(null),
+    incomingAttacksRef = useRef<Kind[]>([]),
+    versusFinishedRef = useRef(false),
     state = useRef({ lane, running, paused });
   state.current = { lane, running, paused };
   gemsRef.current = gems;
@@ -138,6 +157,14 @@ export default function Home() {
   const [editUsername, setEditUsername] = useState(false),
     [editPassword, setEditPassword] = useState(false);
   const [mode, setMode] = useState<GameMode>("normal");
+  const [playScope, setPlayScope] = useState<PlayScope>("single"),
+    [versusOpen, setVersusOpen] = useState(false),
+    [versusPhase, setVersusPhase] = useState<VersusPhase>("idle"),
+    [versusOpponent, setVersusOpponent] = useState("WAITING…"),
+    [versusPoints, setVersusPoints] = useState(0),
+    [versusCountdown, setVersusCountdown] = useState(15),
+    [versusOpponentHearts, setVersusOpponentHearts] = useState(3),
+    [versusResult, setVersusResult] = useState("");
   const [playerClass, setPlayerClass] = useState("runner"),
     [unlocks, setUnlocks] = useState<Unlock[]>([]),
     [extractResults, setExtractResults] = useState<Unlock[]>([]);
@@ -176,6 +203,13 @@ export default function Home() {
     announceWave(1);
   }, [announceWave, maxHearts]);
   const backToMenu = () => {
+    if (playScope === "versus") {
+      if (versusMatchRef.current) void supabase.rpc("leave_1v1");
+      closeVersusChannel();
+      versusMatchRef.current = null;
+      setVersusPhase("idle");
+      setPlayScope("single");
+    }
     setRunning(false);
     setPaused(false);
     setOver(false);
@@ -201,6 +235,155 @@ export default function Home() {
     }
     setLane((v) => Math.max(0, Math.min(4, v + d)));
   }, []);
+  const closeVersusChannel = () => {
+    if (realtimeRef.current) {
+      void supabase.removeChannel(realtimeRef.current);
+      realtimeRef.current = null;
+    }
+  };
+  const subscribeToMatch = (matchId: string) => {
+    closeVersusChannel();
+    const channel = supabase
+      .channel(`skyway-1v1-${matchId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "multiplayer_attacks",
+          filter: `match_id=eq.${matchId}`,
+        },
+        (payload) => {
+          const attack = payload.new as {
+            id: string;
+            target_user_id: string;
+            obstacle_type: Kind | "spike";
+          };
+          if (attack.target_user_id === userIdRef.current) {
+            incomingAttacksRef.current.push(
+              attack.obstacle_type === "spike"
+                ? "spikes"
+                : attack.obstacle_type,
+            );
+            void supabase.rpc("acknowledge_1v1_attacks", {
+              p_match_id: matchId,
+              p_attack_ids: [attack.id],
+            });
+          }
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "multiplayer_players",
+          filter: `match_id=eq.${matchId}`,
+        },
+        (payload) => {
+          const player = payload.new as {
+            user_id: string;
+            hearts: number;
+            status: string;
+          };
+          if (player.user_id !== userIdRef.current) {
+            setVersusOpponentHearts(Number(player.hearts));
+            if (player.status === "eliminated") {
+              setVersusResult("VICTORY");
+              setVersusPhase("finished");
+              setRunning(false);
+              setOver(true);
+            }
+          }
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "multiplayer_matches",
+          filter: `id=eq.${matchId}`,
+        },
+        (payload) => {
+          const match = payload.new as {
+            status: string;
+            winner_user_id: string | null;
+          };
+          if (match.status === "finished") {
+            setVersusResult(
+              match.winner_user_id === userIdRef.current ? "VICTORY" : "DEFEAT",
+            );
+            setVersusPhase("finished");
+            setRunning(false);
+            setOver(true);
+          }
+        },
+      )
+      .subscribe();
+    realtimeRef.current = channel;
+  };
+  const beginVersusMatch = (matchId: string, opponent: string) => {
+    versusMatchRef.current = matchId;
+    versusFinishedRef.current = false;
+    setVersusOpponent(opponent || "RIVAL");
+    setVersusOpponentHearts(3);
+    setVersusPoints(0);
+    setVersusResult("");
+    setVersusPhase("playing");
+    setPlayScope("versus");
+    setVersusOpen(false);
+    incomingAttacksRef.current = [];
+    subscribeToMatch(matchId);
+    reset();
+  };
+  const findVersusMatch = async () => {
+    if (guest) {
+      setVersusResult("SIGN IN TO PLAY 1V1");
+      return;
+    }
+    setVersusResult("");
+    setVersusPhase("searching");
+    versusSearchingRef.current = true;
+    const poll = async () => {
+      const { data, error } = await supabase.rpc("join_1v1_queue");
+      if (error) {
+        setVersusResult(error.message);
+        setVersusPhase("idle");
+        versusSearchingRef.current = false;
+        return;
+      }
+      if (data?.match_id) {
+        versusSearchingRef.current = false;
+        beginVersusMatch(data.match_id, data.opponent_username);
+        return;
+      }
+      if (versusSearchingRef.current) setTimeout(poll, 1800);
+    };
+    versusMatchRef.current = null;
+    await poll();
+  };
+  const cancelVersus = async () => {
+    versusSearchingRef.current = false;
+    versusMatchRef.current = null;
+    await supabase.rpc("leave_1v1");
+    closeVersusChannel();
+    setVersusPhase("idle");
+    setVersusOpen(false);
+  };
+  const sendVersusAttack = async (kind: "barrel" | "log" | "car" | "rock") => {
+    if (!versusMatchRef.current || versusPhase !== "intermission") return;
+    const { data, error } = await supabase.rpc("send_1v1_attack", {
+      p_match_id: versusMatchRef.current,
+      p_obstacle_type: kind,
+    });
+    if (error) {
+      setVersusResult(error.message);
+      return;
+    }
+    if (typeof data?.remaining_points === "number")
+      setVersusPoints(data.remaining_points);
+  };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -214,7 +397,7 @@ export default function Home() {
         e.preventDefault();
         move(1);
       }
-      if (e.key === " " && state.current.running) {
+      if (e.key === " " && state.current.running && playScope !== "versus") {
         e.preventDefault();
         setPaused((v) => !v);
       }
@@ -222,7 +405,7 @@ export default function Home() {
     };
     addEventListener("keydown", key);
     return () => removeEventListener("keydown", key);
-  }, [move, reset]);
+  }, [move, reset, playScope]);
   useEffect(() => {
     if (!running || paused || wavePause) return;
     let raf = 0,
@@ -256,11 +439,13 @@ export default function Home() {
           const speedFactor =
             item.kind === "barrel"
               ? 1.75
-              : item.kind === "log"
-                ? 0.72
-                : item.kind === "rock"
-                  ? 0.3
-                  : 1;
+              : item.kind === "car"
+                ? 1.28
+                : item.kind === "log"
+                  ? 0.72
+                  : item.kind === "rock"
+                    ? 0.3
+                    : 1;
           const n = {
             ...item,
             y: item.y + (0.04 + wave * 0.0052) * speedFactor * dt,
@@ -273,6 +458,19 @@ export default function Home() {
               setGemBump(false);
               requestAnimationFrame(() => setGemBump(true));
               setTimeout(() => setGemBump(false), 500);
+              if (playScope === "versus" && versusMatchRef.current) {
+                setVersusPoints((v) => v + 2);
+                void supabase
+                  .rpc("award_1v1_points", {
+                    p_match_id: versusMatchRef.current,
+                    p_source: "melon",
+                    p_amount: 1,
+                  })
+                  .then(({ data }) => {
+                    if (typeof data?.obstacle_points === "number")
+                      setVersusPoints(data.obstacle_points);
+                  });
+              }
               if (userIdRef.current)
                 void supabase
                   .rpc("increment_player_gems")
@@ -415,7 +613,17 @@ export default function Home() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [running, paused, wavePause, wave, guest, mode, maxHearts, playerClass]);
+  }, [
+    running,
+    paused,
+    wavePause,
+    wave,
+    guest,
+    mode,
+    maxHearts,
+    playerClass,
+    playScope,
+  ]);
   useEffect(() => {
     if (!running) return;
     const next = Math.floor(score / 2250) + 1;
@@ -425,9 +633,93 @@ export default function Home() {
         setHearts((v) =>
           Math.min(maxHearts, v + (playerClass === "tank" ? 0.5 : 1)),
         );
-      announceWave(next);
+      if (playScope === "versus" && versusMatchRef.current) {
+        setVersusPoints((v) => v + 5);
+        setVersusCountdown(15);
+        setVersusPhase("intermission");
+        setPaused(true);
+        void supabase
+          .rpc("award_1v1_points", {
+            p_match_id: versusMatchRef.current,
+            p_source: "wave",
+            p_amount: next - 1,
+          })
+          .then(({ data }) => {
+            if (typeof data?.obstacle_points === "number")
+              setVersusPoints(data.obstacle_points);
+          });
+      } else announceWave(next);
     }
-  }, [score, running, wave, announceWave, mode, maxHearts, playerClass]);
+  }, [
+    score,
+    running,
+    wave,
+    announceWave,
+    mode,
+    maxHearts,
+    playerClass,
+    playScope,
+  ]);
+  useEffect(() => {
+    if (versusPhase !== "intermission") return;
+    if (versusCountdown <= 0) {
+      if (versusMatchRef.current)
+        void supabase
+          .rpc("update_1v1_state", {
+            p_match_id: versusMatchRef.current,
+            p_hearts: hearts,
+            p_wave: wave,
+            p_score: scoreRef.current,
+            p_status: "playing",
+          })
+          .then(({ error }) => {
+            if (error) {
+              setVersusCountdown(1);
+              return;
+            }
+            const attacks = incomingAttacksRef.current.splice(0);
+            attacks.forEach((kind, index) =>
+              setTimeout(
+                () =>
+                  setItems((v) => [
+                    ...v,
+                    {
+                      id: id.current++,
+                      lane: Math.floor(Math.random() * 5),
+                      y: -10 - index * 8,
+                      kind,
+                    },
+                  ]),
+                index * 420,
+              ),
+            );
+            setVersusPhase("playing");
+            setPaused(false);
+            announceWave(wave);
+          });
+      return;
+    }
+    const timer = setTimeout(() => setVersusCountdown((v) => v - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [versusPhase, versusCountdown, announceWave, wave, hearts]);
+  useEffect(() => {
+    if (playScope !== "versus" || !versusMatchRef.current) return;
+    void supabase.rpc("update_1v1_state", {
+      p_match_id: versusMatchRef.current,
+      p_hearts: hearts,
+      p_wave: wave,
+      p_score: scoreRef.current,
+      p_status: over
+        ? "eliminated"
+        : versusPhase === "intermission"
+          ? "intermission"
+          : "playing",
+    });
+    if (over && !versusFinishedRef.current) {
+      versusFinishedRef.current = true;
+      void supabase.rpc("finish_1v1", { p_match_id: versusMatchRef.current });
+    }
+  }, [hearts, wave, over, playScope, versusPhase]);
   useEffect(() => {
     const applySession = async (
       session: Awaited<
@@ -546,6 +838,13 @@ export default function Home() {
     );
   };
   const signOut = async () => {
+    versusSearchingRef.current = false;
+    closeVersusChannel();
+    if (versusMatchRef.current) void supabase.rpc("leave_1v1");
+    versusMatchRef.current = null;
+    setPlayScope("single");
+    setVersusPhase("idle");
+    setVersusOpen(false);
     setRunning(false);
     setPaused(false);
     setWavePause(false);
@@ -917,6 +1216,7 @@ export default function Home() {
         <nav className="game-actions">
           <button
             className="action-leaderboard"
+            disabled={playScope === "versus"}
             onClick={() => {
               void loadLeaderboard();
               setPaused(true);
@@ -926,7 +1226,16 @@ export default function Home() {
             <b>LEADERBOARD</b>
           </button>
           <button
+            className="action-versus"
+            disabled={playScope === "versus"}
+            onClick={() => setVersusOpen(true)}
+          >
+            <span>⚔</span>
+            <b>1V1</b>
+          </button>
+          <button
             className="action-shop"
+            disabled={playScope === "versus"}
             onClick={() => {
               setShopOpen(true);
               setPaused(true);
@@ -941,7 +1250,7 @@ export default function Home() {
             </span>
             <b>SHOP</b>
           </button>
-          {!guest && (
+          {!guest && playScope !== "versus" && (
             <button
               className="action-settings"
               onClick={() => {
@@ -953,7 +1262,7 @@ export default function Home() {
               <b>SETTINGS</b>
             </button>
           )}
-          {isAdmin && !guest && (
+          {isAdmin && !guest && playScope !== "versus" && (
             <button className="action-admin" onClick={loadReports}>
               <span>★</span>
               <b>ADMIN</b>
@@ -993,6 +1302,20 @@ export default function Home() {
             </div>
           </header>
           <div className="playfield">
+            {playScope === "versus" && (
+              <div className="versus-hud">
+                <div>
+                  <small>YOU</small>
+                  <b>{hearts} HP</b>
+                </div>
+                <strong>⚔</strong>
+                <div>
+                  <small>{versusOpponent}</small>
+                  <b>{versusOpponentHearts} HP</b>
+                </div>
+                <em>OP {versusPoints}</em>
+              </div>
+            )}
             {waveMessage && (
               <div className="wave-announcement">
                 <small>GET READY</small>
@@ -1044,9 +1367,11 @@ export default function Home() {
               <div className="overlay">
                 <p>{over ? "RUN OVER" : "FIVE LANES. NO BRAKES."}</p>
                 <h1>
-                  {over
-                    ? `${score.toLocaleString()} POINTS`
-                    : "DODGE. DASH. SURVIVE."}
+                  {over && playScope === "versus" && versusResult
+                    ? versusResult
+                    : over
+                      ? `${score.toLocaleString()} POINTS`
+                      : "DODGE. DASH. SURVIVE."}
                 </h1>
                 {!over && (
                   <div className="mode-select">
@@ -1073,8 +1398,22 @@ export default function Home() {
                     </button>
                   </div>
                 )}
-                <button onClick={reset}>
-                  {over ? "RUN AGAIN" : "START RUN"} <span>→</span>
+                <button
+                  onClick={
+                    playScope === "versus"
+                      ? () => {
+                          backToMenu();
+                          setVersusOpen(true);
+                        }
+                      : reset
+                  }
+                >
+                  {playScope === "versus"
+                    ? "FIND NEW RIVAL"
+                    : over
+                      ? "RUN AGAIN"
+                      : "START RUN"}{" "}
+                  <span>→</span>
                 </button>
                 {over && (
                   <button className="back-menu" onClick={backToMenu}>
@@ -1084,7 +1423,46 @@ export default function Home() {
                 <small>← → / A D &nbsp; TO SWITCH LANES</small>
               </div>
             )}
-            {paused && (
+            {versusPhase === "intermission" && (
+              <div className="overlay versus-intermission">
+                <p>NEXT WAVE IN</p>
+                <h1>{versusCountdown}</h1>
+                <strong>OBSTACLE POINTS: {versusPoints}</strong>
+                <div className="attack-grid">
+                  <button
+                    disabled={versusPoints < 1}
+                    onClick={() => sendVersusAttack("barrel")}
+                  >
+                    BARREL <small>1 OP</small>
+                  </button>
+                  <button
+                    disabled={versusPoints < 1}
+                    onClick={() => sendVersusAttack("log")}
+                  >
+                    LOG <small>1 OP</small>
+                  </button>
+                  <button
+                    disabled={versusPoints < 2}
+                    onClick={() => sendVersusAttack("car")}
+                  >
+                    CAR <small>2 OP</small>
+                  </button>
+                  <button
+                    disabled={versusPoints < 3}
+                    onClick={() => sendVersusAttack("rock")}
+                  >
+                    ROCK <small>3 OP</small>
+                  </button>
+                </div>
+                <small>
+                  Purchased obstacles attack {versusOpponent} next wave.
+                </small>
+                {versusResult && (
+                  <div className="versus-message">{versusResult}</div>
+                )}
+              </div>
+            )}
+            {paused && versusPhase !== "intermission" && (
               <div className="overlay compact">
                 <h1>PAUSED</h1>
                 <button onClick={() => setPaused(false)}>KEEP RUNNING</button>
@@ -1106,23 +1484,28 @@ export default function Home() {
               className={`health ${mode !== "normal" ? "glass" : ""}`}
               aria-label={`${hearts} hearts`}
             >
-              {[0, 1, 2].map((n) => (
-                <span
-                  key={n}
-                  className={
-                    hearts - n >= 1 ? "" : hearts - n > 0 ? "partial" : "lost"
-                  }
-                >
-                  ♥
-                </span>
-              ))}
+              {Array.from({ length: Math.ceil(maxHearts) }, (_, n) => n).map(
+                (n) => (
+                  <span
+                    key={n}
+                    className={
+                      hearts - n >= 1 ? "" : hearts - n > 0 ? "partial" : "lost"
+                    }
+                  >
+                    ♥
+                  </span>
+                ),
+              )}
             </div>
             <button
               className="pause"
-              onClick={() => running && setPaused((v) => !v)}
+              disabled={playScope === "versus"}
+              onClick={() =>
+                running && playScope !== "versus" && setPaused((v) => !v)
+              }
               aria-label="Pause"
             >
-              {paused ? "▶" : "Ⅱ"}
+              {playScope === "versus" ? "⚔" : paused ? "▶" : "Ⅱ"}
             </button>
           </footer>
         </section>
@@ -1275,6 +1658,86 @@ export default function Home() {
                 <button className="signout-settings" onClick={signOut}>
                   SIGN OUT
                 </button>
+              )}
+            </section>
+          </div>
+        )}
+        {versusOpen && (
+          <div className="report-backdrop">
+            <section className="versus-modal">
+              <button
+                className="report-close"
+                onClick={() => {
+                  if (versusPhase === "searching") void cancelVersus();
+                  else {
+                    setVersusOpen(false);
+                    if (playScope === "versus") setPaused(false);
+                  }
+                }}
+              >
+                ×
+              </button>
+              <p>MULTI-DEVICE REALTIME</p>
+              <h2>SKYWAY 1V1</h2>
+              {playScope === "versus" ? (
+                <>
+                  <div className="rival-card">
+                    <span>
+                      {username || "YOU"}
+                      <b>{hearts} HP</b>
+                    </span>
+                    <strong>VS</strong>
+                    <span>
+                      {versusOpponent}
+                      <b>{versusOpponentHearts} HP</b>
+                    </span>
+                  </div>
+                  <button
+                    className="versus-primary"
+                    onClick={() => {
+                      setVersusOpen(false);
+                      setPaused(false);
+                    }}
+                  >
+                    RETURN TO MATCH
+                  </button>
+                </>
+              ) : versusPhase === "searching" ? (
+                <>
+                  <div className="matchmaking-spinner">⚔</div>
+                  <h3>FINDING AN OPPONENT…</h3>
+                  <button
+                    className="versus-cancel"
+                    onClick={() => void cancelVersus()}
+                  >
+                    CANCEL SEARCH
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="versus-rules">
+                    Survive longer than your rival. Gems earn <b>2 OP</b> and
+                    completed waves earn <b>5 OP</b>. Spend OP during each
+                    15-second intermission to send obstacles to your opponent.
+                  </p>
+                  <div className="cost-row">
+                    <span>LOG 1</span>
+                    <span>BARREL 1</span>
+                    <span>CAR 2</span>
+                    <span>ROCK 3</span>
+                  </div>
+                  <button
+                    className="versus-primary"
+                    onClick={() => void findVersusMatch()}
+                    disabled={guest}
+                  >
+                    FIND OPPONENT
+                  </button>
+                  {guest && <small>SIGN IN TO PLAY 1V1</small>}
+                </>
+              )}
+              {versusResult && (
+                <div className="versus-message">{versusResult}</div>
               )}
             </section>
           </div>
