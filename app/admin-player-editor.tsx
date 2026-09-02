@@ -45,6 +45,10 @@ type PlayerDetail = {
   reports?: Array<Record<string, unknown>>;
   multiplayer?: Record<string, unknown> | null;
   extractions?: Array<Record<string, unknown>>;
+  record?: {
+    bans?: Array<Record<string, unknown>>;
+    commands?: Array<Record<string, unknown>>;
+  };
 };
 
 type ParsedCommand = {
@@ -249,53 +253,18 @@ const parseCommand = (raw: string): ParsedCommand => {
   );
 };
 
-const FieldGrid = ({ value }: { value?: Record<string, unknown> | null }) => {
-  if (!value || Object.keys(value).length === 0)
-    return <div className="player-editor-empty">No data.</div>;
-  return (
-    <dl className="player-editor-fields">
-      {Object.entries(value).map(([key, field]) => (
-        <div key={key}>
-          <dt>{humanize(key)}</dt>
-          <dd>
-            {key.endsWith("_at") || key === "created_at" || key === "last_sign_in_at"
-              ? formatDate(field)
-              : typeof field === "object" && field !== null
-                ? JSON.stringify(field)
-                : String(field ?? "—")}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-};
-
-const RecordList = ({
-  rows,
-  empty,
-}: {
-  rows?: Array<Record<string, unknown>>;
-  empty: string;
-}) => {
-  if (!rows?.length) return <div className="player-editor-empty">{empty}</div>;
-  return (
-    <div className="player-editor-records">
-      {rows.map((row, index) => (
-        <article key={String(row.id ?? row.item_key ?? row.device_id ?? index)}>
-          {Object.entries(row).map(([key, value]) => (
-            <span key={key}>
-              <b>{humanize(key)}</b>
-              {key.endsWith("_at") || key === "expires_at"
-                ? formatDate(value)
-                : typeof value === "object" && value !== null
-                  ? JSON.stringify(value)
-                  : String(value ?? "—")}
-            </span>
-          ))}
-        </article>
-      ))}
-    </div>
-  );
+const formatActor = (
+  row: Record<string, unknown>,
+  prefix: "actor" | "created_by" | "revoked_by",
+) => {
+  const username = String(row[`${prefix}_username`] ?? "").trim();
+  const email = String(row[`${prefix}_email`] ?? "").trim();
+  const userId = String(row[`${prefix}_user_id`] ?? "").trim();
+  const role = String(row[`${prefix}_role`] ?? "").trim();
+  const identity = username
+    ? `${username}${email ? ` (${email})` : ""}`
+    : email || userId || "Unknown admin";
+  return role ? `${identity} · ${humanize(role)}` : identity;
 };
 
 export function AdminPlayerEditor({
@@ -359,16 +328,28 @@ export function AdminPlayerEditor({
     setCommandFeedback(null);
     setLoadingDetail(true);
     setStatus("");
-    const { data, error } = await supabase.rpc("admin_get_player", {
-      p_user_id: player.user_id,
-    });
+    const [playerResult, recordResult] = await Promise.all([
+      supabase.rpc("admin_get_player", { p_user_id: player.user_id }),
+      supabase.rpc("admin_get_player_record", { p_user_id: player.user_id }),
+    ]);
     if (requestId !== detailRequestRef.current) return;
     setLoadingDetail(false);
-    if (error) {
-      setStatus(error.message);
+    if (playerResult.error || recordResult.error) {
+      setStatus(
+        playerResult.error?.message ||
+          recordResult.error?.message ||
+          "Could not load that player.",
+      );
       return;
     }
-    const nextDetail = (data ?? {}) as PlayerDetail;
+    const moderationRecord = (recordResult.data ?? {}) as NonNullable<
+      PlayerDetail["record"]
+    >;
+    const nextDetail = {
+      ...((playerResult.data ?? {}) as PlayerDetail),
+      record: moderationRecord,
+      bans: moderationRecord.bans ?? [],
+    };
     setDetail(nextDetail);
     const linkedDevices = nextDetail.devices ?? [];
     setSelectedDeviceId(
@@ -599,6 +580,30 @@ export function AdminPlayerEditor({
   const account = detail?.account ?? {};
   const displayName =
     String(detail?.profile?.username ?? selected?.username ?? "NO USERNAME");
+  const devices = detail?.devices ?? [];
+  const receipts = detail?.extractions ?? [];
+  const inventory = detail?.unlocks ?? [];
+  const moderationBans = detail?.record?.bans ?? [];
+  const moderationCommands = detail?.record?.commands ?? [];
+  const recordEntries = [
+    ...moderationBans.map((row, index) => ({
+      kind: "ban" as const,
+      row,
+      key: `ban-${String(row.id ?? index)}`,
+      createdAt: String(row.created_at ?? ""),
+    })),
+    ...moderationCommands.map((row, index) => ({
+      kind: "command" as const,
+      row,
+      key: `command-${String(row.id ?? index)}`,
+      createdAt: String(row.created_at ?? ""),
+    })),
+  ].sort((left, right) => {
+    const rightTime = new Date(right.createdAt).getTime();
+    const leftTime = new Date(left.createdAt).getTime();
+    return (Number.isNaN(rightTime) ? 0 : rightTime) -
+      (Number.isNaN(leftTime) ? 0 : leftTime);
+  });
 
   return (
     <div className="player-editor">
@@ -731,55 +736,192 @@ export function AdminPlayerEditor({
       )}
 
       {selected && (
-        <>
-          <header className="player-editor-selected">
-            <div>
-              <small>SELECTED PLAYER</small>
-              <h3>{displayName}</h3>
-              <span>{String(account.email ?? selected.email)}</span>
-            </div>
-            <code>{selected.user_id}</code>
-          </header>
+        loadingDetail ? (
+          <div className="player-editor-empty">Loading player information…</div>
+        ) : (
+          <div className="player-detail-sections">
+            <section className="player-detail-section account-info-section">
+              <header className="player-detail-title">
+                <span>01</span>
+                <div>
+                  <small>PLAYER LOOKUP</small>
+                  <h3>ACCOUNT INFO</h3>
+                </div>
+              </header>
+              <div className="account-info-grid">
+                <div>
+                  <small>USERNAME</small>
+                  <strong>{displayName}</strong>
+                </div>
+                <div>
+                  <small>EMAIL</small>
+                  <strong>{String(account.email ?? selected.email)}</strong>
+                </div>
+                <div>
+                  <small>ACCOUNT CREATED</small>
+                  <strong>{formatDate(account.created_at)}</strong>
+                </div>
+                <div>
+                  <small>ADMIN ROLE</small>
+                  <strong>{humanize(account.admin_role ?? "player")}</strong>
+                </div>
+              </div>
 
-          {loadingDetail ? (
-            <div className="player-editor-empty">Loading every player record…</div>
-          ) : (
-            <div className="player-editor-sections">
-              <details open>
-                <summary>ACCOUNT + PROFILE</summary>
-                <FieldGrid value={{ ...account, ...(detail?.profile ?? {}) }} />
-              </details>
-              <details open>
-                <summary>STATS + LOADOUT</summary>
-                <FieldGrid value={{ ...(detail?.stats ?? {}), ...(detail?.loadout ?? {}) }} />
-              </details>
-              <details>
-                <summary>UNLOCKS ({detail?.unlocks?.length ?? 0})</summary>
-                <RecordList rows={detail?.unlocks} empty="No unlocked items." />
-              </details>
-              <details>
-                <summary>DEVICES ({detail?.devices?.length ?? 0})</summary>
-                <RecordList rows={detail?.devices} empty="No registered devices." />
-              </details>
-              <details open>
-                <summary>BAN HISTORY ({detail?.bans?.length ?? 0})</summary>
-                <RecordList rows={detail?.bans} empty="No ban records." />
-              </details>
-              <details>
-                <summary>REPORTS ({detail?.reports?.length ?? 0})</summary>
-                <RecordList rows={detail?.reports} empty="No reports." />
-              </details>
-              <details>
-                <summary>MULTIPLAYER</summary>
-                <FieldGrid value={detail?.multiplayer} />
-              </details>
-              <details>
-                <summary>SHOP RECEIPTS ({detail?.extractions?.length ?? 0})</summary>
-                <RecordList rows={detail?.extractions} empty="No recorded box receipts." />
-              </details>
-            </div>
-          )}
-        </>
+              <div className="player-detail-subsection">
+                <h4>DEVICES <span>{devices.length}</span></h4>
+                {devices.length === 0 ? (
+                  <div className="player-editor-empty">No registered devices.</div>
+                ) : (
+                  <div className="account-record-list">
+                    {devices.map((device, index) => (
+                      <article key={String(device.device_id ?? index)}>
+                        <header>
+                          <strong>{String(device.label ?? "Web browser")}</strong>
+                          <span className={device.device_banned ? "bad" : "good"}>
+                            {device.device_banned ? "BANNED" : "ACTIVE"}
+                          </span>
+                        </header>
+                        <p>{String(device.token_hint ?? "No device hint")}</p>
+                        <small>
+                          First seen {formatDate(device.first_seen_at)} · Last seen{" "}
+                          {formatDate(device.last_seen_at)}
+                        </small>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="player-detail-subsection">
+                <h4>RECEIPTS <span>{receipts.length}</span></h4>
+                {receipts.length === 0 ? (
+                  <div className="player-editor-empty">No recorded shop receipts.</div>
+                ) : (
+                  <div className="account-record-list receipt-list">
+                    {receipts.map((receipt, index) => (
+                      <article key={String(receipt.id ?? index)}>
+                        <header>
+                          <strong>{humanize(receipt.item_key ?? "Unknown item")}</strong>
+                          <span>{String(receipt.gem_cost ?? 0)} GEMS</span>
+                        </header>
+                        <p>
+                          {humanize(receipt.box_type ?? "box")} ·{" "}
+                          {humanize(receipt.rarity ?? "unknown rarity")} ·{" "}
+                          {receipt.was_new ? "NEW ITEM" : "DUPLICATE"}
+                        </p>
+                        <small>{formatDate(receipt.created_at)}</small>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <section className="player-detail-section inventory-info-section">
+              <header className="player-detail-title">
+                <span>02</span>
+                <div>
+                  <small>OWNED ITEMS</small>
+                  <h3>INVENTORY <em>{inventory.length}</em></h3>
+                </div>
+              </header>
+              {inventory.length === 0 ? (
+                <div className="player-editor-empty">Inventory is empty.</div>
+              ) : (
+                <div className="player-inventory-list">
+                  {inventory.map((item, index) => (
+                    <article key={String(item.item_key ?? index)}>
+                      <header>
+                        <strong>{String(item.display_name ?? humanize(item.item_key))}</strong>
+                        <span>{humanize(item.rarity)}</span>
+                      </header>
+                      <p>
+                        {humanize(item.item_type)}
+                        {item.character_class
+                          ? ` · ${humanize(item.character_class)}`
+                          : ""}
+                      </p>
+                      <small>Unlocked {formatDate(item.unlocked_at)}</small>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="player-detail-section player-record-section">
+              <header className="player-detail-title">
+                <span>03</span>
+                <div>
+                  <small>MODERATION HISTORY</small>
+                  <h3>RECORD <em>{recordEntries.length}</em></h3>
+                </div>
+              </header>
+              {recordEntries.length === 0 ? (
+                <div className="player-editor-empty">No bans or commands on record.</div>
+              ) : (
+                <div className="player-record-list">
+                  {recordEntries.map((entry) => {
+                    const row = entry.row;
+                    if (entry.kind === "ban") {
+                      const statusLabel = row.active
+                        ? "ACTIVE"
+                        : row.revoked_at
+                          ? "REVOKED"
+                          : "EXPIRED";
+                      return (
+                        <article className="ban-entry" key={entry.key}>
+                          <header>
+                            <strong>BAN · {humanize(row.scope)}</strong>
+                            <span className={row.active ? "bad" : "muted"}>
+                              {statusLabel}
+                            </span>
+                          </header>
+                          <p>{String(row.reason ?? "No reason provided.")}</p>
+                          <div className="record-actor">
+                            <b>ISSUED BY</b>
+                            <span>{formatActor(row, "created_by")}</span>
+                          </div>
+                          <small>
+                            {formatDate(row.created_at)} · Expires{" "}
+                            {row.expires_at ? formatDate(row.expires_at) : "INFINITE"}
+                          </small>
+                          {Boolean(row.revoked_at) && (
+                            <div className="record-revoked">
+                              Revoked by {formatActor(row, "revoked_by")} on{" "}
+                              {formatDate(row.revoked_at)}
+                              {row.revoked_reason
+                                ? ` · ${String(row.revoked_reason)}`
+                                : ""}
+                            </div>
+                          )}
+                        </article>
+                      );
+                    }
+                    return (
+                      <article className="command-entry" key={entry.key}>
+                        <header>
+                          <strong>COMMAND · {humanize(row.action)}</strong>
+                          <span className={row.succeeded ? "good" : "bad"}>
+                            {row.succeeded ? "SUCCESS" : "FAILED"}
+                          </span>
+                        </header>
+                        <code>{String(row.command_text ?? `/${row.action ?? "command"}`)}</code>
+                        <div className="record-actor">
+                          <b>USED BY</b>
+                          <span>{formatActor(row, "actor")}</span>
+                        </div>
+                        <small>{formatDate(row.created_at)}</small>
+                        {Boolean(row.error_message) && (
+                          <div className="record-error">{String(row.error_message)}</div>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
+        )
       )}
     </div>
   );
