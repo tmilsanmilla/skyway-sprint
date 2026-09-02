@@ -105,72 +105,106 @@ const CLASS_CHARACTERS = {
     { key: "runner_ace", name: "Ace", weapon: "Baton" },
     { key: "runner_scout", name: "Scout", weapon: "Twin Blades" },
     { key: "runner_ranger", name: "Ranger", weapon: "Pixel Bow" },
+    { key: "runner_pacer", name: "Pacer", weapon: "Relay Rod" },
   ],
   medic: [
     { key: "medic_patch", name: "Patch", weapon: "Med Staff" },
     { key: "medic_mercy", name: "Mercy", weapon: "Injector" },
     { key: "medic_vial", name: "Vial", weapon: "Tonic Flask" },
+    { key: "medic_suture", name: "Suture", weapon: "Pulse Thread" },
   ],
   tank: [
     { key: "tank_bulwark", name: "Bulwark", weapon: "Tower Shield" },
     { key: "tank_hammer", name: "Hammer", weapon: "War Hammer" },
     { key: "tank_sentinel", name: "Sentinel", weapon: "Steel Spear" },
+    { key: "tank_anchor", name: "Anchor", weapon: "Ground Hook" },
   ],
   trickster: [
     { key: "trickster_rogue", name: "Rogue", weapon: "Daggers" },
     { key: "trickster_jester", name: "Jester", weapon: "Card Fan" },
     { key: "trickster_phantom", name: "Phantom", weapon: "Moon Scythe" },
+    { key: "trickster_mirage", name: "Mirage", weapon: "Prism Fans" },
   ],
 } as const;
 const CHARACTER_ABILITIES = {
   runner_ace: {
     name: "MOMENTUM",
-    description: "All run score is multiplied by 1.25.",
+    description:
+      "All run score is multiplied by 1.10. This stacks with the selected mode bonus but does not make waves arrive sooner.",
   },
   runner_scout: {
     name: "QUICKSTEP",
-    description: "Snowflakes cannot delay your next lane change.",
+    description:
+      "Snowflakes never delay the next lane change. A snowflake also grants 1 second of invincibility when QUICKSTEP is ready; its shield has a 4-second cooldown.",
   },
   runner_ranger: {
     name: "PICKUP MAGNET",
-    description: "Collect coins and gems from one neighboring lane.",
+    description:
+      "Gems are collected from your lane or either neighboring lane. In 1v1, attack-point coins must still be collected in your current lane.",
+  },
+  runner_pacer: {
+    name: "WAVE RUSH",
+    description:
+      "For the first 8 seconds of every wave, run score is multiplied by 1.35. The timer pauses with gameplay and bonus score does not make waves arrive sooner.",
   },
   medic_patch: {
     name: "FIELD DRESSING",
-    description: "Restore 1.5 HP instead of 1 after each Normal wave.",
+    description:
+      "After every Normal wave, heal 1.5 HP instead of 1 HP. Healing can overheal from the Healer's 3 starting HP up to 5 HP.",
   },
   medic_mercy: {
     name: "GRACE GUARD",
-    description: "The first hit each wave deals 0.5 less damage.",
+    description:
+      "The first hit above 0.5 HP each wave deals 0.5 less damage, to a minimum of 0.5 HP. A 0.5-HP barrel does not consume the guard.",
   },
   medic_vial: {
     name: "CRYSTAL TONIC",
-    description: "Collecting a gem grants 2 seconds of invincibility.",
+    description:
+      "Collecting a gem grants 2 seconds of invincibility. The gem is still added permanently when signed in.",
+  },
+  medic_suture: {
+    name: "TRIAGE CYCLE",
+    description:
+      "After every third completed Normal wave, heal 2.5 HP instead of 1 HP. Healing can overheal up to 5 HP.",
   },
   tank_bulwark: {
     name: "HEAVY PLATE",
-    description: "Every hit deals 0.5 less damage, to a minimum of 0.5.",
+    description:
+      "The first hit above 0.5 HP each wave deals 0.5 less damage, to a minimum of 0.5 HP. A 0.5-HP barrel does not consume the plate.",
   },
   tank_hammer: {
     name: "DEMOLITION",
-    description: "Break barrels safely; logs deal only 0.5 HP.",
+    description:
+      "The first barrel hit each wave is destroyed without dealing damage. Later barrels deal 0.5 HP and logs deal 1 HP.",
   },
   tank_sentinel: {
     name: "LAST STAND",
-    description: "Once per run, lethal damage leaves you at 0.5 HP.",
+    description:
+      "Once per run, a lethal hit leaves you at 0.5 HP. The triggering obstacle is removed normally.",
+  },
+  tank_anchor: {
+    name: "STONEGUARD",
+    description:
+      "Rocks deal 1 HP instead of 2 HP. Barrels deal 0.5 HP, logs/cars/spikes deal 1 HP, and snowflakes deal 0 HP.",
   },
   trickster_rogue: {
     name: "SHADOWSTEP",
     description:
-      "A lane switch grants 0.3 seconds of invincibility, with a 1.5s cooldown.",
+      "A successful lane switch grants 0.45 seconds of invincibility, with a 1.25-second cooldown.",
   },
   trickster_jester: {
     name: "ENCORE",
-    description: "Start every wave with 2 seconds of invincibility.",
+    description: "Start every wave with 2.5 seconds of invincibility.",
   },
   trickster_phantom: {
     name: "PHASE VEIL",
-    description: "Pass through the first damaging obstacle each wave.",
+    description:
+      "The first damaging obstacle each wave passes through you and deals 0 damage.",
+  },
+  trickster_mirage: {
+    name: "AFTERIMAGE",
+    description:
+      "After taking a damaging hit and surviving, gain 2 seconds of invincibility when the hit pause ends. The triggering hit still deals full damage; the shield timer continues during any later pause.",
   },
 } as const;
 type CharacterKey = keyof typeof CHARACTER_ABILITIES;
@@ -230,6 +264,8 @@ const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
       : "",
   };
 };
+const BASE_DAMAGE_DESCRIPTION =
+  "DAMAGE BEFORE PASSIVES: barrel 0.5 HP · log/car/spikes 1 HP · rock 2 HP · snowflake 0 HP.";
 const INVENTORY_CLASSES: ReadonlyArray<{
   key: keyof typeof CLASS_CHARACTERS;
   label: string;
@@ -238,22 +274,26 @@ const INVENTORY_CLASSES: ReadonlyArray<{
   {
     key: "runner",
     label: "RUNNER",
-    description: "Fast, balanced characters built for pure lane-running.",
+    description:
+      `NORMAL: 3 starting/max HP · heal 1 HP after each wave · 1.00× class score. ${BASE_DAMAGE_DESCRIPTION} HARDCORE: 1 HP · no healing · same damage values. IMPOSSIBLE: 1 HP · no healing · Ace forced · every damaging obstacle deals 1 HP.`,
   },
   {
     key: "medic",
     label: "HEALER",
-    description: "Recovery specialists with overhealing and support tools.",
+    description:
+      `NORMAL ONLY: start at 3 HP · overheal up to 5 HP · heal 1 HP after each wave before the character's special healing rule. ${BASE_DAMAGE_DESCRIPTION} Healers are unavailable in Hardcore and Impossible.`,
   },
   {
     key: "tank",
     label: "TANK",
-    description: "Heavy characters with extra health and sturdy defenses.",
+    description:
+      `NORMAL ONLY: 4 starting/max HP · heal only 0.5 HP after each wave. ${BASE_DAMAGE_DESCRIPTION} Tanks are unavailable in Hardcore and Impossible.`,
   },
   {
     key: "trickster",
     label: "TRICKSTER",
-    description: "Risky characters built around grazes, dodges, and counters.",
+    description:
+      `NORMAL: 2 starting/max HP · heal 1 HP after each wave · 1.15× class score, which does not change wave timing. ${BASE_DAMAGE_DESCRIPTION} HARDCORE: 1 HP · no healing · class score bonus disabled · same damage values.`,
   },
 ];
 const EXTRACTION_BOXES = {
@@ -354,6 +394,7 @@ export default function Home() {
   const [lane, setLane] = useState(2),
     [items, setItems] = useState<Item[]>([]),
     [score, setScore] = useState(0),
+    [waveProgress, setWaveProgress] = useState(0),
     [gems, setGems] = useState(0),
     [highScore, setHighScore] = useState(0),
     [gemBump, setGemBump] = useState(false),
@@ -385,7 +426,9 @@ export default function Home() {
     gemsRef = useRef(0),
     scoreRef = useRef(0),
     highScoreRef = useRef(0),
-    aceScoreCarryRef = useRef(0),
+    scoreMultiplierCarryRef = useRef(0),
+    pacerRushRemainingRef = useRef(0),
+    scoutShieldCooldownUntilRef = useRef(0),
     invincibleUntilRef = useRef(0),
     invincibilityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     abilityNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
@@ -397,7 +440,8 @@ export default function Home() {
     delayedMoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     damageLockedRef = useRef(false),
     freezeNextMoveRef = useRef(false),
-    mercyGuardWaveRef = useRef(0),
+    firstGuardWaveRef = useRef(0),
+    hammerBreakWaveRef = useRef(0),
     sentinelLastStandUsedRef = useRef(false),
     phantomPhaseWaveRef = useRef(0),
     versusMatchRef = useRef<string | null>(null),
@@ -542,7 +586,9 @@ export default function Home() {
       ? "runner_ace"
       : selectedCharacter;
   const baseHearts =
-    activeClass === "tank" ? 5 : activeClass === "trickster" ? 2 : 3;
+    activeClass === "tank" ? 4 : activeClass === "trickster" ? 2 : 3;
+  const startingHearts =
+    mode === "impossible" || mode === "hardcore" ? 1 : baseHearts;
   const maxHearts =
     mode === "impossible" || mode === "hardcore"
       ? 1
@@ -551,6 +597,8 @@ export default function Home() {
         : baseHearts;
   const modeMultiplier =
     mode === "impossible" ? 3 : mode === "hardcore" ? 1.75 : 1;
+  const classScoreMultiplier =
+    activeClass === "trickster" && mode === "normal" ? 1.15 : 1;
   const activeAbility =
     CHARACTER_ABILITIES[activeCharacter as CharacterKey] ??
     CHARACTER_ABILITIES.runner_ace;
@@ -691,10 +739,14 @@ export default function Home() {
         if (number === 1)
           showAbilityNotice(`${activeAbility.name} · ACTIVE`, 1400);
         if (activeCharacter === "runner_ace")
-          showAbilityNotice("MOMENTUM · SCORE ×1.25", 1400);
+          showAbilityNotice("MOMENTUM · SCORE ×1.10", 1400);
+        if (activeCharacter === "runner_pacer") {
+          pacerRushRemainingRef.current = 8000;
+          showAbilityNotice("WAVE RUSH · SCORE ×1.35 FOR 8 SECONDS", 1600);
+        }
         if (activeCharacter === "trickster_jester") {
-          grantInvincibility(2000);
-          showAbilityNotice("ENCORE · 2 SECOND SHIELD", 1400);
+          grantInvincibility(2500);
+          showAbilityNotice("ENCORE · 2.5 SECOND SHIELD", 1400);
         }
         waveAnnouncementTimerRef.current = null;
       }, 1250);
@@ -705,7 +757,8 @@ export default function Home() {
     setLane(2);
     setItems([]);
     setScore(0);
-    setHearts(maxHearts);
+    setWaveProgress(0);
+    setHearts(startingHearts);
     setWave(1);
     setOver(false);
     setPaused(false);
@@ -727,10 +780,13 @@ export default function Home() {
       waveAnnouncementTimerRef.current = null;
     }
     freezeNextMoveRef.current = false;
-    mercyGuardWaveRef.current = 0;
+    firstGuardWaveRef.current = 0;
+    hammerBreakWaveRef.current = 0;
     sentinelLastStandUsedRef.current = false;
     phantomPhaseWaveRef.current = 0;
-    aceScoreCarryRef.current = 0;
+    scoreMultiplierCarryRef.current = 0;
+    pacerRushRemainingRef.current = 0;
+    scoutShieldCooldownUntilRef.current = 0;
     rogueAbilityCooldownUntilRef.current = 0;
     turnLockedRef.current = false;
     if (delayedMoveTimerRef.current) {
@@ -742,7 +798,7 @@ export default function Home() {
     last.current = 0;
     void audioEngine.start(soundtrack);
     announceWave(1);
-  }, [announceWave, maxHearts, soundtrack]);
+  }, [announceWave, soundtrack, startingHearts]);
   const backToMenu = () => {
     if (playScope === "versus") {
       if (versusMatchRef.current) void supabase.rpc("leave_1v1");
@@ -757,8 +813,9 @@ export default function Home() {
     setOver(false);
     setItems([]);
     setScore(0);
+    setWaveProgress(0);
     setWave(1);
-    setHearts(maxHearts);
+    setHearts(startingHearts);
     setInvincible(false);
     setSlowed(false);
     setAbilityNotice("");
@@ -776,10 +833,13 @@ export default function Home() {
       waveAnnouncementTimerRef.current = null;
     }
     freezeNextMoveRef.current = false;
-    mercyGuardWaveRef.current = 0;
+    firstGuardWaveRef.current = 0;
+    hammerBreakWaveRef.current = 0;
     sentinelLastStandUsedRef.current = false;
     phantomPhaseWaveRef.current = 0;
-    aceScoreCarryRef.current = 0;
+    scoreMultiplierCarryRef.current = 0;
+    pacerRushRemainingRef.current = 0;
+    scoutShieldCooldownUntilRef.current = 0;
     rogueAbilityCooldownUntilRef.current = 0;
     turnLockedRef.current = false;
     if (delayedMoveTimerRef.current) {
@@ -813,9 +873,9 @@ export default function Home() {
             activeCharacter === "trickster_rogue" &&
             rogueAbilityCooldownUntilRef.current <= Date.now()
           ) {
-            rogueAbilityCooldownUntilRef.current = Date.now() + 1500;
-            grantInvincibility(300);
-            showAbilityNotice("SHADOWSTEP · 0.3 SECOND SHIELD");
+            rogueAbilityCooldownUntilRef.current = Date.now() + 1250;
+            grantInvincibility(450);
+            showAbilityNotice("SHADOWSTEP · 0.45 SECOND SHIELD");
           }
         }
         setSlowed(false);
@@ -830,9 +890,9 @@ export default function Home() {
       activeCharacter === "trickster_rogue" &&
       rogueAbilityCooldownUntilRef.current <= Date.now()
     ) {
-      rogueAbilityCooldownUntilRef.current = Date.now() + 1500;
-      grantInvincibility(300);
-      showAbilityNotice("SHADOWSTEP · 0.3 SECOND SHIELD");
+      rogueAbilityCooldownUntilRef.current = Date.now() + 1250;
+      grantInvincibility(450);
+      showAbilityNotice("SHADOWSTEP · 0.45 SECOND SHIELD");
     }
   }, [activeCharacter, grantInvincibility, showAbilityNotice]);
   const toggleManualPause = useCallback(() => {
@@ -1086,7 +1146,8 @@ export default function Home() {
           };
           const rangerPickup =
             activeCharacter === "runner_ranger" &&
-            (n.kind === "gem" || n.kind === "coin") &&
+            (n.kind === "gem" ||
+              (n.kind === "coin" && playScope !== "versus")) &&
             Math.abs(n.lane - state.current.lane) <= 1;
           const rangerPulled =
             rangerPickup && n.lane !== state.current.lane;
@@ -1147,7 +1208,15 @@ export default function Home() {
                 void audioEngine.playSfx("shield");
                 freezeNextMoveRef.current = false;
                 setSlowed(false);
-                showAbilityNotice("QUICKSTEP · SLOW BLOCKED");
+                if (scoutShieldCooldownUntilRef.current <= Date.now()) {
+                  scoutShieldCooldownUntilRef.current = Date.now() + 4000;
+                  grantInvincibility(1000);
+                  showAbilityNotice(
+                    "QUICKSTEP · SLOW BLOCKED + 1 SECOND SHIELD",
+                  );
+                } else {
+                  showAbilityNotice("QUICKSTEP · SLOW BLOCKED");
+                }
               } else {
                 void audioEngine.playSfx("freeze");
                 freezeNextMoveRef.current = true;
@@ -1161,8 +1230,10 @@ export default function Home() {
               }
             } else if (
               activeCharacter === "tank_hammer" &&
-              n.kind === "barrel"
+              n.kind === "barrel" &&
+              hammerBreakWaveRef.current !== wave
             ) {
+              hammerBreakWaveRef.current = wave;
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
@@ -1198,40 +1269,35 @@ export default function Home() {
                       ? 0.5
                       : 1;
               let abilityAdjustedDamage =
-                activeCharacter === "tank_hammer" && n.kind === "log"
-                  ? 0.5
+                activeCharacter === "tank_anchor" && n.kind === "rock"
+                  ? 1
                   : rawDamage;
               if (
-                activeCharacter === "tank_hammer" &&
-                n.kind === "log" &&
+                activeCharacter === "tank_anchor" &&
+                n.kind === "rock" &&
                 rawDamage > abilityAdjustedDamage
               )
-                showAbilityNotice("DEMOLITION · LOG DAMAGE 0.5 HP");
+                showAbilityNotice("STONEGUARD · ROCK DAMAGE 1 HP");
               if (
-                activeCharacter === "medic_mercy" &&
+                (activeCharacter === "medic_mercy" ||
+                  activeCharacter === "tank_bulwark") &&
                 abilityAdjustedDamage > 0.5 &&
-                mercyGuardWaveRef.current !== wave
+                firstGuardWaveRef.current !== wave
               ) {
-                mercyGuardWaveRef.current = wave;
+                firstGuardWaveRef.current = wave;
                 abilityAdjustedDamage = Math.max(
                   0.5,
                   abilityAdjustedDamage - 0.5,
                 );
-                showAbilityNotice("GRACE GUARD · BLOCKED 0.5 HP");
-              }
-              if (activeCharacter === "tank_bulwark") {
-                const damageBeforePlate = abilityAdjustedDamage;
-                abilityAdjustedDamage = Math.max(
-                  0.5,
-                  abilityAdjustedDamage - 0.5,
+                showAbilityNotice(
+                  `${
+                    activeCharacter === "tank_bulwark"
+                      ? "HEAVY PLATE"
+                      : "GRACE GUARD"
+                  } · BLOCKED 0.5 HP`,
                 );
-                if (abilityAdjustedDamage < damageBeforePlate)
-                  showAbilityNotice("HEAVY PLATE · BLOCKED 0.5 HP");
               }
-              const damage =
-                mode === "normal" && activeClass === "trickster"
-                  ? abilityAdjustedDamage * 2
-                  : abilityAdjustedDamage;
+              const damage = abilityAdjustedDamage;
               let nextHearts = state.current.hearts - damage;
               if (
                 nextHearts <= 0 &&
@@ -1242,6 +1308,8 @@ export default function Home() {
                 nextHearts = 0.5;
                 showAbilityNotice("LAST STAND · SURVIVED AT 0.5 HP", 1400);
               }
+              const triggerMirageShield =
+                nextHearts > 0 && activeCharacter === "trickster_mirage";
               setHearts(Math.max(0, nextHearts));
               if (nextHearts <= 0) {
                 setRunning(false);
@@ -1287,6 +1355,10 @@ export default function Home() {
                 setFlash("");
                 setPaused(false);
                 damageLockedRef.current = false;
+                if (triggerMirageShield) {
+                  grantInvincibility(2000);
+                  showAbilityNotice("AFTERIMAGE · 2 SECOND SHIELD", 1400);
+                }
               }, 480);
               return [];
             }
@@ -1300,18 +1372,38 @@ export default function Home() {
           (item) => item.y <= 45 || item.y >= 105,
         );
       });
+      const rawProgressGain = (dt / 12) * (1 + wave * 0.01);
+      const waveProgressGain = Math.max(1, Math.round(rawProgressGain));
       const baseScoreGain = Math.max(
         1,
-        Math.round((dt / 12) * (1 + wave * 0.01) * modeMultiplier),
+        Math.round(rawProgressGain * modeMultiplier),
       );
       let scoreGain = baseScoreGain;
-      if (activeCharacter === "runner_ace") {
-        aceScoreCarryRef.current += baseScoreGain * 0.25;
-        const bonus = Math.floor(aceScoreCarryRef.current);
-        aceScoreCarryRef.current -= bonus;
+      const pacerRushActive =
+        activeCharacter === "runner_pacer" &&
+        pacerRushRemainingRef.current > 0;
+      const characterScoreMultiplier =
+        activeCharacter === "runner_ace"
+          ? 1.1
+          : pacerRushActive
+            ? 1.35
+            : 1;
+      const totalScoreMultiplier =
+        classScoreMultiplier * characterScoreMultiplier;
+      if (totalScoreMultiplier > 1) {
+        scoreMultiplierCarryRef.current +=
+          baseScoreGain * (totalScoreMultiplier - 1);
+        const bonus = Math.floor(scoreMultiplierCarryRef.current);
+        scoreMultiplierCarryRef.current -= bonus;
         scoreGain += bonus;
       }
+      if (pacerRushActive)
+        pacerRushRemainingRef.current = Math.max(
+          0,
+          pacerRushRemainingRef.current - dt,
+        );
       setScore((v) => v + scoreGain);
+      setWaveProgress((v) => v + waveProgressGain);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -1328,32 +1420,38 @@ export default function Home() {
     activeCharacter,
     playScope,
     modeMultiplier,
+    classScoreMultiplier,
     grantInvincibility,
     showAbilityNotice,
     activeAbility.name,
   ]);
   useEffect(() => {
     if (!running) return;
-    const next = Math.floor(score / 2250) + 1;
+    const next = Math.floor(waveProgress / 2250) + 1;
     if (next !== wave) {
       setWave(next);
       if (mode === "normal") {
+        const completedWave = next - 1;
+        const healAmount =
+          activeCharacter === "medic_patch"
+            ? 1.5
+            : activeCharacter === "medic_suture" && completedWave % 3 === 0
+              ? 2.5
+              : activeClass === "tank"
+                ? 0.5
+                : 1;
         if (
           activeCharacter === "medic_patch" &&
           state.current.hearts < maxHearts
         )
           showAbilityNotice("FIELD DRESSING · +1.5 HP", 1200);
-        setHearts((v) =>
-          Math.min(
-            maxHearts,
-            v +
-              (activeCharacter === "medic_patch"
-                ? 1.5
-                : activeClass === "tank"
-                  ? 0.5
-                  : 1),
-          ),
-        );
+        if (
+          activeCharacter === "medic_suture" &&
+          completedWave % 3 === 0 &&
+          state.current.hearts < maxHearts
+        )
+          showAbilityNotice("TRIAGE CYCLE · +2.5 HP", 1200);
+        setHearts((v) => Math.min(maxHearts, v + healAmount));
       }
       if (playScope === "versus" && versusMatchRef.current) {
         setVersusPoints((v) => v + 3);
@@ -1373,7 +1471,7 @@ export default function Home() {
       } else announceWave(next);
     }
   }, [
-    score,
+    waveProgress,
     running,
     wave,
     announceWave,
@@ -1643,10 +1741,13 @@ export default function Home() {
       waveAnnouncementTimerRef.current = null;
     }
     freezeNextMoveRef.current = false;
-    mercyGuardWaveRef.current = 0;
+    firstGuardWaveRef.current = 0;
+    hammerBreakWaveRef.current = 0;
     sentinelLastStandUsedRef.current = false;
     phantomPhaseWaveRef.current = 0;
-    aceScoreCarryRef.current = 0;
+    scoreMultiplierCarryRef.current = 0;
+    pacerRushRemainingRef.current = 0;
+    scoutShieldCooldownUntilRef.current = 0;
     rogueAbilityCooldownUntilRef.current = 0;
     turnLockedRef.current = false;
     if (delayedMoveTimerRef.current) {
@@ -1657,6 +1758,7 @@ export default function Home() {
     setItems([]);
     setOver(false);
     setScore(0);
+    setWaveProgress(0);
     setSettingsOpen(false);
     setAdminOpen(false);
     setShopOpen(false);
@@ -2410,21 +2512,29 @@ export default function Home() {
                       onClick={() => setMode("normal")}
                     >
                       <b>NORMAL</b>
-                      <small>3 hearts · healing enabled</small>
+                      <small>
+                        Selected class HP, healing, damage, and score rules
+                        apply
+                      </small>
                     </button>
                     <button
                       className={mode === "hardcore" ? "selected" : ""}
                       onClick={() => setMode("hardcore")}
                     >
                       <b>HARDCORE</b>
-                      <small>No healing · no Medic/Tank · 1.75× score</small>
+                      <small>
+                        1 HP · no healing · no Healer/Tank · 1.75× score
+                        before character bonuses
+                      </small>
                     </button>
                     <button
                       className={mode === "impossible" ? "selected" : ""}
                       onClick={() => setMode("impossible")}
                     >
                       <b>IMPOSSIBLE</b>
-                      <small>1 heart · Runner Ace only · 3× score</small>
+                      <small>
+                        1 HP · no healing · Ace forced · 3.30× total score
+                      </small>
                     </button>
                   </div>
                 )}
@@ -2969,82 +3079,100 @@ export default function Home() {
                       </small>
                     </span>
                   </summary>
-                  <div
-                    className={`inventory-obstacle-preview obstacle-${obstacleCosmetic || "default"}`}
-                    aria-hidden="true"
-                  >
-                    {(["barrel", "log", "rock", "spikes"] as Kind[]).map(
-                      (kind) => (
-                        <span key={kind} className={`preview-${kind}`}>
-                          <Obstacle kind={kind} />
-                        </span>
-                      ),
-                    )}
-                  </div>
-                  <h4>
-                    OBSTACLE LOOKS <span>{ownedObstacleCosmetics.length}</span>
-                  </h4>
-                  <div className="inventory-cosmetic-grid">
-                    {ownedObstacleCosmetics.length === 0 ? (
-                      <div className="inventory-empty">
-                        {guest
-                          ? "Sign in and extract boxes to keep obstacle looks."
-                          : "No obstacle cosmetics collected yet. Open a box in the Shop."}
-                      </div>
-                    ) : (
-                      ownedObstacleCosmetics.map((item) => (
-                        <button
-                          key={item.item_key}
-                          className={`rarity-${item.rarity}${
-                            obstacleCosmetic === item.item_key
-                              ? " equipped"
-                              : ""
-                          }`}
-                          onClick={() => void equipCosmetic(item)}
-                        >
-                          <span className="cosmetic-swatch">◆</span>
-                          <b>{item.item_key.replaceAll("_", " ")}</b>
-                          <small>
-                            {item.rarity}
-                            {obstacleCosmetic === item.item_key
-                              ? " · EQUIPPED"
-                              : ""}
-                          </small>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                  <h4>
-                    TRACK + ENVIRONMENT <span>{ownedEnvironments.length}</span>
-                  </h4>
-                  <div className="inventory-cosmetic-grid environments">
-                    {ownedEnvironments.length === 0 ? (
-                      <div className="inventory-empty">
-                        No environment cosmetics collected yet.
-                      </div>
-                    ) : (
-                      ownedEnvironments.map((item) => (
-                        <button
-                          key={item.item_key}
-                          className={`rarity-${item.rarity}${
-                            environmentCosmetic === item.item_key
-                              ? " equipped"
-                              : ""
-                          }`}
-                          onClick={() => void equipCosmetic(item)}
-                        >
-                          <span className="cosmetic-swatch">▰</span>
-                          <b>{item.item_key.replaceAll("_", " ")}</b>
-                          <small>
-                            {item.rarity}
-                            {environmentCosmetic === item.item_key
-                              ? " · EQUIPPED"
-                              : ""}
-                          </small>
-                        </button>
-                      ))
-                    )}
-                  </div>
+                  <details className="inventory-subsection">
+                    <summary className="inventory-subsection-heading">
+                      <span>
+                        <b>OBSTACLE LOOKS</b>
+                        <small>
+                          Visual styles for barrels, logs, rocks, and spikes.
+                          Gameplay and hit boxes never change.
+                        </small>
+                      </span>
+                      <em>{ownedObstacleCosmetics.length}</em>
+                    </summary>
+                    <div
+                      className={`inventory-obstacle-preview obstacle-${obstacleCosmetic || "default"}`}
+                      aria-hidden="true"
+                    >
+                      {(["barrel", "log", "rock", "spikes"] as Kind[]).map(
+                        (kind) => (
+                          <span key={kind} className={`preview-${kind}`}>
+                            <Obstacle kind={kind} />
+                          </span>
+                        ),
+                      )}
+                    </div>
+                    <div className="inventory-cosmetic-grid">
+                      {ownedObstacleCosmetics.length === 0 ? (
+                        <div className="inventory-empty">
+                          {guest
+                            ? "Sign in and extract boxes to keep obstacle looks."
+                            : "No obstacle cosmetics collected yet. Open a box in the Shop."}
+                        </div>
+                      ) : (
+                        ownedObstacleCosmetics.map((item) => (
+                          <button
+                            key={item.item_key}
+                            className={`rarity-${item.rarity}${
+                              obstacleCosmetic === item.item_key
+                                ? " equipped"
+                                : ""
+                            }`}
+                            onClick={() => void equipCosmetic(item)}
+                          >
+                            <span className="cosmetic-swatch">◆</span>
+                            <b>{item.item_key.replaceAll("_", " ")}</b>
+                            <small>
+                              {item.rarity}
+                              {obstacleCosmetic === item.item_key
+                                ? " · EQUIPPED"
+                                : ""}
+                            </small>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </details>
+                  <details className="inventory-subsection">
+                    <summary className="inventory-subsection-heading">
+                      <span>
+                        <b>TRACK + ENVIRONMENT LOOKS</b>
+                        <small>
+                          Change the scenery and road style without changing
+                          lane positions or gameplay.
+                        </small>
+                      </span>
+                      <em>{ownedEnvironments.length}</em>
+                    </summary>
+                    <div className="inventory-cosmetic-grid environments">
+                      {ownedEnvironments.length === 0 ? (
+                        <div className="inventory-empty">
+                          No environment cosmetics collected yet.
+                        </div>
+                      ) : (
+                        ownedEnvironments.map((item) => (
+                          <button
+                            key={item.item_key}
+                            className={`rarity-${item.rarity}${
+                              environmentCosmetic === item.item_key
+                                ? " equipped"
+                                : ""
+                            }`}
+                            onClick={() => void equipCosmetic(item)}
+                          >
+                            <span className="cosmetic-swatch">▰</span>
+                            <b>{item.item_key.replaceAll("_", " ")}</b>
+                            <small>
+                              {item.rarity}
+                              {environmentCosmetic === item.item_key
+                                ? " · EQUIPPED"
+                                : ""}
+                            </small>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </details>
                 </details>
 
                 {INVENTORY_CLASSES.map(
@@ -3090,22 +3218,24 @@ export default function Home() {
                                 className={`${focused ? "focused" : ""}${
                                   equipped ? " equipped" : ""
                                 }${owned ? "" : " locked"}`}
+                                aria-pressed={focused}
+                                aria-controls={`inventory-character-detail-${classKey}`}
                                 onClick={() => {
                                   setInventoryCharacter({
                                     classKey,
                                     characterKey: character.key,
                                   });
                                   setInventoryStatus("");
-                                  requestAnimationFrame(() =>
-                                    document
-                                      .getElementById(
-                                        `inventory-character-detail-${classKey}`,
-                                      )
-                                      ?.scrollIntoView({
-                                        block: "nearest",
-                                        behavior: "smooth",
-                                      }),
-                                  );
+                                  requestAnimationFrame(() => {
+                                    const detail = document.getElementById(
+                                      `inventory-character-detail-${classKey}`,
+                                    );
+                                    detail?.focus({ preventScroll: true });
+                                    detail?.scrollIntoView({
+                                      block: "nearest",
+                                      behavior: "smooth",
+                                    });
+                                  });
                                 }}
                               >
                                 <span
@@ -3123,12 +3253,7 @@ export default function Home() {
                                         character.key as CharacterKey
                                       ].name
                                     }
-                                    {" · "}
-                                    {
-                                      CHARACTER_ABILITIES[
-                                        character.key as CharacterKey
-                                      ].description
-                                    }
+                                    {" · SELECT · RULES BELOW"}
                                   </em>
                                 </span>
                                 <small
@@ -3144,8 +3269,11 @@ export default function Home() {
                         </div>
                         {sectionFocused && focusedCharacter && (
                           <div
+                            key={focusedCharacter.key}
                             className="inventory-character-detail"
                             id={`inventory-character-detail-${classKey}`}
+                            tabIndex={-1}
+                            aria-label={`${focusedCharacter.name} character details`}
                           >
                             <div className="inventory-character-summary">
                               <span
@@ -3189,67 +3317,88 @@ export default function Home() {
                                   : "EQUIP CHARACTER"}
                               </button>
                             </div>
-                            <div className="inventory-inspection">
-                              <article className="weapon-showcase">
-                                <span
-                                  className={`weapon-showcase-icon character-${focusedCharacter.key}`}
-                                  aria-hidden="true"
-                                />
-                                <div>
-                                  <small>WEAPON PREVIEW</small>
-                                  <b>{focusedCharacter.weapon}</b>
-                                  <p>
-                                    Preview only — weapons unlock with their
-                                    character.
-                                  </p>
-                                </div>
+                            <details className="inventory-subsection character-rules-subsection">
+                              <summary className="inventory-subsection-heading">
+                                <span>
+                                  <b>COMPLETE CHARACTER RULES</b>
+                                  <small>
+                                    HP, healing, damage, score, weapon, and
+                                    passive ability.
+                                  </small>
+                                </span>
+                              </summary>
+                              <article className="class-rules-showcase">
+                                <small>{label} CLASS RULES</small>
+                                <b>{focusedCharacter.name}</b>
+                                <p>{description}</p>
                               </article>
-                              <article className="ability-showcase">
-                                <small>PASSIVE ABILITY</small>
-                                <b>{focusedCharacterAbility?.name}</b>
-                                <p>{focusedCharacterAbility?.description}</p>
-                              </article>
-                            </div>
-                            <div className="inventory-look-header">
-                              <div>
-                                <b>OWNED LOOKS FOR {focusedCharacter.name}</b>
-                                <small>
-                                  Runner cosmetics work with every owned
-                                  character.
-                                </small>
+                              <div className="inventory-inspection">
+                                <article className="weapon-showcase">
+                                  <span
+                                    className={`weapon-showcase-icon character-${focusedCharacter.key}`}
+                                    aria-hidden="true"
+                                  />
+                                  <div>
+                                    <small>WEAPON PREVIEW</small>
+                                    <b>{focusedCharacter.weapon}</b>
+                                    <p>
+                                      Visual only — weapons unlock with their
+                                      character and add no separate stats.
+                                    </p>
+                                  </div>
+                                </article>
+                                <article className="ability-showcase">
+                                  <small>PASSIVE ABILITY</small>
+                                  <b>{focusedCharacterAbility?.name}</b>
+                                  <p>{focusedCharacterAbility?.description}</p>
+                                </article>
                               </div>
-                              <span>{ownedPlayerCosmetics.length}</span>
-                            </div>
-                            <div className="inventory-cosmetic-grid player-looks">
-                              {ownedPlayerCosmetics.length === 0 ? (
-                                <div className="inventory-empty">
-                                  {guest
-                                    ? "Guest loadouts include all four starter characters. Sign in to build a permanent cosmetic collection."
-                                    : "No runner cosmetics collected yet. Open a box in the Shop."}
-                                </div>
-                              ) : (
-                                ownedPlayerCosmetics.map((item) => (
-                                  <button
-                                    key={item.item_key}
-                                    className={`rarity-${item.rarity}${
-                                      playerCosmetic === item.item_key
-                                        ? " equipped"
-                                        : ""
-                                    }`}
-                                    onClick={() => void equipCosmetic(item)}
-                                  >
-                                    <span className="cosmetic-swatch">✦</span>
-                                    <b>{item.item_key.replaceAll("_", " ")}</b>
-                                    <small>
-                                      {item.rarity}
-                                      {playerCosmetic === item.item_key
-                                        ? " · EQUIPPED"
-                                        : ""}
-                                    </small>
-                                  </button>
-                                ))
-                              )}
-                            </div>
+                            </details>
+                            <details className="inventory-subsection character-cosmetics-subsection">
+                              <summary className="inventory-subsection-heading">
+                                <span>
+                                  <b>
+                                    UNIVERSAL RUNNER COSMETICS
+                                  </b>
+                                  <small>
+                                    Equip any owned look while previewing
+                                    {` ${focusedCharacter.name}`}. The same
+                                    equipped look applies to every character.
+                                  </small>
+                                </span>
+                                <em>{ownedPlayerCosmetics.length}</em>
+                              </summary>
+                              <div className="inventory-cosmetic-grid player-looks">
+                                {ownedPlayerCosmetics.length === 0 ? (
+                                  <div className="inventory-empty">
+                                    {guest
+                                      ? "Guest loadouts include all four starter characters. Sign in to build a permanent cosmetic collection."
+                                      : "No runner cosmetics collected yet. Open a box in the Shop."}
+                                  </div>
+                                ) : (
+                                  ownedPlayerCosmetics.map((item) => (
+                                    <button
+                                      key={item.item_key}
+                                      className={`rarity-${item.rarity}${
+                                        playerCosmetic === item.item_key
+                                          ? " equipped"
+                                          : ""
+                                      }`}
+                                      onClick={() => void equipCosmetic(item)}
+                                    >
+                                      <span className="cosmetic-swatch">✦</span>
+                                      <b>{item.item_key.replaceAll("_", " ")}</b>
+                                      <small>
+                                        {item.rarity}
+                                        {playerCosmetic === item.item_key
+                                          ? " · EQUIPPED"
+                                          : ""}
+                                      </small>
+                                    </button>
+                                  ))
+                                )}
+                              </div>
+                            </details>
                           </div>
                         )}
                       </details>
