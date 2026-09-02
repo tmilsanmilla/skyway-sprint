@@ -1,7 +1,7 @@
 'use client';
 import {FormEvent,useCallback,useEffect,useRef,useState} from 'react';
 import {createBrowserClient} from '@supabase/ssr';
-type Kind='gem'|'boost'|'car'|'snowflake'|'rock'|'barrel'; type Item={id:number;lane:number;y:number;kind:Kind};
+type Kind='gem'|'boost'|'log'|'snowflake'|'rock'|'barrel'; type Item={id:number;lane:number;y:number;kind:Kind};
 type GameMode='normal'|'hardcore'|'impossible';
 type PlayerReport={id:number;user_id:string;report_type:string;message:string;status:string;created_at:string};
 type AdminUser={user_id:string;email:string;username:string|null;role:'main'|'co_admin'};
@@ -12,13 +12,13 @@ function Obstacle({kind}:{kind:Kind}){
  if(kind==='boost')return <span>+100</span>;
 
  if(kind==='barrel')return <div className="barrel-shape"><i/><b/><em/></div>;
- if(kind==='car')return <div className="car-shape"><i className="windshield"/><i className="light left"/><i className="light right"/><i className="wheel left"/><i className="wheel right"/><b/></div>;
+ if(kind==='log')return <div className="log-shape"><i/><b/><em/></div>;
  if(kind==='snowflake')return <span>❄</span>;
  return <div className="rock-shape"><u/><i/><b/><em/></div>;
 }
 export default function Home(){
  const [lane,setLane]=useState(2),[items,setItems]=useState<Item[]>([]),[score,setScore]=useState(0),[gems,setGems]=useState(0),[highScore,setHighScore]=useState(0),[gemBump,setGemBump]=useState(false),[hearts,setHearts]=useState(3),[wave,setWave]=useState(1),[running,setRunning]=useState(false),[paused,setPaused]=useState(false),[wavePause,setWavePause]=useState(false),[waveMessage,setWaveMessage]=useState(''),[over,setOver]=useState(false),[flash,setFlash]=useState(''),[invincible,setInvincible]=useState(false),[slowed,setSlowed]=useState(false),[shopOpen,setShopOpen]=useState(false),[shopStatus,setShopStatus]=useState(''),[leaderboardOpen,setLeaderboardOpen]=useState(false),[leaders,setLeaders]=useState<Leader[]>([]);
- const id=useRef(0),last=useRef(0),userIdRef=useRef<string|null>(null),gemsRef=useRef(0),scoreRef=useRef(0),highScoreRef=useRef(0),invincibleUntilRef=useRef(0),slowUntilRef=useRef(0),state=useRef({lane,running,paused}); state.current={lane,running,paused};gemsRef.current=gems;scoreRef.current=score;highScoreRef.current=highScore;
+ const id=useRef(0),last=useRef(0),userIdRef=useRef<string|null>(null),gemsRef=useRef(0),scoreRef=useRef(0),highScoreRef=useRef(0),invincibleUntilRef=useRef(0),slowUntilRef=useRef(0),turnLockedRef=useRef(false),slowedRef=useRef(false),state=useRef({lane,running,paused}); state.current={lane,running,paused};gemsRef.current=gems;scoreRef.current=score;highScoreRef.current=highScore;slowedRef.current=slowed;
  const [authReady,setAuthReady]=useState(false),[guest,setGuest]=useState(false),[userEmail,setUserEmail]=useState<string|null>(null),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[confirmPassword,setConfirmPassword]=useState(''),[authMode,setAuthMode]=useState<'signin'|'signup'>('signin'),[authBusy,setAuthBusy]=useState(false),[authMessage,setAuthMessage]=useState('');
  const [settingsOpen,setSettingsOpen]=useState(false),[adminOpen,setAdminOpen]=useState(false),[isAdmin,setIsAdmin]=useState(false),[adminRole,setAdminRole]=useState<string|null>(null),[adminTab,setAdminTab]=useState<'reports'|'admins'>('reports'),[admins,setAdmins]=useState<AdminUser[]>([]),[adminTarget,setAdminTarget]=useState(''),[adminStatus,setAdminStatus]=useState(''),[reports,setReports]=useState<PlayerReport[]>([]),[copyStatus,setCopyStatus]=useState(''),[reportType,setReportType]=useState('Bug'),[reportMessage,setReportMessage]=useState(''),[reportStatus,setReportStatus]=useState(''),[reportBusy,setReportBusy]=useState(false);
  const [username,setUsername]=useState(''),[usernameInput,setUsernameInput]=useState(''),[usernameRequired,setUsernameRequired]=useState(false),[usernameStatus,setUsernameStatus]=useState(''),[newPassword,setNewPassword]=useState(''),[passwordStatus,setPasswordStatus]=useState('');
@@ -28,23 +28,23 @@ export default function Home(){
  const announceWave=useCallback((number:number)=>{setWaveMessage(`WAVE ${number}`);setWavePause(true);setTimeout(()=>{setWaveMessage('');setWavePause(false)},1250)},[]);
  const reset=useCallback(()=>{setLane(2);setItems([]);setScore(0);setHearts(mode==='impossible'?1:3);setWave(1);setOver(false);setPaused(false);setInvincible(false);setSlowed(false);invincibleUntilRef.current=0;slowUntilRef.current=0;setRunning(true);last.current=0;announceWave(1)},[announceWave,mode]);
  const backToMenu=()=>{setRunning(false);setPaused(false);setOver(false);setItems([]);setScore(0);setWave(1);setHearts(mode==='impossible'?1:3);setInvincible(false);setSlowed(false);invincibleUntilRef.current=0;slowUntilRef.current=0};
- const move=useCallback((d:number)=>{if(state.current.running&&!state.current.paused)setLane(v=>Math.max(0,Math.min(4,v+d)))},[]);
+ const move=useCallback((d:number)=>{if(!state.current.running||state.current.paused||turnLockedRef.current)return;if(slowedRef.current){turnLockedRef.current=true;setTimeout(()=>{setLane(v=>Math.max(0,Math.min(4,v+d)));turnLockedRef.current=false},100);return}setLane(v=>Math.max(0,Math.min(4,v+d)))},[]);
  useEffect(()=>{const key=(e:KeyboardEvent)=>{const target=e.target as HTMLElement|null;if(target?.matches('input, textarea, select, [contenteditable="true"]'))return;if(['ArrowLeft','a','A'].includes(e.key)){e.preventDefault();move(-1)}if(['ArrowRight','d','D'].includes(e.key)){e.preventDefault();move(1)}if(e.key===' '&&state.current.running){e.preventDefault();setPaused(v=>!v)}if(e.key==='Enter'&&!state.current.running)reset()};addEventListener('keydown',key);return()=>removeEventListener('keydown',key)},[move,reset]);
  useEffect(()=>{
   if(!running||paused||wavePause)return;
   let raf=0,prev=performance.now();
   const tick=(now:number)=>{
    const dt=Math.min(32,now-prev);prev=now;
-   if(now-last.current>Math.max(330,980-wave*55)*(slowed?2:1)){
+   if(now-last.current>Math.max(330,980-wave*55)){
     last.current=now;
     const r=Math.random(),danger=Math.min(.79,.54+wave*.025),gemThreshold=mode==='impossible'?.86:mode==='hardcore'?.9:.94;
     let kind:Kind;
-    if(r<danger)kind=(['car','snowflake','rock','barrel']as Kind[])[Math.floor(Math.random()*4)];else if(r>gemThreshold)kind='gem';else kind='boost';
+    if(r<danger)kind=(['log','snowflake','rock','barrel']as Kind[])[Math.floor(Math.random()*4)];else if(r>gemThreshold)kind='gem';else kind='boost';
     setItems(v=>{const blocked=new Set(v.map(x=>x.lane));const lanes=[0,1,2,3,4].filter(l=>!blocked.has(l));if(!lanes.length)return v;const spawnLane=lanes[Math.floor(Math.random()*lanes.length)];return [...v,{id:id.current++,lane:spawnLane,y:-10,kind}]});
    }
    setItems(old=>old.flatMap(item=>{
-    const speedFactor=item.kind==='car'?1.28:item.kind==='rock'?.6:item.kind==='barrel'?1.08:1;
-    const n={...item,y:item.y+(.04+wave*.0052)*speedFactor*dt*(slowed?.5:1)};
+    const speedFactor=item.kind==='barrel'?1.75:item.kind==='log'?.72:item.kind==='rock'?.3:1;
+    const n={...item,y:item.y+(.04+wave*.0052)*speedFactor*dt};
     if(n.lane===state.current.lane&&n.y>65&&n.y<91){
      if(n.kind==='gem'){
       const total=gemsRef.current+1;gemsRef.current=total;setGems(total);setGemBump(false);requestAnimationFrame(()=>setGemBump(true));setTimeout(()=>setGemBump(false),500);
@@ -57,20 +57,20 @@ export default function Home(){
      }else if(invincibleUntilRef.current>Date.now()){
       setFlash('shield');setTimeout(()=>setFlash(''),120);return[];
      }else{
-      setHearts(v=>{const h=v-(n.kind==='rock'?2:1);if(h<=0){setRunning(false);setOver(true);if(guest){setGems(0);gemsRef.current=0}else{const best=Math.max(highScoreRef.current,scoreRef.current);highScoreRef.current=best;setHighScore(best);if(userIdRef.current)void supabase.rpc('save_player_high_score',{new_score:best}).then(({data,error})=>{if(error){console.error('Could not save high score:',error.message);return}if(typeof data==='number'){highScoreRef.current=data;setHighScore(data)}})}}return Math.max(0,h)});
+      setHearts(v=>{const damage=mode==='impossible'?1:n.kind==='rock'?2:n.kind==='barrel'?.5:1;const h=v-damage;if(h<=0){setRunning(false);setOver(true);if(guest){setGems(0);gemsRef.current=0}else{const best=Math.max(highScoreRef.current,scoreRef.current);highScoreRef.current=best;setHighScore(best);if(userIdRef.current)void supabase.rpc('save_player_high_score',{new_score:best}).then(({data,error})=>{if(error){console.error('Could not save high score:',error.message);return}if(typeof data==='number'){highScoreRef.current=data;setHighScore(data)}})}}return Math.max(0,h)});
       const blockedLanes=new Set(old.filter(x=>x.id!==n.id&&x.kind!=='gem'&&x.kind!=='boost'&&x.kind!=='snowflake'&&x.y>50&&x.y<96).map(x=>x.lane));
       const safe=[0,1,2,3,4].filter(l=>l!==n.lane&&!blockedLanes.has(l)).sort((a,b)=>Math.abs(a-state.current.lane)-Math.abs(b-state.current.lane));
-      if(safe.length)setLane(safe[0]);setPaused(true);setFlash('life-lost');setTimeout(()=>{setFlash('');setPaused(false)},480);return[n];
+      if(safe.length)setLane(safe[0]);setPaused(true);setFlash(n.kind==='barrel'?'life-half':n.kind==='rock'?'life-two':'life-lost');setTimeout(()=>{setFlash('');setPaused(false)},480);return[n];
      }
      return[];
     }
     return n.y<108?[n]:[];
    }));
-   setScore(v=>v+Math.max(1,Math.round((dt/12)*(1+wave*.01)*(mode==='impossible'?2:mode==='hardcore'?1.5:1)*(slowed?.5:1))));
+   setScore(v=>v+Math.max(1,Math.round((dt/12)*(1+wave*.01)*(mode==='impossible'?2:mode==='hardcore'?1.5:1))));
    raf=requestAnimationFrame(tick);
   };
   raf=requestAnimationFrame(tick);return()=>cancelAnimationFrame(raf);
- },[running,paused,wavePause,wave,guest,mode,maxHearts,slowed]);
+ },[running,paused,wavePause,wave,guest,mode,maxHearts]);
  useEffect(()=>{if(!running)return;const next=Math.floor(score/2250)+1;if(next!==wave){setWave(next);if(mode==='normal')setHearts(v=>Math.min(maxHearts,v+1));announceWave(next)}},[score,running,wave,announceWave,mode,maxHearts]);
  useEffect(()=>{const applySession=async(session:Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session'])=>{const user=session?.user??null;userIdRef.current=user?.id??null;setUserEmail(user?.email??null);if(user){const [{data:stats,error:statsError},{data:profile},{data:admin},{data:role}]=await Promise.all([supabase.from('player_stats').select('total_gems,high_score').eq('user_id',user.id).maybeSingle(),supabase.from('player_profiles').select('username,username_changed_at').eq('user_id',user.id).maybeSingle(),supabase.rpc('is_admin'),supabase.rpc('get_admin_role')]);if(statsError)console.error('Could not load account stats:',statsError.message);if(stats){gemsRef.current=stats.total_gems;highScoreRef.current=stats.high_score;setGems(stats.total_gems);setHighScore(stats.high_score)}else{const {error}=await supabase.from('player_stats').insert({user_id:user.id});if(error)console.error('Could not create account stats:',error.message)}if(profile){setUsername(profile.username);setUsernameInput(profile.username);setUsernameRequired(false)}else setUsernameRequired(true);setIsAdmin(Boolean(admin));setAdminRole(role)}else{setUsername('');setUsernameRequired(false);setIsAdmin(false);setAdminRole(null)}setAuthReady(true)};supabase.auth.getSession().then(({data})=>void applySession(data.session));const {data}=supabase.auth.onAuthStateChange((event,session)=>{if(event==="PASSWORD_RECOVERY"){setSettingsOpen(true);setPasswordStatus("Verified. Enter your new password below.")}void applySession(session)});return()=>data.subscription.unsubscribe()},[]);
  const submitAuth=async(e:FormEvent)=>{e.preventDefault();setAuthBusy(true);setAuthMessage('');if(authMode==='signup'){if(password!==confirmPassword){setAuthMessage('Passwords do not match.');setAuthBusy(false);return}const {error}=await supabase.auth.signUp({email,password,options:{emailRedirectTo:window.location.origin}});setAuthMessage(error?error.message:'Check your email to confirm your account, then return here to sign in.')}else{const {error}=await supabase.auth.signInWithPassword({email,password});if(error)setAuthMessage(error.message)}setAuthBusy(false)};
