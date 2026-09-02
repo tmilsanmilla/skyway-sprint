@@ -4037,7 +4037,7 @@ export default function Home() {
                             <details className="inventory-subsection character-rules-subsection">
                               <summary className="inventory-subsection-heading">
                                 <span>
-                                  <b>COMPLETE CHARACTER RULES</b>
+                                  <b>PASSIVE ABILITY</b>
                                   <small>
                                     HP, healing, damage, score, weapon, and
                                     passive ability.
