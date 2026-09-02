@@ -39,6 +39,23 @@ type PlayerAccess = {
   }>;
 };
 type Leader = { rank: number; username: string; high_score: number };
+type VersusLeader = {
+  rank: number;
+  username: string;
+  rating: number;
+  provisional: boolean;
+  matches_played: number;
+  wins: number;
+  losses: number;
+  win_rate: number | string;
+  current_streak: number;
+  best_streak: number;
+  best_wave: number;
+  best_score: number;
+  coins_collected: number;
+  obstacle_points_spent: number;
+  is_self: boolean;
+};
 type Rarity =
   | "common"
   | "uncommon"
@@ -70,6 +87,15 @@ type StoredLoadout = {
 } | null;
 type BoxType = "regular" | "legendary";
 type PlayScope = "single" | "versus";
+type MainView = "endless" | "versus";
+type VersusAttackKind =
+  | "barrel"
+  | "log"
+  | "car"
+  | "snowflake"
+  | "spike"
+  | "rock";
+type PendingVersusAttack = { id: string; kind: Kind };
 const AUDIO_PREFERENCES_KEY = "skyway.audio.v1";
 const DEVICE_TOKEN_KEY = "skyway.device.v1";
 const getOrCreateDeviceToken = () => {
@@ -98,6 +124,74 @@ const SOUNDTRACKS: ReadonlyArray<{
     icon: "⚡",
   },
 ];
+const VERSUS_ATTACKS: ReadonlyArray<{
+  kind: VersusAttackKind;
+  label: string;
+  cost: 2 | 3;
+  icon: string;
+  description: string;
+}> = [
+  {
+    kind: "barrel",
+    label: "BARREL",
+    cost: 2,
+    icon: "◉",
+    description: "Fast roll · 0.5 HP",
+  },
+  {
+    kind: "log",
+    label: "LOG",
+    cost: 2,
+    icon: "▬",
+    description: "Steady obstacle · 1 HP",
+  },
+  {
+    kind: "car",
+    label: "CAR",
+    cost: 3,
+    icon: "▰",
+    description: "Fast lane pressure",
+  },
+  {
+    kind: "snowflake",
+    label: "SNOWFLAKE",
+    cost: 3,
+    icon: "❄",
+    description: "Delays the next turn",
+  },
+  {
+    kind: "spike",
+    label: "SPIKES",
+    cost: 3,
+    icon: "▲",
+    description: "Warning flash · ground trap",
+  },
+  {
+    kind: "rock",
+    label: "ROCK",
+    cost: 3,
+    icon: "◆",
+    description: "Slow threat · 2 HP",
+  },
+];
+const normalizeVersusObstacle = (value: unknown): Kind | null => {
+  if (value === "spike" || value === "spikes") return "spikes";
+  if (
+    value === "barrel" ||
+    value === "log" ||
+    value === "car" ||
+    value === "snowflake" ||
+    value === "rock"
+  )
+    return value;
+  return null;
+};
+const secondsUntil = (value: unknown, fallback: number) => {
+  if (typeof value !== "string") return fallback;
+  const deadline = Date.parse(value);
+  if (!Number.isFinite(deadline)) return fallback;
+  return Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+};
 type VersusPhase =
   "idle" | "searching" | "ready" | "playing" | "intermission" | "finished";
 const CLASS_CHARACTERS = {
@@ -446,8 +540,12 @@ export default function Home() {
     phantomPhaseWaveRef = useRef(0),
     versusMatchRef = useRef<string | null>(null),
     versusSearchingRef = useRef(false),
+    versusSearchTokenRef = useRef(0),
+    versusPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
+    versusAttackBusyRef = useRef(false),
     realtimeRef = useRef<ReturnType<typeof supabase.channel> | null>(null),
-    incomingAttacksRef = useRef<Kind[]>([]),
+    incomingAttacksRef = useRef<PendingVersusAttack[]>([]),
+    spawnedAttackIdsRef = useRef<Set<string>>(new Set()),
     versusFinishedRef = useRef(false),
     state = useRef({
       lane,
@@ -478,6 +576,11 @@ export default function Home() {
         clearTimeout(abilityNoticeTimerRef.current);
       if (waveAnnouncementTimerRef.current)
         clearTimeout(waveAnnouncementTimerRef.current);
+      versusSearchingRef.current = false;
+      versusSearchTokenRef.current += 1;
+      if (versusPollTimerRef.current)
+        clearTimeout(versusPollTimerRef.current);
+      if (realtimeRef.current) void supabase.removeChannel(realtimeRef.current);
     },
     [],
   );
@@ -557,14 +660,20 @@ export default function Home() {
   const [editUsername, setEditUsername] = useState(false),
     [editPassword, setEditPassword] = useState(false);
   const [mode, setMode] = useState<GameMode>("normal");
-  const [playScope, setPlayScope] = useState<PlayScope>("single"),
-    [versusOpen, setVersusOpen] = useState(false),
+  const [mainView, setMainView] = useState<MainView>("endless"),
+    [playScope, setPlayScope] = useState<PlayScope>("single"),
     [versusPhase, setVersusPhase] = useState<VersusPhase>("idle"),
     [versusOpponent, setVersusOpponent] = useState("WAITING…"),
     [versusPoints, setVersusPoints] = useState(0),
     [versusCountdown, setVersusCountdown] = useState(15),
     [versusOpponentHearts, setVersusOpponentHearts] = useState(3),
-    [versusResult, setVersusResult] = useState("");
+    [versusResult, setVersusResult] = useState(""),
+    [versusAttackBusy, setVersusAttackBusy] = useState(false),
+    [versusIntermissionReady, setVersusIntermissionReady] = useState(false),
+    [versusLeaving, setVersusLeaving] = useState(false),
+    [versusLeaders, setVersusLeaders] = useState<VersusLeader[]>([]),
+    [versusLeadersLoading, setVersusLeadersLoading] = useState(false),
+    [versusLeadersError, setVersusLeadersError] = useState("");
   const [playerClass, setPlayerClass] = useState("runner"),
     [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
     [inventoryCharacter, setInventoryCharacter] = useState<{
@@ -799,14 +908,7 @@ export default function Home() {
     void audioEngine.start(soundtrack);
     announceWave(1);
   }, [announceWave, soundtrack, startingHearts]);
-  const backToMenu = () => {
-    if (playScope === "versus") {
-      if (versusMatchRef.current) void supabase.rpc("leave_1v1");
-      closeVersusChannel();
-      versusMatchRef.current = null;
-      setVersusPhase("idle");
-      setPlayScope("single");
-    }
+  const resetGameToMenu = () => {
     setRunning(false);
     setPaused(false);
     setPauseMenuOpen(false);
@@ -916,7 +1018,7 @@ export default function Home() {
   };
   const returnHomeFromPause = () => {
     void audioEngine.playSfx("click");
-    backToMenu();
+    resetGameToMenu();
   };
   const closeVersusChannel = () => {
     if (realtimeRef.current) {
@@ -924,6 +1026,43 @@ export default function Home() {
       realtimeRef.current = null;
     }
   };
+  const acknowledgeSpawnedVersusAttacks = useCallback(
+    async function acknowledgeSpawnedAttacks(
+      matchId: string,
+      attackIds: string[],
+      attempt = 0,
+    ) {
+      if (
+        attackIds.length === 0 ||
+        versusMatchRef.current !== matchId
+      )
+        return;
+      const { error } = await supabase.rpc("acknowledge_1v1_attacks", {
+        p_match_id: matchId,
+        p_attack_ids: attackIds,
+      });
+      if (!error) {
+        attackIds.forEach((attackId) =>
+          spawnedAttackIdsRef.current.delete(attackId),
+        );
+        return;
+      }
+      if (
+        attempt < 3 &&
+        versusMatchRef.current === matchId
+      )
+        setTimeout(
+          () =>
+            void acknowledgeSpawnedAttacks(
+              matchId,
+              attackIds,
+              attempt + 1,
+            ),
+          750 * (attempt + 1),
+        );
+    },
+    [],
+  );
   const subscribeToMatch = (matchId: string) => {
     closeVersusChannel();
     const channel = supabase
@@ -943,15 +1082,14 @@ export default function Home() {
             obstacle_type: Kind | "spike";
           };
           if (attack.target_user_id === userIdRef.current) {
-            incomingAttacksRef.current.push(
-              attack.obstacle_type === "spike"
-                ? "spikes"
-                : attack.obstacle_type,
-            );
-            void supabase.rpc("acknowledge_1v1_attacks", {
-              p_match_id: matchId,
-              p_attack_ids: [attack.id],
-            });
+            const kind = normalizeVersusObstacle(attack.obstacle_type);
+            if (
+              kind &&
+              !incomingAttacksRef.current.some(
+                (pending) => pending.id === attack.id,
+              )
+            )
+              incomingAttacksRef.current.push({ id: attack.id, kind });
           }
         },
       )
@@ -968,15 +1106,22 @@ export default function Home() {
             user_id: string;
             hearts: number;
             status: string;
+            obstacle_points?: number;
+            username?: string;
           };
-          if (player.user_id !== userIdRef.current) {
-            setVersusOpponentHearts(Number(player.hearts));
-            if (player.status === "eliminated") {
-              setVersusResult("VICTORY");
-              setVersusPhase("finished");
-              setRunning(false);
-              setOver(true);
-            }
+          if (player.user_id === userIdRef.current) {
+            if (typeof player.obstacle_points === "number")
+              setVersusPoints(player.obstacle_points);
+            return;
+          }
+          setVersusOpponentHearts(Number(player.hearts));
+          if (player.username) setVersusOpponent(player.username);
+          if (player.status === "eliminated") {
+            setVersusResult("VICTORY");
+            setVersusPhase("finished");
+            setVersusIntermissionReady(false);
+            setRunning(false);
+            setOver(true);
           }
         },
       )
@@ -998,6 +1143,7 @@ export default function Home() {
               match.winner_user_id === userIdRef.current ? "VICTORY" : "DEFEAT",
             );
             setVersusPhase("finished");
+            setVersusIntermissionReady(false);
             setRunning(false);
             setOver(true);
           }
@@ -1006,30 +1152,186 @@ export default function Home() {
       .subscribe();
     realtimeRef.current = channel;
   };
-  const beginVersusMatch = (matchId: string, opponent: string) => {
+  const hydrateVersusState = async (matchId: string) => {
+    const { data, error } = await supabase.rpc("get_1v1_state", {
+      p_match_id: matchId,
+    });
+    if (versusMatchRef.current !== matchId) return false;
+    if (error || !data) {
+      setVersusResult(error?.message ?? "COULD NOT RESTORE THIS MATCH");
+      return false;
+    }
+    const snapshot = data as {
+      match?: {
+        status?: string;
+        intermission_ends_at?: string | null;
+        winner_user_id?: string | null;
+      };
+      self?: {
+        hearts?: number;
+        wave?: number;
+        score?: number;
+        obstacle_points?: number;
+        status?: string;
+      };
+      opponent?: {
+        username?: string;
+        hearts?: number;
+        status?: string;
+      };
+      pending_attacks?: Array<{ id?: string; obstacle_type?: string }>;
+    };
+    const restoredWave = Math.max(1, Number(snapshot.self?.wave) || 1);
+    const restoredScore = Math.max(0, Number(snapshot.self?.score) || 0);
+    const restoredHearts = Math.max(0, Number(snapshot.self?.hearts) || 0);
+    const matchStatus = snapshot.match?.status ?? "playing";
+    const eliminated =
+      snapshot.self?.status === "eliminated" || matchStatus === "finished";
+
+    setLane(2);
+    setItems([]);
+    setScore(restoredScore);
+    setWaveProgress((restoredWave - 1) * 2250);
+    setWave(restoredWave);
+    setHearts(restoredHearts);
+    setVersusPoints(
+      Math.max(0, Number(snapshot.self?.obstacle_points) || 0),
+    );
+    setVersusOpponent(snapshot.opponent?.username || "RIVAL");
+    setVersusOpponentHearts(
+      Math.max(0, Number(snapshot.opponent?.hearts) || 0),
+    );
+    setPlayScope("versus");
+    setOver(eliminated);
+    setRunning(!eliminated);
+    setPauseMenuOpen(false);
+    setInvincible(false);
+    setSlowed(false);
+    setAbilityNotice("");
+    last.current = 0;
+
+    const pending = (snapshot.pending_attacks ?? [])
+      .map((attack) => ({
+        id: attack.id,
+        kind: normalizeVersusObstacle(attack.obstacle_type),
+      }))
+      .filter(
+        (attack): attack is { id: string; kind: Kind } =>
+          Boolean(attack.id && attack.kind),
+      );
+    const mergedPending = new Map(
+      incomingAttacksRef.current.map((attack) => [attack.id, attack]),
+    );
+    pending.forEach((attack) => mergedPending.set(attack.id, attack));
+    incomingAttacksRef.current = Array.from(mergedPending.values());
+
+    if (eliminated) {
+      setPaused(false);
+      setVersusPhase("finished");
+      setVersusIntermissionReady(false);
+      setVersusResult(
+        snapshot.match?.winner_user_id === userIdRef.current
+          ? "VICTORY"
+          : "DEFEAT",
+      );
+    } else if (matchStatus === "intermission") {
+      const remaining = secondsUntil(snapshot.match?.intermission_ends_at, 15);
+      setVersusCountdown(remaining);
+      setVersusPhase("intermission");
+      setVersusIntermissionReady(remaining > 0);
+      setPaused(true);
+    } else {
+      const attacks = Array.from(mergedPending.values()).filter(
+        (attack) => !spawnedAttackIdsRef.current.has(attack.id),
+      );
+      const acknowledgementIds = Array.from(mergedPending.keys());
+      incomingAttacksRef.current = [];
+      attacks.forEach((attack) =>
+        spawnedAttackIdsRef.current.add(attack.id),
+      );
+      if (attacks.length > 0)
+        setItems((current) => [
+          ...current,
+          ...attacks.map((attack, index) => ({
+            id: id.current++,
+            lane: Math.floor(Math.random() * 5),
+            y: -10 - index * 9,
+            kind: attack.kind,
+          })),
+        ]);
+      if (acknowledgementIds.length > 0)
+        void acknowledgeSpawnedVersusAttacks(
+          matchId,
+          acknowledgementIds,
+        );
+      setVersusPhase("playing");
+      setVersusIntermissionReady(false);
+      setPaused(false);
+      void audioEngine.start(soundtrack);
+      announceWave(restoredWave);
+    }
+    return true;
+  };
+  const beginVersusMatch = async (
+    matchId: string,
+    opponent: string,
+    serverStatus?: string,
+  ) => {
     versusMatchRef.current = matchId;
     versusFinishedRef.current = false;
+    setMainView("versus");
     setVersusOpponent(opponent || "RIVAL");
     setVersusOpponentHearts(3);
     setVersusPoints(0);
     setVersusResult("");
+    setVersusIntermissionReady(false);
+    incomingAttacksRef.current = [];
+    spawnedAttackIdsRef.current.clear();
+    subscribeToMatch(matchId);
+    if (serverStatus && serverStatus !== "countdown") {
+      const restored = await hydrateVersusState(matchId);
+      if (!restored && versusMatchRef.current === matchId) {
+        closeVersusChannel();
+        versusMatchRef.current = null;
+        setPlayScope("single");
+        setVersusPhase("idle");
+      }
+      return;
+    }
     setVersusPhase("playing");
     setPlayScope("versus");
-    setVersusOpen(false);
-    incomingAttacksRef.current = [];
-    subscribeToMatch(matchId);
     reset();
   };
-  const findVersusMatch = async () => {
+  const invalidateVersusSearch = () => {
+    versusSearchingRef.current = false;
+    versusSearchTokenRef.current += 1;
+    if (versusPollTimerRef.current) {
+      clearTimeout(versusPollTimerRef.current);
+      versusPollTimerRef.current = null;
+    }
+  };
+  const findVersusMatch = async (preserveResult = false) => {
     if (guest) {
       setVersusResult("SIGN IN TO PLAY 1V1");
       return;
     }
-    setVersusResult("");
+    if (versusSearchingRef.current || versusLeaving) return;
+    invalidateVersusSearch();
+    const searchToken = versusSearchTokenRef.current;
+    if (!preserveResult) setVersusResult("");
     setVersusPhase("searching");
     versusSearchingRef.current = true;
     const poll = async () => {
       const { data, error } = await supabase.rpc("join_1v1_queue");
+      if (searchToken !== versusSearchTokenRef.current) {
+        if (
+          data?.match_id &&
+          !versusMatchRef.current &&
+          !versusSearchingRef.current
+        )
+          void supabase.rpc("leave_1v1");
+        return;
+      }
       if (error) {
         setVersusResult(error.message);
         setVersusPhase("idle");
@@ -1038,35 +1340,166 @@ export default function Home() {
       }
       if (data?.match_id) {
         versusSearchingRef.current = false;
-        beginVersusMatch(data.match_id, data.opponent_username);
+        if (versusPollTimerRef.current) {
+          clearTimeout(versusPollTimerRef.current);
+          versusPollTimerRef.current = null;
+        }
+        void beginVersusMatch(
+          data.match_id,
+          data.opponent_username,
+          data.status,
+        );
         return;
       }
-      if (versusSearchingRef.current) setTimeout(poll, 1800);
+      if (
+        versusSearchingRef.current &&
+        searchToken === versusSearchTokenRef.current
+      )
+        versusPollTimerRef.current = setTimeout(() => void poll(), 1800);
     };
     versusMatchRef.current = null;
     await poll();
   };
-  const cancelVersus = async () => {
-    versusSearchingRef.current = false;
+  const clearVersusLocalSession = () => {
     versusMatchRef.current = null;
-    await supabase.rpc("leave_1v1");
     closeVersusChannel();
+    incomingAttacksRef.current = [];
+    spawnedAttackIdsRef.current.clear();
+    versusAttackBusyRef.current = false;
+    setVersusAttackBusy(false);
+    setVersusIntermissionReady(false);
+    setPlayScope("single");
     setVersusPhase("idle");
-    setVersusOpen(false);
     setPaused(false);
+    setVersusPoints(0);
+    setVersusOpponent("WAITING…");
+    setVersusOpponentHearts(3);
   };
-  const sendVersusAttack = async (kind: "barrel" | "log" | "car" | "rock") => {
-    if (!versusMatchRef.current || versusPhase !== "intermission") return;
-    const { data, error } = await supabase.rpc("send_1v1_attack", {
-      p_match_id: versusMatchRef.current,
-      p_obstacle_type: kind,
-    });
-    if (error) {
-      setVersusResult(error.message);
+  const leaveVersusSession = async () => {
+    const wasSearching = versusSearchingRef.current;
+    const activeMatchId = versusMatchRef.current;
+    const shouldTellServer = Boolean(
+      userIdRef.current &&
+        (wasSearching || activeMatchId),
+    );
+    invalidateVersusSearch();
+    setVersusLeaving(shouldTellServer);
+    if (!shouldTellServer) {
+      clearVersusLocalSession();
+      return true;
+    }
+    try {
+      const { error } = await supabase.rpc("leave_1v1");
+      if (error) {
+        setVersusResult(error.message);
+        if (wasSearching && !activeMatchId) {
+          versusSearchingRef.current = false;
+          setVersusPhase("idle");
+          void findVersusMatch(true);
+        }
+        return false;
+      }
+      clearVersusLocalSession();
+      return true;
+    } catch {
+      setVersusResult("COULD NOT LEAVE 1V1 CLEANLY · TRY AGAIN");
+      if (wasSearching && !activeMatchId) {
+        versusSearchingRef.current = false;
+        setVersusPhase("idle");
+        void findVersusMatch(true);
+      }
+      return false;
+    } finally {
+      setVersusLeaving(false);
+    }
+  };
+  const cancelVersus = async () => {
+    setVersusResult("");
+    const left = await leaveVersusSession();
+    if (left) setVersusResult("MATCHMAKING CANCELLED");
+  };
+  const switchMainView = async (nextView: MainView) => {
+    if (nextView === mainView && !versusLeaving) return;
+    setPauseMenuOpen(false);
+    if (nextView === "versus") {
+      if (running && playScope === "single") resetGameToMenu();
+      setPaused(false);
+      setMainView("versus");
+      void loadVersusLeaderboard();
       return;
     }
-    if (typeof data?.remaining_points === "number")
-      setVersusPoints(data.remaining_points);
+    const left = await leaveVersusSession();
+    if (!left) return;
+    resetGameToMenu();
+    setVersusResult("");
+    setMainView("endless");
+  };
+  const backToMenu = () => {
+    const wasVersus =
+      playScope === "versus" || Boolean(versusMatchRef.current);
+    if (wasVersus) {
+      void leaveVersusSession().then((left) => {
+        if (!left) return;
+        resetGameToMenu();
+        setMainView("versus");
+        void loadVersusLeaderboard();
+      });
+    } else {
+      resetGameToMenu();
+      setMainView("endless");
+    }
+  };
+  const sendVersusAttack = async (kind: VersusAttackKind) => {
+    if (
+      !versusMatchRef.current ||
+      versusPhase !== "intermission" ||
+      !versusIntermissionReady ||
+      versusCountdown <= 0 ||
+      versusAttackBusyRef.current
+    )
+      return;
+    const matchId = versusMatchRef.current;
+    const refreshAttackCoins = async () => {
+      const { data } = await supabase.rpc("get_1v1_state", {
+        p_match_id: matchId,
+      });
+      if (versusMatchRef.current !== matchId) return;
+      const authoritativePoints = Number(data?.self?.obstacle_points);
+      if (Number.isFinite(authoritativePoints))
+        setVersusPoints(Math.max(0, authoritativePoints));
+      const remaining = secondsUntil(data?.match?.intermission_ends_at, 0);
+      setVersusCountdown(remaining);
+      setVersusIntermissionReady(
+        data?.match?.status === "intermission" && remaining > 0,
+      );
+    };
+    versusAttackBusyRef.current = true;
+    setVersusAttackBusy(true);
+    try {
+      const { data, error } = await supabase.rpc("send_1v1_attack", {
+        p_match_id: matchId,
+        p_obstacle_type: kind,
+      });
+      if (versusMatchRef.current !== matchId) return;
+      if (error) {
+        setVersusResult(error.message);
+        await refreshAttackCoins();
+        return;
+      }
+      if (typeof data?.remaining_points === "number")
+        setVersusPoints(data.remaining_points);
+      setVersusResult("");
+    } catch {
+      if (versusMatchRef.current === matchId) {
+        setVersusResult("COULD NOT SEND THAT ATTACK · TRY AGAIN");
+        await refreshAttackCoins();
+      }
+    } finally {
+      if (versusMatchRef.current === matchId) {
+        versusAttackBusyRef.current = false;
+        setVersusAttackBusy(false);
+      }
+    }
   };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -1089,11 +1522,16 @@ export default function Home() {
         e.preventDefault();
         toggleManualPause();
       }
-      if (e.key === "Enter" && !state.current.running) reset();
+      if (
+        e.key === "Enter" &&
+        !state.current.running &&
+        mainView === "endless"
+      )
+        reset();
     };
     addEventListener("keydown", key);
     return () => removeEventListener("keydown", key);
-  }, [move, reset, playScope, toggleManualPause]);
+  }, [move, reset, playScope, mainView, toggleManualPause]);
   useEffect(() => {
     if (!running || paused || wavePause) return;
     let raf = 0,
@@ -1457,6 +1895,7 @@ export default function Home() {
         setVersusPoints((v) => v + 3);
         setVersusCountdown(15);
         setVersusPhase("intermission");
+        setVersusIntermissionReady(false);
         setPaused(true);
         void supabase
           .rpc("award_1v1_points", {
@@ -1485,36 +1924,62 @@ export default function Home() {
   useEffect(() => {
     if (versusPhase !== "intermission") return;
     if (versusCountdown <= 0) {
-      if (versusMatchRef.current)
+      const matchId = versusMatchRef.current;
+      if (matchId)
         void supabase
           .rpc("update_1v1_state", {
-            p_match_id: versusMatchRef.current,
+            p_match_id: matchId,
             p_hearts: hearts,
             p_wave: wave,
             p_score: scoreRef.current,
             p_status: "playing",
           })
-          .then(({ error }) => {
+          .then(({ data, error }) => {
+            if (versusMatchRef.current !== matchId) return;
             if (error) {
               setVersusCountdown(1);
               return;
             }
-            const attacks = incomingAttacksRef.current.splice(0);
-            attacks.forEach((kind, index) =>
-              setTimeout(
-                () =>
-                  setItems((v) => [
-                    ...v,
-                    {
-                      id: id.current++,
-                      lane: Math.floor(Math.random() * 5),
-                      y: -10 - index * 8,
-                      kind,
-                    },
-                  ]),
-                index * 420,
-              ),
+            const pending = new Map(
+              incomingAttacksRef.current.map((attack) => [attack.id, attack]),
             );
+            const serverPending = (data?.pending_attacks ?? []) as Array<{
+              id?: string;
+              obstacle_type?: string;
+            }>;
+            const acknowledgementIds = new Set<string>();
+            serverPending.forEach((attack) => {
+              const kind = normalizeVersusObstacle(attack.obstacle_type);
+              if (attack.id && spawnedAttackIdsRef.current.has(attack.id)) {
+                acknowledgementIds.add(attack.id);
+                return;
+              }
+              if (attack.id && kind)
+                pending.set(attack.id, { id: attack.id, kind });
+            });
+            const attacks = Array.from(pending.values());
+            incomingAttacksRef.current = [];
+            if (attacks.length > 0) {
+              attacks.forEach((attack) => {
+                spawnedAttackIdsRef.current.add(attack.id);
+                acknowledgementIds.add(attack.id);
+              });
+              setItems((current) => [
+                ...current,
+                ...attacks.map((attack, index) => ({
+                  id: id.current++,
+                  lane: Math.floor(Math.random() * 5),
+                  y: -10 - index * 9,
+                  kind: attack.kind,
+                })),
+              ]);
+            }
+            if (acknowledgementIds.size > 0) {
+              void acknowledgeSpawnedVersusAttacks(
+                matchId,
+                Array.from(acknowledgementIds),
+              );
+            }
             setVersusPhase("playing");
             setPaused(false);
             announceWave(wave);
@@ -1523,25 +1988,68 @@ export default function Home() {
     }
     const timer = setTimeout(() => setVersusCountdown((v) => v - 1), 1000);
     return () => clearTimeout(timer);
-  }, [versusPhase, versusCountdown, announceWave, wave, hearts]);
+  }, [
+    versusPhase,
+    versusCountdown,
+    announceWave,
+    acknowledgeSpawnedVersusAttacks,
+    wave,
+    hearts,
+  ]);
   useEffect(() => {
     if (playScope !== "versus" || !versusMatchRef.current) return;
+    const matchId = versusMatchRef.current;
+    const nextStatus = over
+      ? "eliminated"
+      : versusPhase === "intermission"
+        ? "intermission"
+        : "playing";
     void supabase.rpc("update_1v1_state", {
-      p_match_id: versusMatchRef.current,
+      p_match_id: matchId,
       p_hearts: hearts,
       p_wave: wave,
       p_score: scoreRef.current,
-      p_status: over
-        ? "eliminated"
-        : versusPhase === "intermission"
-          ? "intermission"
-          : "playing",
+      p_status: nextStatus,
+    }).then(({ data, error }) => {
+      if (versusMatchRef.current !== matchId) return;
+      if (error) {
+        setVersusResult(error.message);
+        return;
+      }
+      const authoritativePoints = Number(data?.self?.obstacle_points);
+      if (Number.isFinite(authoritativePoints))
+        setVersusPoints(Math.max(0, authoritativePoints));
+      if (nextStatus === "intermission") {
+        const remaining = secondsUntil(data?.match?.intermission_ends_at, 15);
+        setVersusCountdown(remaining);
+        setVersusIntermissionReady(remaining > 0);
+      }
     });
     if (over && !versusFinishedRef.current) {
       versusFinishedRef.current = true;
       void supabase.rpc("finish_1v1", { p_match_id: versusMatchRef.current });
     }
   }, [hearts, wave, over, playScope, versusPhase]);
+  useEffect(() => {
+    if (
+      playScope !== "versus" ||
+      versusPhase !== "playing" ||
+      !running ||
+      over
+    )
+      return;
+    const syncScore = () => {
+      const matchId = versusMatchRef.current;
+      if (!matchId) return;
+      void supabase.rpc("sync_1v1_score", {
+        p_match_id: matchId,
+        p_score: scoreRef.current,
+      });
+    };
+    syncScore();
+    const timer = window.setInterval(syncScore, 1000);
+    return () => window.clearInterval(timer);
+  }, [over, playScope, running, versusPhase]);
   useEffect(() => {
     const applySession = async (
       session: Awaited<
@@ -1713,13 +2221,26 @@ export default function Home() {
     );
   };
   const signOut = async () => {
-    versusSearchingRef.current = false;
+    const shouldLeaveVersus = Boolean(
+      userIdRef.current &&
+        (versusSearchingRef.current || versusMatchRef.current),
+    );
+    invalidateVersusSearch();
     closeVersusChannel();
-    if (versusMatchRef.current) void supabase.rpc("leave_1v1");
     versusMatchRef.current = null;
+    incomingAttacksRef.current = [];
+    spawnedAttackIdsRef.current.clear();
+    versusAttackBusyRef.current = false;
+    setMainView("endless");
     setPlayScope("single");
     setVersusPhase("idle");
-    setVersusOpen(false);
+    setVersusPoints(0);
+    setVersusResult("");
+    setVersusAttackBusy(false);
+    setVersusIntermissionReady(false);
+    setVersusLeaving(false);
+    setVersusLeaders([]);
+    setVersusLeadersError("");
     setRunning(false);
     setPaused(false);
     setPauseMenuOpen(false);
@@ -1777,6 +2298,7 @@ export default function Home() {
     });
     userIdRef.current = null;
     audioEngine.stop();
+    if (shouldLeaveVersus) await supabase.rpc("leave_1v1");
     if (userEmail) {
       setUserEmail(null);
       await supabase.auth.signOut();
@@ -2060,6 +2582,22 @@ export default function Home() {
     setLeaders((data ?? []) as Leader[]);
     setLeaderboardOpen(true);
   };
+  const loadVersusLeaderboard = async () => {
+    if (guest) {
+      setVersusLeaders([]);
+      setVersusLeadersError("");
+      setVersusLeadersLoading(false);
+      return;
+    }
+    setVersusLeadersLoading(true);
+    setVersusLeadersError("");
+    const { data, error } = await supabase.rpc("get_1v1_leaderboard");
+    if (error) {
+      setVersusLeaders([]);
+      setVersusLeadersError(error.message);
+    } else setVersusLeaders((data ?? []) as VersusLeader[]);
+    setVersusLeadersLoading(false);
+  };
   const ownedPlayerCosmetics = unlocks.filter(
     (item) => item.item_type === "player",
   );
@@ -2266,37 +2804,38 @@ export default function Home() {
     );
   return (
     <main className={`game-shell ${flash}`}>
-      <div className="game-layout">
+      <div className={`game-layout view-${mainView}`}>
         <section className="mode-actions" aria-label="Game modes">
           <button
-            className={`mode-endless${playScope === "single" && !versusOpen ? " active" : ""}`}
-            aria-pressed={playScope === "single" && !versusOpen}
-            onClick={() => {
-              if (versusPhase === "searching") {
-                void cancelVersus();
-                return;
-              }
-              setVersusOpen(false);
-              setPauseMenuOpen(false);
-              if (playScope === "versus") backToMenu();
-              else setPaused(false);
-            }}
+            id="mode-endless-button"
+            className={`mode-endless${mainView === "endless" ? " active" : ""}`}
+            aria-pressed={mainView === "endless"}
+            aria-controls="main-game-panel"
+            aria-label={
+              playScope === "versus"
+                ? "Switch to Endless and leave the current 1v1 match"
+                : "Switch to Endless"
+            }
+            disabled={versusLeaving}
+            onClick={() => void switchMainView("endless")}
           >
             <span>∞</span>
             <span>
               <b>ENDLESS</b>
-              <small>SOLO · CHASE YOUR BEST</small>
+              <small>
+                {playScope === "versus"
+                  ? "LEAVE MATCH · FORFEIT"
+                  : "SOLO · CHASE YOUR BEST"}
+              </small>
             </span>
           </button>
           <button
-            className={`mode-versus${playScope === "versus" || versusOpen ? " active" : ""}`}
-            aria-pressed={playScope === "versus" || versusOpen}
-            disabled={playScope === "versus"}
-            onClick={() => {
-              setPauseMenuOpen(false);
-              setPaused(true);
-              setVersusOpen(true);
-            }}
+            id="mode-versus-button"
+            className={`mode-versus${mainView === "versus" ? " active" : ""}`}
+            aria-pressed={mainView === "versus"}
+            aria-controls="main-game-panel"
+            disabled={versusLeaving}
+            onClick={() => void switchMainView("versus")}
           >
             <span>⚔</span>
             <span>
@@ -2305,7 +2844,8 @@ export default function Home() {
             </span>
           </button>
         </section>
-        <nav className="game-actions">
+        {mainView === "endless" && (
+          <nav className="game-actions" aria-label="Player menus">
           <button
             className="action-leaderboard"
             disabled={playScope === "versus"}
@@ -2379,8 +2919,212 @@ export default function Home() {
               <b>ADMIN</b>
             </button>
           )}
-        </nav>
-        <section className="game-card" aria-label="Skyway Sprint runner game">
+          </nav>
+        )}
+        <section
+          id="main-game-panel"
+          className={`game-card${mainView === "versus" && playScope !== "versus" ? " versus-hub-card" : ""}`}
+          aria-label={
+            mainView === "versus" && playScope !== "versus"
+              ? "Skyway Sprint 1v1 hub"
+              : "Skyway Sprint runner game"
+          }
+          aria-labelledby={
+            mainView === "versus" && playScope !== "versus"
+              ? "versus-hub-title"
+              : undefined
+          }
+        >
+          {mainView === "versus" && playScope !== "versus" ? (
+            <div className="versus-hub">
+              <header className="versus-hub-heading">
+                <div>
+                  <p>MULTI-DEVICE REALTIME</p>
+                  <h2 id="versus-hub-title">SKYWAY 1V1</h2>
+                </div>
+                <strong>OUTLAST YOUR RIVAL</strong>
+              </header>
+              <div className="versus-hub-scroll">
+                <section
+                  className="versus-hub-panel versus-matchmaking"
+                  aria-labelledby="versus-matchmaking-title"
+                  aria-busy={versusPhase === "searching" || versusLeaving}
+                >
+                  <header>
+                    <span>01</span>
+                    <div>
+                      <small>READY UP</small>
+                      <h3 id="versus-matchmaking-title">MATCHMAKING</h3>
+                    </div>
+                  </header>
+                  {versusPhase === "searching" ? (
+                    <div className="versus-searching" role="status" aria-live="polite">
+                      <div className="matchmaking-spinner" aria-hidden="true">
+                        ⚔
+                      </div>
+                      <b>FINDING AN OPPONENT…</b>
+                      <small>Keep this screen open while we pair your account.</small>
+                      <button
+                        className="versus-cancel"
+                        disabled={versusLeaving}
+                        onClick={() => void cancelVersus()}
+                      >
+                        {versusLeaving ? "LEAVING QUEUE…" : "CANCEL SEARCH"}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="versus-ready">
+                      <div className="rival-card" aria-label="Match preview">
+                        <span>
+                          {guest ? "GUEST" : username || "YOU"}
+                          <b>READY</b>
+                        </span>
+                        <strong>VS</strong>
+                        <span>
+                          RIVAL
+                          <b>SEARCHING</b>
+                        </span>
+                      </div>
+                      <button
+                        className="versus-primary"
+                        onClick={() => void findVersusMatch()}
+                        disabled={guest || versusLeaving}
+                        aria-describedby={guest ? "versus-signin-note" : undefined}
+                      >
+                        {versusLeaving ? "FINISHING PREVIOUS MATCH…" : "FIND OPPONENT"}
+                      </button>
+                      {guest && (
+                        <small id="versus-signin-note" className="versus-signin-note">
+                          Sign in to enter account-based 1v1 matchmaking.
+                        </small>
+                      )}
+                    </div>
+                  )}
+                  {versusResult && (
+                    <div className="versus-message" role="status" aria-live="polite">
+                      {versusResult}
+                    </div>
+                  )}
+                </section>
+
+                <section
+                  className="versus-hub-panel versus-rules-panel"
+                  aria-labelledby="versus-rules-title"
+                >
+                  <header>
+                    <span>02</span>
+                    <div>
+                      <small>HOW IT WORKS</small>
+                      <h3 id="versus-rules-title">1V1 RULES</h3>
+                    </div>
+                  </header>
+                  <ol className="versus-rule-list">
+                    <li>Both runners play separate live five-lane courses.</li>
+                    <li>The runner who survives longest wins the match.</li>
+                    <li>Each track coin pickup adds <b>2 attack coins</b>.</li>
+                    <li>Each completed wave adds <b>3 attack coins</b>.</li>
+                    <li>
+                      Spend attack coins during the 15-second intermission to
+                      send hazards into your rival&apos;s next wave.
+                    </li>
+                  </ol>
+                </section>
+
+                <section
+                  className="versus-hub-panel versus-armory-panel"
+                  aria-labelledby="versus-armory-title"
+                >
+                  <header>
+                    <span>03</span>
+                    <div>
+                      <small>INTERMISSION SHOP</small>
+                      <h3 id="versus-armory-title">ATTACK COIN ARMORY</h3>
+                    </div>
+                  </header>
+                  <p className="versus-armory-note">
+                    These prices use match-only attack coins—not permanent gems.
+                    Purchases unlock during each intermission.
+                  </p>
+                  <div className="versus-attack-catalog">
+                    {VERSUS_ATTACKS.map((attack) => (
+                      <article key={attack.kind}>
+                        <span aria-hidden="true">{attack.icon}</span>
+                        <div>
+                          <b>{attack.label}</b>
+                          <small>{attack.description}</small>
+                        </div>
+                        <strong>◉ {attack.cost} COINS</strong>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+
+                <section
+                  className="versus-hub-panel versus-leaderboard-panel"
+                  aria-labelledby="versus-leaderboard-title"
+                >
+                  <header>
+                    <span>04</span>
+                    <div>
+                      <small>RANKED RECORDS</small>
+                      <h3 id="versus-leaderboard-title">1V1 LEADERBOARD</h3>
+                    </div>
+                    <button
+                      className="versus-refresh"
+                      onClick={() => void loadVersusLeaderboard()}
+                      disabled={versusLeadersLoading}
+                    >
+                      {versusLeadersLoading ? "LOADING…" : "REFRESH"}
+                    </button>
+                  </header>
+                  {guest ? (
+                    <div className="versus-hub-empty">
+                      Sign in to view the ranked 1v1 leaderboard.
+                    </div>
+                  ) : versusLeadersError ? (
+                    <div className="versus-hub-empty error" role="status">
+                      {versusLeadersError}
+                    </div>
+                  ) : versusLeadersLoading && versusLeaders.length === 0 ? (
+                    <div className="versus-hub-empty" role="status">
+                      Loading ranked records…
+                    </div>
+                  ) : versusLeaders.length === 0 ? (
+                    <div className="versus-hub-empty">No ranked matches yet.</div>
+                  ) : (
+                    <ol className="versus-leader-list">
+                      {versusLeaders.map((entry) => {
+                        const winRate = Number(entry.win_rate);
+                        return (
+                          <li
+                            key={`${entry.rank}-${entry.username}`}
+                            className={entry.is_self ? "me" : ""}
+                          >
+                            <b>#{Number(entry.rank)}</b>
+                            <span>
+                              <strong>{entry.username}</strong>
+                              <small>
+                                {entry.provisional
+                                  ? "PROVISIONAL"
+                                  : `${Number.isFinite(winRate) ? winRate.toFixed(1) : "0.0"}% WIN RATE`}
+                              </small>
+                            </span>
+                            <span>
+                              <strong>{Number(entry.rating)} RATING</strong>
+                              <small>
+                                {Number(entry.wins)}W–{Number(entry.losses)}L · BEST WAVE {Number(entry.best_wave)}
+                              </small>
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  )}
+                </section>
+              </div>
+            </div>
+          ) : (
+            <>
           <header className="topbar">
             <div className="brand">
               <span>S</span>
@@ -2436,9 +3180,23 @@ export default function Home() {
                   <small>{versusOpponent}</small>
                   <b>{versusOpponentHearts} HP</b>
                 </div>
-                <em>OP {versusPoints}</em>
+                <em aria-label={`${versusPoints} attack coins`}>
+                  ◉ {versusPoints}
+                </em>
               </div>
             )}
+            {playScope === "versus" &&
+              versusResult &&
+              !over &&
+              versusPhase !== "intermission" && (
+                <div
+                  className="versus-live-message"
+                  role="status"
+                  aria-live="polite"
+                >
+                  {versusResult}
+                </div>
+              )}
             {waveMessage && (
               <div className="wave-announcement">
                 <small>GET READY</small>
@@ -2541,15 +3299,12 @@ export default function Home() {
                 <button
                   onClick={
                     playScope === "versus"
-                      ? () => {
-                          backToMenu();
-                          setVersusOpen(true);
-                        }
+                      ? backToMenu
                       : reset
                   }
                 >
                   {playScope === "versus"
-                    ? "FIND NEW RIVAL"
+                    ? "RETURN TO 1V1 HUB"
                     : over
                       ? "RUN AGAIN"
                       : "START RUN"}{" "}
@@ -2564,41 +3319,47 @@ export default function Home() {
               </div>
             )}
             {versusPhase === "intermission" && (
-              <div className="overlay versus-intermission">
+              <div
+                className="overlay versus-intermission"
+                aria-busy={
+                  !versusIntermissionReady || versusCountdown <= 0
+                }
+              >
                 <p>NEXT WAVE IN</p>
                 <h1>{versusCountdown}</h1>
-                <strong>OBSTACLE POINTS: {versusPoints}</strong>
+                <strong>ATTACK COINS: ◉ {versusPoints}</strong>
+                <span className="versus-shop-state" role="status" aria-live="polite">
+                  {versusCountdown <= 0
+                    ? "LOCKING NEXT WAVE…"
+                    : versusIntermissionReady
+                      ? "ARMORY OPEN"
+                      : "SYNCING ATTACK COINS…"}
+                </span>
                 <div className="attack-grid">
-                  <button
-                    disabled={versusPoints < 2}
-                    onClick={() => sendVersusAttack("barrel")}
-                  >
-                    BARREL <small>2 OP</small>
-                  </button>
-                  <button
-                    disabled={versusPoints < 2}
-                    onClick={() => sendVersusAttack("log")}
-                  >
-                    LOG <small>2 OP</small>
-                  </button>
-                  <button
-                    disabled={versusPoints < 3}
-                    onClick={() => sendVersusAttack("car")}
-                  >
-                    CAR <small>3 OP</small>
-                  </button>
-                  <button
-                    disabled={versusPoints < 3}
-                    onClick={() => sendVersusAttack("rock")}
-                  >
-                    ROCK <small>3 OP</small>
-                  </button>
+                  {VERSUS_ATTACKS.map((attack) => (
+                    <button
+                      key={attack.kind}
+                      disabled={
+                        !versusIntermissionReady ||
+                        versusCountdown <= 0 ||
+                        versusAttackBusy ||
+                        versusPoints < attack.cost
+                      }
+                      onClick={() => void sendVersusAttack(attack.kind)}
+                      aria-label={`Send ${attack.label} for ${attack.cost} attack coins`}
+                    >
+                      <span aria-hidden="true">{attack.icon}</span>
+                      {attack.label} <small>{attack.cost} COINS</small>
+                    </button>
+                  ))}
                 </div>
                 <small>
-                  Purchased obstacles attack {versusOpponent} next wave.
+                  Each track coin adds 2 attack coins. Purchased obstacles attack {versusOpponent} next wave.
                 </small>
                 {versusResult && (
-                  <div className="versus-message">{versusResult}</div>
+                  <div className="versus-message" role="status" aria-live="polite">
+                    {versusResult}
+                  </div>
                 )}
               </div>
             )}
@@ -2724,6 +3485,8 @@ export default function Home() {
               {playScope === "versus" ? "⚔" : pauseMenuOpen ? "▶" : "Ⅱ"}
             </button>
           </footer>
+            </>
+          )}
         </section>
         {(settingsOpen || usernameRequired) && !guest && (
           <div className="report-backdrop" role="dialog" aria-modal="true">
@@ -2874,86 +3637,6 @@ export default function Home() {
                 <button className="signout-settings" onClick={signOut}>
                   SIGN OUT
                 </button>
-              )}
-            </section>
-          </div>
-        )}
-        {versusOpen && (
-          <div className="report-backdrop">
-            <section className="versus-modal">
-              <button
-                className="report-close"
-                onClick={() => {
-                  if (versusPhase === "searching") void cancelVersus();
-                  else {
-                    setVersusOpen(false);
-                    setPaused(false);
-                  }
-                }}
-              >
-                ×
-              </button>
-              <p>MULTI-DEVICE REALTIME</p>
-              <h2>SKYWAY 1V1</h2>
-              {playScope === "versus" ? (
-                <>
-                  <div className="rival-card">
-                    <span>
-                      {username || "YOU"}
-                      <b>{hearts} HP</b>
-                    </span>
-                    <strong>VS</strong>
-                    <span>
-                      {versusOpponent}
-                      <b>{versusOpponentHearts} HP</b>
-                    </span>
-                  </div>
-                  <button
-                    className="versus-primary"
-                    onClick={() => {
-                      setVersusOpen(false);
-                      setPaused(false);
-                    }}
-                  >
-                    RETURN TO MATCH
-                  </button>
-                </>
-              ) : versusPhase === "searching" ? (
-                <>
-                  <div className="matchmaking-spinner">⚔</div>
-                  <h3>FINDING AN OPPONENT…</h3>
-                  <button
-                    className="versus-cancel"
-                    onClick={() => void cancelVersus()}
-                  >
-                    CANCEL SEARCH
-                  </button>
-                </>
-              ) : (
-                <>
-                  <p className="versus-rules">
-                    Survive longer than your rival. Coins earn <b>2 OP</b> and
-                    completed waves earn <b>3 OP</b>. Spend OP during each
-                    15-second intermission to send obstacles to your opponent.
-                  </p>
-                  <div className="cost-row">
-                    <span>LOG 2</span>
-                    <span>BARREL 2</span>
-                    <span>CAR 3</span>
-                    <span>ROCK 3</span>
-                  </div>
-                  <button
-                    className="versus-primary"
-                    onClick={() => void findVersusMatch()}
-                    disabled={guest}
-                  >
-                    FIND OPPONENT
-                  </button>
-                  {guest && <small>SIGN IN TO PLAY 1V1</small>}
-                </>
-              )}
-              {versusResult && (
-                <div className="versus-message">{versusResult}</div>
               )}
             </section>
           </div>
@@ -3472,23 +4155,23 @@ export default function Home() {
               <p>ADMIN CONTROL</p>
               <h2 id="admin-dialog-title">
                 {adminTab === "reports"
-                  ? "REPORT INBOX"
+                  ? "ADMIN 01 · INBOX"
                   : adminTab === "admins"
-                    ? "ADMIN TEAM"
-                    : "PLAYER EDITOR"}
+                    ? "ADMIN 02 · ADMINS"
+                    : "ADMIN 03 · PLAYER LOOKUP + COMMANDS"}
               </h2>
               <div className="admin-tabs">
                 <button
                   className={adminTab === "reports" ? "active" : ""}
                   onClick={() => setAdminTab("reports")}
                 >
-                  REPORTS
+                  01 · INBOX
                 </button>
                 <button
                   className={adminTab === "admins" ? "active" : ""}
                   onClick={loadAdmins}
                 >
-                  ADMINS
+                  02 · ADMINS
                 </button>
                 <button
                   className={adminTab === "players" ? "active" : ""}
@@ -3498,7 +4181,7 @@ export default function Home() {
                     setPaused(true);
                   }}
                 >
-                  PLAYER EDITOR
+                  03 · PLAYER LOOKUP
                 </button>
               </div>
               {adminTab === "reports" ? (
