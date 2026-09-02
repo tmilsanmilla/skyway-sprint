@@ -1,7 +1,7 @@
 'use client';
 import {FormEvent,useCallback,useEffect,useRef,useState} from 'react';
 import {createBrowserClient} from '@supabase/ssr';
-type Kind='gem'|'boost'|'log'|'snowflake'|'rock'|'barrel'; type Item={id:number;lane:number;y:number;kind:Kind};
+type Kind='gem'|'boost'|'log'|'snowflake'|'rock'|'barrel'|'spikes'; type Item={id:number;lane:number;y:number;kind:Kind};
 type GameMode='normal'|'hardcore'|'impossible';
 type PlayerReport={id:number;user_id:string;report_type:string;message:string;status:string;created_at:string};
 type AdminUser={user_id:string;email:string;username:string|null;role:'main'|'co_admin'};
@@ -12,6 +12,7 @@ function Obstacle({kind}:{kind:Kind}){
  if(kind==='boost')return <span>+100</span>;
 
  if(kind==='barrel')return <div className="barrel-shape"><i/><b/><em/></div>;
+ if(kind==='spikes')return <div className="ground-spike-shape"><span>!</span><i/><i/><i/><i/></div>;
  if(kind==='log')return <div className="log-shape"><i/><b/><em/></div>;
  if(kind==='snowflake')return <span>❄</span>;
  return <div className="rock-shape"><u/><i/><b/><em/></div>;
@@ -39,7 +40,7 @@ export default function Home(){
     last.current=now;
     const r=Math.random(),danger=Math.min(.79,.54+wave*.025),gemThreshold=mode==='impossible'?.86:mode==='hardcore'?.9:.94;
     let kind:Kind;
-    if(r<danger)kind=(['log','snowflake','rock','barrel']as Kind[])[Math.floor(Math.random()*4)];else if(r>gemThreshold)kind='gem';else kind='boost';
+    if(r<danger)kind=(['log','snowflake','rock','barrel','spikes']as Kind[])[Math.floor(Math.random()*5)];else if(r>gemThreshold)kind='gem';else kind='boost';
     setItems(v=>{const blocked=new Set(v.map(x=>x.lane));const lanes=[0,1,2,3,4].filter(l=>!blocked.has(l));if(!lanes.length)return v;const spawnLane=lanes[Math.floor(Math.random()*lanes.length)];return [...v,{id:id.current++,lane:spawnLane,y:-10,kind}]});
    }
    setItems(old=>old.flatMap(item=>{
