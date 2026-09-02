@@ -360,6 +360,8 @@ const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
 };
 const BASE_DAMAGE_DESCRIPTION =
   "DAMAGE BEFORE PASSIVES: barrel 0.5 HP · log/car/spikes 1 HP · rock 2 HP · snowflake 0 HP plus a 3-second freeze that delays every turn by 0.25 seconds.";
+const BASE_ITEM_SPEED = 0.0452;
+const WAVE_SPEED_STEP = 0.25;
 const INVENTORY_CLASSES: ReadonlyArray<{
   key: keyof typeof CLASS_CHARACTERS;
   label: string;
@@ -1606,7 +1608,12 @@ export default function Home() {
                     : 1;
           const n = {
             ...item,
-            y: item.y + (0.04 + wave * 0.0052) * speedFactor * dt,
+            y:
+              item.y +
+              BASE_ITEM_SPEED *
+                (1 + (wave - 1) * WAVE_SPEED_STEP) *
+                speedFactor *
+                dt,
           };
           const rangerPickup =
             activeCharacter === "runner_ranger" &&
@@ -3248,7 +3255,9 @@ export default function Home() {
               ))}
               <div className="wave-chip">
                 WAVE {wave}
-                <small>SPEED ×{(1 + (wave - 1) * 0.12).toFixed(2)}</small>
+                <small>
+                  SPEED ×{(1 + (wave - 1) * WAVE_SPEED_STEP).toFixed(2)}
+                </small>
               </div>
               {items.map((x) => (
                 <div
