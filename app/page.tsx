@@ -48,6 +48,13 @@ type ExtractionResult = Unlock & {
   category: "character" | "cosmetic";
   display_name?: string;
 };
+type StoredLoadout = {
+  class_key?: string | null;
+  character_key?: string | null;
+  player_cosmetic?: string | null;
+  obstacle_cosmetic?: string | null;
+  environment_cosmetic?: string | null;
+} | null;
 type BoxType = "regular" | "legendary";
 type PlayScope = "single" | "versus";
 const AUDIO_PREFERENCES_KEY = "skyway.audio.v1";
@@ -90,6 +97,90 @@ const CLASS_CHARACTERS = {
     { key: "trickster_phantom", name: "Phantom", weapon: "Moon Scythe" },
   ],
 } as const;
+const CHARACTER_ABILITIES = {
+  runner_ace: {
+    name: "MOMENTUM",
+    description: "Run score builds 10% faster.",
+  },
+  runner_scout: {
+    name: "QUICKSTEP",
+    description: "Snowflake turn delay is reduced from 0.2s to 0.08s.",
+  },
+  runner_ranger: {
+    name: "PICKUP MAGNET",
+    description: "Collect coins and gems from one neighboring lane.",
+  },
+  medic_patch: {
+    name: "FIELD DRESSING",
+    description: "Restore 1.5 HP instead of 1 after each Normal wave.",
+  },
+  medic_mercy: {
+    name: "GRACE GUARD",
+    description: "The first hit each wave deals 0.5 less damage.",
+  },
+  medic_vial: {
+    name: "CRYSTAL TONIC",
+    description: "Collecting a gem grants 2 seconds of invincibility.",
+  },
+  tank_bulwark: {
+    name: "HEAVY PLATE",
+    description: "Every hit deals 0.5 less damage, to a minimum of 0.5.",
+  },
+  tank_hammer: {
+    name: "DEMOLITION",
+    description: "Break barrels safely; logs deal only 0.5 HP.",
+  },
+  tank_sentinel: {
+    name: "LAST STAND",
+    description: "Once per run, lethal damage leaves you at 0.5 HP.",
+  },
+  trickster_rogue: {
+    name: "SHADOWSTEP",
+    description:
+      "A lane switch grants 0.3 seconds of invincibility, with a 1.5s cooldown.",
+  },
+  trickster_jester: {
+    name: "ENCORE",
+    description: "Start every wave with 2 seconds of invincibility.",
+  },
+  trickster_phantom: {
+    name: "PHASE VEIL",
+    description: "Pass through the first damaging obstacle each wave.",
+  },
+} as const;
+type CharacterKey = keyof typeof CHARACTER_ABILITIES;
+const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
+  const owns = (itemType: Unlock["item_type"], itemKey?: string | null) =>
+    Boolean(
+      itemKey &&
+        owned.some(
+          (item) =>
+            item.item_type === itemType && item.item_key === itemKey,
+        ),
+    );
+  const requestedCharacter = loadout?.character_key ?? "runner_ace";
+  const characterKey =
+    requestedCharacter in CHARACTER_ABILITIES &&
+    (requestedCharacter === "runner_ace" || owns("character", requestedCharacter))
+      ? requestedCharacter
+      : "runner_ace";
+  const inferredClass = characterKey.split("_")[0];
+  const classKey =
+    inferredClass in CLASS_CHARACTERS ? inferredClass : "runner";
+  return {
+    classKey,
+    characterKey,
+    playerCosmetic: owns("player", loadout?.player_cosmetic)
+      ? loadout?.player_cosmetic ?? ""
+      : "",
+    obstacleCosmetic: owns("obstacle", loadout?.obstacle_cosmetic)
+      ? loadout?.obstacle_cosmetic ?? ""
+      : "",
+    environmentCosmetic: owns("environment", loadout?.environment_cosmetic)
+      ? loadout?.environment_cosmetic ?? ""
+      : "",
+  };
+};
 const INVENTORY_CLASSES: ReadonlyArray<{
   key: keyof typeof CLASS_CHARACTERS;
   label: string;
@@ -244,18 +335,41 @@ export default function Home() {
     gemsRef = useRef(0),
     scoreRef = useRef(0),
     highScoreRef = useRef(0),
+    aceScoreCarryRef = useRef(0),
     invincibleUntilRef = useRef(0),
+    invincibilityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
+    waveAnnouncementTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+      null,
+    ),
+    rogueAbilityCooldownUntilRef = useRef(0),
     turnLockedRef = useRef(false),
     delayedMoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     damageLockedRef = useRef(false),
     freezeNextMoveRef = useRef(false),
+    mercyGuardWaveRef = useRef(0),
+    sentinelLastStandUsedRef = useRef(false),
+    phantomPhaseWaveRef = useRef(0),
     versusMatchRef = useRef<string | null>(null),
     versusSearchingRef = useRef(false),
     realtimeRef = useRef<ReturnType<typeof supabase.channel> | null>(null),
     incomingAttacksRef = useRef<Kind[]>([]),
     versusFinishedRef = useRef(false),
-    state = useRef({ lane, running, paused, pauseMenuOpen, wavePause });
-  state.current = { lane, running, paused, pauseMenuOpen, wavePause };
+    state = useRef({
+      lane,
+      running,
+      paused,
+      pauseMenuOpen,
+      wavePause,
+      hearts,
+    });
+  state.current = {
+    lane,
+    running,
+    paused,
+    pauseMenuOpen,
+    wavePause,
+    hearts,
+  };
   gemsRef.current = gems;
   scoreRef.current = score;
   highScoreRef.current = highScore;
@@ -263,6 +377,10 @@ export default function Home() {
     () => () => {
       if (delayedMoveTimerRef.current)
         clearTimeout(delayedMoveTimerRef.current);
+      if (invincibilityTimerRef.current)
+        clearTimeout(invincibilityTimerRef.current);
+      if (waveAnnouncementTimerRef.current)
+        clearTimeout(waveAnnouncementTimerRef.current);
     },
     [],
   );
@@ -368,9 +486,16 @@ export default function Home() {
   const baseHearts =
     activeClass === "tank" ? 5 : activeClass === "trickster" ? 2 : 3;
   const maxHearts =
-    mode === "impossible" ? 1 : activeClass === "medic" ? 5 : baseHearts;
+    mode === "impossible" || mode === "hardcore"
+      ? 1
+      : activeClass === "medic"
+        ? 5
+        : baseHearts;
   const modeMultiplier =
     mode === "impossible" ? 3 : mode === "hardcore" ? 1.75 : 1;
+  const activeAbility =
+    CHARACTER_ABILITIES[activeCharacter as CharacterKey] ??
+    CHARACTER_ABILITIES.runner_ace;
   const saveAudioPreferences = (
     nextTrack: Soundtrack,
     nextMusic: number,
@@ -407,15 +532,37 @@ export default function Home() {
     audioEngine.setSfxVolume(volume);
     saveAudioPreferences(soundtrack, musicVolume, volume);
   };
-  const announceWave = useCallback((number: number) => {
-    void audioEngine.playSfx("wave");
-    setWaveMessage(`WAVE ${number}`);
-    setWavePause(true);
-    setTimeout(() => {
-      setWaveMessage("");
-      setWavePause(false);
-    }, 1250);
+  const grantInvincibility = useCallback((durationMs: number) => {
+    const now = Date.now();
+    const until = Math.max(invincibleUntilRef.current, now + durationMs);
+    invincibleUntilRef.current = until;
+    setInvincible(true);
+    if (invincibilityTimerRef.current)
+      clearTimeout(invincibilityTimerRef.current);
+    invincibilityTimerRef.current = setTimeout(() => {
+      if (invincibleUntilRef.current <= Date.now()) {
+        setInvincible(false);
+        invincibilityTimerRef.current = null;
+      }
+    }, until - now + 25);
   }, []);
+  const announceWave = useCallback(
+    (number: number) => {
+      void audioEngine.playSfx("wave");
+      setWaveMessage(`WAVE ${number}`);
+      setWavePause(true);
+      if (waveAnnouncementTimerRef.current)
+        clearTimeout(waveAnnouncementTimerRef.current);
+      waveAnnouncementTimerRef.current = setTimeout(() => {
+        setWaveMessage("");
+        setWavePause(false);
+        if (activeCharacter === "trickster_jester")
+          grantInvincibility(2000);
+        waveAnnouncementTimerRef.current = null;
+      }, 1250);
+    },
+    [activeCharacter, grantInvincibility],
+  );
   const reset = useCallback(() => {
     setLane(2);
     setItems([]);
@@ -428,7 +575,20 @@ export default function Home() {
     setInvincible(false);
     setSlowed(false);
     invincibleUntilRef.current = 0;
+    if (invincibilityTimerRef.current) {
+      clearTimeout(invincibilityTimerRef.current);
+      invincibilityTimerRef.current = null;
+    }
+    if (waveAnnouncementTimerRef.current) {
+      clearTimeout(waveAnnouncementTimerRef.current);
+      waveAnnouncementTimerRef.current = null;
+    }
     freezeNextMoveRef.current = false;
+    mercyGuardWaveRef.current = 0;
+    sentinelLastStandUsedRef.current = false;
+    phantomPhaseWaveRef.current = 0;
+    aceScoreCarryRef.current = 0;
+    rogueAbilityCooldownUntilRef.current = 0;
     turnLockedRef.current = false;
     if (delayedMoveTimerRef.current) {
       clearTimeout(delayedMoveTimerRef.current);
@@ -459,7 +619,20 @@ export default function Home() {
     setInvincible(false);
     setSlowed(false);
     invincibleUntilRef.current = 0;
+    if (invincibilityTimerRef.current) {
+      clearTimeout(invincibilityTimerRef.current);
+      invincibilityTimerRef.current = null;
+    }
+    if (waveAnnouncementTimerRef.current) {
+      clearTimeout(waveAnnouncementTimerRef.current);
+      waveAnnouncementTimerRef.current = null;
+    }
     freezeNextMoveRef.current = false;
+    mercyGuardWaveRef.current = 0;
+    sentinelLastStandUsedRef.current = false;
+    phantomPhaseWaveRef.current = 0;
+    aceScoreCarryRef.current = 0;
+    rogueAbilityCooldownUntilRef.current = 0;
     turnLockedRef.current = false;
     if (delayedMoveTimerRef.current) {
       clearTimeout(delayedMoveTimerRef.current);
@@ -488,16 +661,30 @@ export default function Home() {
         ) {
           setLane(destination);
           void audioEngine.playSfx("move");
+          if (
+            activeCharacter === "trickster_rogue" &&
+            rogueAbilityCooldownUntilRef.current <= Date.now()
+          ) {
+            rogueAbilityCooldownUntilRef.current = Date.now() + 1500;
+            grantInvincibility(300);
+          }
         }
         setSlowed(false);
         turnLockedRef.current = false;
         delayedMoveTimerRef.current = null;
-      }, 200);
+      }, activeCharacter === "runner_scout" ? 80 : 200);
       return;
     }
     setLane(destination);
     void audioEngine.playSfx("move");
-  }, []);
+    if (
+      activeCharacter === "trickster_rogue" &&
+      rogueAbilityCooldownUntilRef.current <= Date.now()
+    ) {
+      rogueAbilityCooldownUntilRef.current = Date.now() + 1500;
+      grantInvincibility(300);
+    }
+  }, [activeCharacter, grantInvincibility]);
   const toggleManualPause = useCallback(() => {
     if (
       playScope === "versus" ||
@@ -747,9 +934,13 @@ export default function Home() {
             ...item,
             y: item.y + (0.04 + wave * 0.0052) * speedFactor * dt,
           };
+          const rangerPickup =
+            activeCharacter === "runner_ranger" &&
+            (n.kind === "gem" || n.kind === "coin") &&
+            Math.abs(n.lane - state.current.lane) <= 1;
           if (
             !damageLockedRef.current &&
-            n.lane === state.current.lane &&
+            (n.lane === state.current.lane || rangerPickup) &&
             n.y > 65 &&
             n.y < 91
           ) {
@@ -761,6 +952,8 @@ export default function Home() {
               setGemBump(false);
               requestAnimationFrame(() => setGemBump(true));
               setTimeout(() => setGemBump(false), 500);
+              if (activeCharacter === "medic_vial")
+                grantInvincibility(2000);
               if (userIdRef.current)
                 void supabase
                   .rpc("increment_player_gems")
@@ -801,9 +994,28 @@ export default function Home() {
               setTimeout(() => {
                 setFlash((value) => (value === "freeze-hit" ? "" : value));
               }, 700);
-            } else if (invincibleUntilRef.current > Date.now()) {
+            } else if (
+              activeCharacter === "tank_hammer" &&
+              n.kind === "barrel"
+            ) {
+              void audioEngine.playSfx("shield");
+              setFlash("shield");
+              setTimeout(() => setFlash(""), 150);
+              return [];
+            } else if (
+              invincibleUntilRef.current > Date.now()
+            ) {
               setFlash("shield");
               setTimeout(() => setFlash(""), 120);
+              return [];
+            } else if (
+              activeCharacter === "trickster_phantom" &&
+              phantomPhaseWaveRef.current !== wave
+            ) {
+              phantomPhaseWaveRef.current = wave;
+              void audioEngine.playSfx("shield");
+              setFlash("shield");
+              setTimeout(() => setFlash(""), 150);
               return [];
             } else {
               clearRecoveryZone = true;
@@ -817,46 +1029,72 @@ export default function Home() {
                     : n.kind === "barrel"
                       ? 0.5
                       : 1;
+              let abilityAdjustedDamage =
+                activeCharacter === "tank_hammer" && n.kind === "log"
+                  ? 0.5
+                  : rawDamage;
+              if (
+                activeCharacter === "medic_mercy" &&
+                abilityAdjustedDamage > 0.5 &&
+                mercyGuardWaveRef.current !== wave
+              ) {
+                mercyGuardWaveRef.current = wave;
+                abilityAdjustedDamage = Math.max(
+                  0.5,
+                  abilityAdjustedDamage - 0.5,
+                );
+              }
+              if (activeCharacter === "tank_bulwark")
+                abilityAdjustedDamage = Math.max(
+                  0.5,
+                  abilityAdjustedDamage - 0.5,
+                );
               const damage =
                 mode !== "impossible" && activeClass === "trickster"
-                  ? rawDamage * 2
-                  : rawDamage;
-              setHearts((v) => {
-                const h = v - damage;
-                if (h <= 0) {
-                  setRunning(false);
-                  setPauseMenuOpen(false);
-                  setOver(true);
-                  if (guest) {
-                    setGems(0);
-                    gemsRef.current = 0;
-                  } else {
-                    const best = Math.max(
-                      highScoreRef.current,
-                      scoreRef.current,
-                    );
-                    highScoreRef.current = best;
-                    setHighScore(best);
-                    if (userIdRef.current)
-                      void supabase
-                        .rpc("save_player_high_score", { new_score: best })
-                        .then(({ data, error }) => {
-                          if (error) {
-                            console.error(
-                              "Could not save high score:",
-                              error.message,
-                            );
-                            return;
-                          }
-                          if (typeof data === "number") {
-                            highScoreRef.current = data;
-                            setHighScore(data);
-                          }
-                        });
-                  }
+                  ? abilityAdjustedDamage * 2
+                  : abilityAdjustedDamage;
+              let nextHearts = state.current.hearts - damage;
+              if (
+                nextHearts <= 0 &&
+                activeCharacter === "tank_sentinel" &&
+                !sentinelLastStandUsedRef.current
+              ) {
+                sentinelLastStandUsedRef.current = true;
+                nextHearts = 0.5;
+              }
+              setHearts(Math.max(0, nextHearts));
+              if (nextHearts <= 0) {
+                setRunning(false);
+                setPauseMenuOpen(false);
+                setOver(true);
+                if (guest) {
+                  setGems(0);
+                  gemsRef.current = 0;
+                } else {
+                  const best = Math.max(
+                    highScoreRef.current,
+                    scoreRef.current,
+                  );
+                  highScoreRef.current = best;
+                  setHighScore(best);
+                  if (userIdRef.current)
+                    void supabase
+                      .rpc("save_player_high_score", { new_score: best })
+                      .then(({ data, error }) => {
+                        if (error) {
+                          console.error(
+                            "Could not save high score:",
+                            error.message,
+                          );
+                          return;
+                        }
+                        if (typeof data === "number") {
+                          highScoreRef.current = data;
+                          setHighScore(data);
+                        }
+                      });
                 }
-                return Math.max(0, h);
-              });
+              }
               setPaused(true);
               setFlash(
                 damage <= 0.5
@@ -882,18 +1120,18 @@ export default function Home() {
           (item) => item.y <= 45 || item.y >= 105,
         );
       });
-      setScore(
-        (v) =>
-          v +
-          Math.max(
-            1,
-            Math.round(
-              (dt / 12) *
-                (1 + wave * 0.01) *
-                modeMultiplier,
-            ),
-          ),
+      const baseScoreGain = Math.max(
+        1,
+        Math.round((dt / 12) * (1 + wave * 0.01) * modeMultiplier),
       );
+      let scoreGain = baseScoreGain;
+      if (activeCharacter === "runner_ace") {
+        aceScoreCarryRef.current += baseScoreGain * 0.1;
+        const bonus = Math.floor(aceScoreCarryRef.current);
+        aceScoreCarryRef.current -= bonus;
+        scoreGain += bonus;
+      }
+      setScore((v) => v + scoreGain);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -907,8 +1145,10 @@ export default function Home() {
     mode,
     maxHearts,
     activeClass,
+    activeCharacter,
     playScope,
     modeMultiplier,
+    grantInvincibility,
   ]);
   useEffect(() => {
     if (!running) return;
@@ -917,7 +1157,15 @@ export default function Home() {
       setWave(next);
       if (mode === "normal")
         setHearts((v) =>
-          Math.min(maxHearts, v + (activeClass === "tank" ? 0.5 : 1)),
+          Math.min(
+            maxHearts,
+            v +
+              (activeCharacter === "medic_patch"
+                ? 1.5
+                : activeClass === "tank"
+                  ? 0.5
+                  : 1),
+          ),
         );
       if (playScope === "versus" && versusMatchRef.current) {
         setVersusPoints((v) => v + 3);
@@ -944,6 +1192,7 @@ export default function Home() {
     mode,
     maxHearts,
     activeClass,
+    activeCharacter,
     playScope,
   ]);
   useEffect(() => {
@@ -1021,6 +1270,7 @@ export default function Home() {
           { data: profile },
           { data: admin },
           { data: role },
+          { data: owned },
           { data: loadout },
         ] = await Promise.all([
           supabase
@@ -1035,6 +1285,10 @@ export default function Home() {
             .maybeSingle(),
           supabase.rpc("is_admin"),
           supabase.rpc("get_admin_role"),
+          supabase
+            .from("player_unlocks")
+            .select("item_key,item_type,rarity")
+            .eq("user_id", user.id),
           supabase
             .from("player_loadouts")
             .select(
@@ -1064,11 +1318,14 @@ export default function Home() {
         } else setUsernameRequired(true);
         setIsAdmin(Boolean(admin));
         setAdminRole(role);
-        if (loadout?.class_key) setPlayerClass(loadout.class_key);
-        if (loadout?.character_key) setSelectedCharacter(loadout.character_key);
-        setPlayerCosmetic(loadout?.player_cosmetic ?? "");
-        setObstacleCosmetic(loadout?.obstacle_cosmetic ?? "");
-        setEnvironmentCosmetic(loadout?.environment_cosmetic ?? "");
+        const ownedItems = (owned ?? []) as Unlock[];
+        const safeLoadout = normalizeOwnedLoadout(ownedItems, loadout);
+        setUnlocks(ownedItems);
+        setPlayerClass(safeLoadout.classKey);
+        setSelectedCharacter(safeLoadout.characterKey);
+        setPlayerCosmetic(safeLoadout.playerCosmetic);
+        setObstacleCosmetic(safeLoadout.obstacleCosmetic);
+        setEnvironmentCosmetic(safeLoadout.environmentCosmetic);
       } else {
         setUsername("");
         setUsernameRequired(false);
@@ -1158,8 +1415,23 @@ export default function Home() {
     setPaused(false);
     setPauseMenuOpen(false);
     setWavePause(false);
+    setInvincible(false);
     setSlowed(false);
+    invincibleUntilRef.current = 0;
+    if (invincibilityTimerRef.current) {
+      clearTimeout(invincibilityTimerRef.current);
+      invincibilityTimerRef.current = null;
+    }
+    if (waveAnnouncementTimerRef.current) {
+      clearTimeout(waveAnnouncementTimerRef.current);
+      waveAnnouncementTimerRef.current = null;
+    }
     freezeNextMoveRef.current = false;
+    mercyGuardWaveRef.current = 0;
+    sentinelLastStandUsedRef.current = false;
+    phantomPhaseWaveRef.current = 0;
+    aceScoreCarryRef.current = 0;
+    rogueAbilityCooldownUntilRef.current = 0;
     turnLockedRef.current = false;
     if (delayedMoveTimerRef.current) {
       clearTimeout(delayedMoveTimerRef.current);
@@ -1335,12 +1607,14 @@ export default function Home() {
         )
         .maybeSingle(),
     ]);
-    setUnlocks((owned ?? []) as Unlock[]);
-    if (loadout?.class_key) setPlayerClass(loadout.class_key);
-    if (loadout?.character_key) setSelectedCharacter(loadout.character_key);
-    setPlayerCosmetic(loadout?.player_cosmetic ?? "");
-    setObstacleCosmetic(loadout?.obstacle_cosmetic ?? "");
-    setEnvironmentCosmetic(loadout?.environment_cosmetic ?? "");
+    const ownedItems = (owned ?? []) as Unlock[];
+    const safeLoadout = normalizeOwnedLoadout(ownedItems, loadout);
+    setUnlocks(ownedItems);
+    setPlayerClass(safeLoadout.classKey);
+    setSelectedCharacter(safeLoadout.characterKey);
+    setPlayerCosmetic(safeLoadout.playerCosmetic);
+    setObstacleCosmetic(safeLoadout.obstacleCosmetic);
+    setEnvironmentCosmetic(safeLoadout.environmentCosmetic);
   };
   const extract = async (boxType: BoxType) => {
     if (extractBusy) return;
@@ -1474,6 +1748,18 @@ export default function Home() {
   const focusedCharacter = CLASS_CHARACTERS[
     inventoryCharacter.classKey
   ].find((character) => character.key === inventoryCharacter.characterKey);
+  const focusedCharacterOwned = Boolean(
+    focusedCharacter &&
+      (focusedCharacter.key === "runner_ace" ||
+        unlocks.some(
+          (item) =>
+            item.item_type === "character" &&
+            item.item_key === focusedCharacter.key,
+        )),
+  );
+  const focusedCharacterAbility = focusedCharacter
+    ? CHARACTER_ABILITIES[focusedCharacter.key as CharacterKey]
+    : null;
   if (!authReady)
     return (
       <main className="auth-shell">
@@ -1728,6 +2014,16 @@ export default function Home() {
           <div
             className={`playfield${environmentCosmetic ? ` environment-${environmentCosmetic}` : ""}`}
           >
+            <div className="sky" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </div>
+            <div className="horizon" aria-hidden="true">
+              {Array.from({ length: 8 }, (_, index) => (
+                <span key={index} />
+              ))}
+            </div>
             {playScope === "versus" && (
               <div className="versus-hud">
                 <div>
@@ -1748,6 +2044,14 @@ export default function Home() {
                 <strong>{waveMessage}</strong>
               </div>
             )}
+            <div
+              className="active-ability-chip"
+              title={activeAbility.description}
+              aria-label={`Active ability: ${activeAbility.name}. ${activeAbility.description}`}
+            >
+              <small>ABILITY</small>
+              <b>{activeAbility.name}</b>
+            </div>
             <div className="road">
               {[0, 1, 2, 3].map((n) => (
                 <i className={`line l${n}`} key={n} />
@@ -2499,13 +2803,22 @@ export default function Home() {
                                 className={`${focused ? "focused" : ""}${
                                   equipped ? " equipped" : ""
                                 }${owned ? "" : " locked"}`}
-                                disabled={!owned}
                                 onClick={() => {
                                   setInventoryCharacter({
                                     classKey,
                                     characterKey: character.key,
                                   });
                                   setInventoryStatus("");
+                                  requestAnimationFrame(() =>
+                                    document
+                                      .getElementById(
+                                        `inventory-character-detail-${classKey}`,
+                                      )
+                                      ?.scrollIntoView({
+                                        block: "nearest",
+                                        behavior: "smooth",
+                                      }),
+                                  );
                                 }}
                               >
                                 <span
@@ -2530,7 +2843,10 @@ export default function Home() {
                           })}
                         </div>
                         {sectionFocused && focusedCharacter && (
-                          <div className="inventory-character-detail">
+                          <div
+                            className="inventory-character-detail"
+                            id={`inventory-character-detail-${classKey}`}
+                          >
                             <div className="inventory-character-summary">
                               <span
                                 className={`character-portrait ${focusedCharacter.key}`}
@@ -2539,13 +2855,18 @@ export default function Home() {
                                 <i />
                               </span>
                               <div>
-                                <small>{label} LOADOUT</small>
+                                <small>
+                                  {focusedCharacterOwned
+                                    ? `${label} LOADOUT`
+                                    : "LOCKED PREVIEW"}
+                                </small>
                                 <h4>{focusedCharacter.name}</h4>
                                 <p>{focusedCharacter.weapon}</p>
                               </div>
                               <button
                                 className="equip-character"
                                 disabled={
+                                  !focusedCharacterOwned ||
                                   running ||
                                   (mode === "impossible" &&
                                     focusedCharacter.key !== "runner_ace") ||
@@ -2563,8 +2884,31 @@ export default function Home() {
                                 {activeClass === classKey &&
                                 activeCharacter === focusedCharacter.key
                                   ? "EQUIPPED"
+                                  : !focusedCharacterOwned
+                                    ? "LOCKED · EXTRACT IN SHOP"
                                   : "EQUIP CHARACTER"}
                               </button>
+                            </div>
+                            <div className="inventory-inspection">
+                              <article className="weapon-showcase">
+                                <span
+                                  className={`weapon-showcase-icon character-${focusedCharacter.key}`}
+                                  aria-hidden="true"
+                                />
+                                <div>
+                                  <small>WEAPON PREVIEW</small>
+                                  <b>{focusedCharacter.weapon}</b>
+                                  <p>
+                                    Preview only — weapons unlock with their
+                                    character.
+                                  </p>
+                                </div>
+                              </article>
+                              <article className="ability-showcase">
+                                <small>PASSIVE ABILITY</small>
+                                <b>{focusedCharacterAbility?.name}</b>
+                                <p>{focusedCharacterAbility?.description}</p>
+                              </article>
                             </div>
                             <div className="inventory-look-header">
                               <div>

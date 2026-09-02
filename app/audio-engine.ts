@@ -6,6 +6,7 @@ export type SfxName =
   | "gem"
   | "hit"
   | "freeze"
+  | "shield"
   | "wave"
   | "click";
 
@@ -136,6 +137,19 @@ export class AudioEngine {
         this.noise("sfx", now, 0.32, 0.11, 5200);
         [1175, 987, 740].forEach((frequency, index) => {
           this.tone("sfx", frequency, now + index * 0.06, 0.2, 0.12, "sine", frequency * 0.82);
+        });
+        break;
+      case "shield":
+        [523, 784, 1047].forEach((frequency, index) => {
+          this.tone(
+            "sfx",
+            frequency,
+            now + index * 0.035,
+            0.16,
+            0.11,
+            "triangle",
+            frequency * 1.08,
+          );
         });
         break;
       case "wave":

@@ -148,3 +148,30 @@
 @media(max-width:1050px){.mode-actions{grid-template-columns:repeat(2,minmax(220px,340px))}.game-layout .game-card{height:min(680px,calc(100dvh - 218px))}.game-actions>button{min-width:125px}.inventory-modal{height:95dvh}}
 @media(max-width:700px){.game-shell{align-items:start}.game-layout{gap:8px}.mode-actions{grid-template-columns:repeat(2,minmax(145px,1fr));gap:7px;padding:5px 5px 0}.mode-actions>button{grid-template-columns:42px 1fr;min-height:65px;padding:7px 8px;box-shadow:4px 4px 0 var(--ink)}.mode-actions>button>span:first-child{font-size:35px}.mode-actions b{font-size:15px}.mode-actions small{font-size:6px}.game-actions{min-height:68px;gap:7px}.game-actions>button{min-width:105px;padding:4px 7px}.game-actions button>span{height:29px;font-size:23px}.game-actions b{font-size:8px}.inventory-icon{transform:scale(.82)}.game-layout .game-card{height:calc(100dvh - 154px)}.inventory-backdrop{padding:5px}.inventory-modal{height:98dvh}.inventory-heading{padding:15px 50px 11px 14px}.inventory-heading h2{font-size:28px}.inventory-heading>strong{display:none}.inventory-directory{overflow-x:auto;grid-template-columns:repeat(5,minmax(92px,1fr))}.inventory-directory span{font-size:7px}.inventory-scroll{padding:10px 9px 35px}.inventory-section-heading{grid-template-columns:48px 1fr}.inventory-section-heading>span{font-size:20px}.inventory-section-heading>div{padding:9px}.inventory-section-heading h3{font-size:19px}.inventory-section-heading p{font-size:7px}.inventory-obstacle-preview{justify-content:flex-start;gap:5px;min-height:84px;margin:9px;padding:10px;overflow-x:auto}.inventory-obstacle-preview>span{min-width:67px;transform:scale(.7)}.inventory-cosmetic-grid{grid-template-columns:1fr;padding:0 9px 12px}.inventory-roster{grid-template-columns:repeat(2,1fr);gap:7px;padding:9px}.inventory-roster>button{grid-template-columns:43px 1fr;min-height:82px;padding:6px}.inventory-roster .character-portrait{transform:scale(.82);transform-origin:left center}.inventory-character-name b{font-size:10px}.inventory-character-detail{margin:0 9px 12px}.inventory-character-summary{grid-template-columns:52px 1fr;padding:10px}.inventory-character-summary>.character-portrait{transform:scale(.88)}.inventory-character-summary h4{font-size:17px}.equip-character{grid-column:1/-1;width:100%}.inventory-look-header small{display:none}.shop-inventory-callout{grid-template-columns:1fr}.shop-inventory-callout>button{grid-column:1;grid-row:auto;width:100%}}
 @media(max-width:410px){.mode-actions small{display:none}.inventory-roster{grid-template-columns:1fr}.inventory-roster>button{grid-template-columns:55px 1fr}.inventory-roster .character-portrait{transform:scale(.92)}}
+
+/* The five playable lanes stay full-height while scenery remains visible at both sides. */
+.playfield>.sky{z-index:0;display:block}
+.playfield>.horizon{z-index:0;display:flex}
+.playfield>.road{top:0;right:auto;bottom:0;left:50%;width:min(78%,860px);transform:translateX(-50%);border:0;border-right:6px solid var(--ink);border-left:6px solid var(--ink);clip-path:none;z-index:1;box-shadow:10px 0 0 #18293b22,-10px 0 0 #18293b22}
+.active-ability-chip{position:absolute;z-index:3;top:4%;left:1%;display:grid;width:9%;min-width:74px;max-width:110px;padding:6px 8px;border:3px solid var(--ink);background:#dbe9ff;color:var(--ink);box-shadow:3px 3px 0 var(--orange);text-align:left}
+.active-ability-chip small{font-size:6px;font-weight:1000;letter-spacing:1px;opacity:.65}
+.active-ability-chip b{overflow:hidden;font-size:8px;letter-spacing:.5px;text-overflow:ellipsis;white-space:nowrap}
+
+/* Locked characters remain inspectable, but only owned characters can be equipped. */
+.inventory-roster>button.locked{opacity:.62;filter:grayscale(.8);cursor:pointer}
+.inventory-roster>button.locked:hover,.inventory-roster>button.locked.focused{opacity:.88;filter:grayscale(.35)}
+.inventory-inspection{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px 14px;border-bottom:3px solid var(--ink);background:#fffaf0}
+.inventory-inspection article{display:grid;min-height:84px;border:3px solid var(--ink);background:white;box-shadow:3px 3px 0 var(--ink)}
+.inventory-inspection article>small,.inventory-inspection article div>small{font-size:7px;font-weight:1000;letter-spacing:1px;color:var(--orange)}
+.inventory-inspection article b{font-size:13px;text-transform:uppercase}
+.inventory-inspection article p{margin:3px 0 0;color:var(--ink);font-size:8px;font-weight:800;letter-spacing:0;line-height:1.35}
+.weapon-showcase{grid-template-columns:60px 1fr;align-items:center;padding:9px}
+.weapon-showcase>div{display:grid;gap:2px}
+.weapon-showcase-icon{display:grid;place-items:center;width:47px;height:54px;border:3px solid var(--ink);background:var(--char-color);color:var(--weapon-color);box-shadow:3px 3px 0 var(--ink)}
+.weapon-showcase-icon:after{content:var(--weapon-symbol);font:1000 31px/1 "Courier New",monospace;text-shadow:2px 2px 0 var(--ink)}
+.ability-showcase{align-content:center;gap:3px;padding:10px 12px;background:#dbe9ff!important}
+.ability-showcase b{color:#3167c7}
+
+@media(max-width:800px){.active-ability-chip{display:none}}
+@media(max-width:700px){.playfield>.road{width:88%;border-right-width:4px;border-left-width:4px}.inventory-inspection{grid-template-columns:1fr;padding:9px}.inventory-inspection article{min-height:72px}}
+@media(max-width:360px){.road .item{transform:translate(-50%,-50%) scale(.7)}}
