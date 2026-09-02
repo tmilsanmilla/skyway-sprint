@@ -17,6 +17,7 @@ const TRACK_TEMPO: Record<Soundtrack, number> = {
   calm: 74,
   energetic: 152,
 };
+const MUSIC_PITCH_MULTIPLIER = 1.1;
 
 const clampVolume = (value: number) => Math.max(0, Math.min(1, value));
 const midiFrequency = (note: number) => 440 * 2 ** ((note - 69) / 12);
@@ -306,10 +307,14 @@ export class AudioEngine {
     const oscillator = context.createOscillator();
     const envelope = context.createGain();
     const sourceSet = bus === "music" ? this.scheduledMusic : this.scheduledSfx;
+    const pitchMultiplier = bus === "music" ? MUSIC_PITCH_MULTIPLIER : 1;
     oscillator.type = wave;
-    oscillator.frequency.setValueAtTime(frequency, start);
+    oscillator.frequency.setValueAtTime(frequency * pitchMultiplier, start);
     if (endFrequency) {
-      oscillator.frequency.exponentialRampToValueAtTime(Math.max(20, endFrequency), start + duration);
+      oscillator.frequency.exponentialRampToValueAtTime(
+        Math.max(20, endFrequency * pitchMultiplier),
+        start + duration,
+      );
     }
     envelope.gain.setValueAtTime(0.0001, start);
     envelope.gain.exponentialRampToValueAtTime(Math.max(0.0001, volume), start + 0.012);

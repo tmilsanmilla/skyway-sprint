@@ -365,3 +365,10 @@
 .health>span{display:inline-block;flex:0 0 1em;text-align:center}
 .health>.partial{color:var(--orange);background:none;background-clip:border-box;-webkit-background-clip:border-box;clip-path:inset(0 50% 0 0)}
 .health.glass>.partial{color:#9cefff;background:none;background-clip:border-box;-webkit-background-clip:border-box}
+.game-shell.life-half .playfield:after{left:calc(50% + .25em);color:var(--orange);background:none;background-clip:border-box;-webkit-background-clip:border-box;clip-path:inset(0 50% 0 0)}
+.game-shell.mode-hardcore.life-half .playfield:after,.game-shell.mode-impossible.life-half .playfield:after{color:#9cefff}
+
+@media(max-width:700px){footer{justify-content:flex-start;gap:8px}footer>p{display:none}.game-card footer>.health{position:static;order:-1;flex:none;z-index:auto;padding:0;border:0;background:none;box-shadow:none;font-size:17px}.game-card footer .pause{position:static;margin-left:auto}}
+
+.versus-practice-divider{display:flex;align-items:center;gap:9px;margin:13px 0 9px;color:#18293b88;font:1000 8px "Courier New",monospace;letter-spacing:2px}.versus-practice-divider:before,.versus-practice-divider:after{content:"";height:2px;flex:1;background:#18293b44}.versus-practice{display:grid;gap:3px;width:100%;padding:12px;border:3px solid var(--ink);background:#ffc52f;color:var(--ink);box-shadow:4px 4px 0 var(--ink);font:inherit;cursor:pointer}.versus-practice b{font-size:11px;letter-spacing:1px}.versus-practice small{font-size:7px;font-weight:900;letter-spacing:1px}.versus-practice:disabled{opacity:.55;cursor:wait}
+.inventory-kit-note{margin:0;padding:11px 14px;border-bottom:3px solid var(--ink);background:#fff3c6;font-size:9px;font-weight:800;line-height:1.5}.inventory-kit-note b{color:#a85d00}

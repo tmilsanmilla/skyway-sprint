@@ -86,7 +86,7 @@ type StoredLoadout = {
   environment_cosmetic?: string | null;
 } | null;
 type BoxType = "regular" | "legendary";
-type PlayScope = "single" | "versus";
+type PlayScope = "single" | "versus" | "practice";
 type MainView = "endless" | "versus";
 type VersusAttackKind =
   | "barrel"
@@ -186,6 +186,55 @@ const normalizeVersusObstacle = (value: unknown): Kind | null => {
     return value;
   return null;
 };
+const BOT_MAX_HEARTS = 3;
+const VERSUS_ATTACK_DAMAGE: Readonly<Record<VersusAttackKind, number>> = {
+  barrel: 0.5,
+  log: 1,
+  car: 1,
+  snowflake: 0,
+  spike: 1,
+  rock: 2,
+};
+const simulateBotWave = (
+  currentHearts: number,
+  attacks: readonly VersusAttackKind[],
+  waveNumber: number,
+  random: () => number = Math.random,
+) => {
+  let nextHearts = currentHearts;
+  let chilled = false;
+  let landed = 0;
+  let dodged = 0;
+  const ambientHitChance = Math.min(0.48, 0.08 + waveNumber * 0.018);
+  if (random() < ambientHitChance) {
+    const ambientDamage = [0.5, 1, 1, 2][Math.floor(random() * 4)];
+    nextHearts -= ambientDamage;
+    landed += 1;
+  }
+  attacks.forEach((attack) => {
+    const dodgeChance = Math.max(
+      0.3,
+      0.68 - waveNumber * 0.008 - (chilled ? 0.18 : 0),
+    );
+    if (random() < dodgeChance) {
+      dodged += 1;
+      return;
+    }
+    landed += 1;
+    if (attack === "snowflake") {
+      chilled = true;
+      return;
+    }
+    nextHearts -= VERSUS_ATTACK_DAMAGE[attack];
+  });
+  if (nextHearts > 0)
+    nextHearts = Math.min(BOT_MAX_HEARTS, nextHearts + 1);
+  return {
+    hearts: Math.max(0, nextHearts),
+    landed,
+    dodged,
+  };
+};
 const secondsUntil = (value: unknown, fallback: number) => {
   if (typeof value !== "string") return fallback;
   const deadline = Date.parse(value);
@@ -284,7 +333,7 @@ const CHARACTER_ABILITIES = {
   trickster_rogue: {
     name: "SHADOWSTEP",
     description:
-      "A successful lane switch grants 0.45 seconds of invincibility, with a 1.25-second cooldown.",
+      "Graze a hazard as it crosses the runner line in an adjacent lane to gain 0.45 seconds of invincibility. Each hazard can trigger this once, with a 1.25-second cooldown.",
   },
   trickster_jester: {
     name: "ENCORE",
@@ -533,7 +582,8 @@ export default function Home() {
     waveAnnouncementTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
       null,
     ),
-    rogueAbilityCooldownUntilRef = useRef(0),
+    rogueGrazeCooldownUntilRef = useRef(0),
+    rogueGrazedItemIdsRef = useRef<Set<number>>(new Set()),
     turnLockedRef = useRef(false),
     delayedMoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     freezeEffectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
@@ -552,6 +602,9 @@ export default function Home() {
     incomingAttacksRef = useRef<PendingVersusAttack[]>([]),
     spawnedAttackIdsRef = useRef<Set<string>>(new Set()),
     versusFinishedRef = useRef(false),
+    versusPointsRef = useRef(0),
+    botAttackPointsRef = useRef(0),
+    playerAttacksAgainstBotRef = useRef<VersusAttackKind[]>([]),
     state = useRef({
       lane,
       running,
@@ -681,6 +734,10 @@ export default function Home() {
     [versusLeaders, setVersusLeaders] = useState<VersusLeader[]>([]),
     [versusLeadersLoading, setVersusLeadersLoading] = useState(false),
     [versusLeadersError, setVersusLeadersError] = useState("");
+  versusPointsRef.current = versusPoints;
+  const isOnlineVersus = playScope === "versus";
+  const isBotPractice = playScope === "practice";
+  const isVersusRun = playScope !== "single";
   const [playerClass, setPlayerClass] = useState("runner"),
     [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
     [inventoryCharacter, setInventoryCharacter] = useState<{
@@ -924,7 +981,10 @@ export default function Home() {
     scoreCarryRef.current = 0;
     pacerRushRemainingRef.current = 0;
     scoutShieldCooldownUntilRef.current = 0;
-    rogueAbilityCooldownUntilRef.current = 0;
+    rogueGrazeCooldownUntilRef.current = 0;
+    rogueGrazedItemIdsRef.current.clear();
+    botAttackPointsRef.current = 0;
+    playerAttacksAgainstBotRef.current = [];
     turnLockedRef.current = false;
     if (delayedMoveTimerRef.current) {
       clearTimeout(delayedMoveTimerRef.current);
@@ -969,13 +1029,26 @@ export default function Home() {
     scoreCarryRef.current = 0;
     pacerRushRemainingRef.current = 0;
     scoutShieldCooldownUntilRef.current = 0;
-    rogueAbilityCooldownUntilRef.current = 0;
+    rogueGrazeCooldownUntilRef.current = 0;
+    rogueGrazedItemIdsRef.current.clear();
+    botAttackPointsRef.current = 0;
+    playerAttacksAgainstBotRef.current = [];
     turnLockedRef.current = false;
     if (delayedMoveTimerRef.current) {
       clearTimeout(delayedMoveTimerRef.current);
       delayedMoveTimerRef.current = null;
     }
     damageLockedRef.current = false;
+    if (playScope === "practice") {
+      setPlayScope("single");
+      setVersusPhase("idle");
+      setVersusPoints(0);
+      versusPointsRef.current = 0;
+      setVersusOpponent("WAITING…");
+      setVersusOpponentHearts(BOT_MAX_HEARTS);
+      setVersusResult("");
+      setVersusIntermissionReady(false);
+    }
   };
   const move = useCallback((d: number) => {
     if (
@@ -997,14 +1070,6 @@ export default function Home() {
         ) {
           setLane(destination);
           void audioEngine.playSfx("move");
-          if (
-            activeCharacter === "trickster_rogue" &&
-            rogueAbilityCooldownUntilRef.current <= Date.now()
-          ) {
-            rogueAbilityCooldownUntilRef.current = Date.now() + 1250;
-            grantInvincibility(450);
-            showAbilityNotice("SHADOWSTEP · 0.45 SECOND SHIELD");
-          }
         }
         turnLockedRef.current = false;
         delayedMoveTimerRef.current = null;
@@ -1013,18 +1078,10 @@ export default function Home() {
     }
     setLane(destination);
     void audioEngine.playSfx("move");
-    if (
-      activeCharacter === "trickster_rogue" &&
-      rogueAbilityCooldownUntilRef.current <= Date.now()
-    ) {
-      rogueAbilityCooldownUntilRef.current = Date.now() + 1250;
-      grantInvincibility(450);
-      showAbilityNotice("SHADOWSTEP · 0.45 SECOND SHIELD");
-    }
-  }, [activeCharacter, grantInvincibility, showAbilityNotice]);
+  }, []);
   const toggleManualPause = useCallback(() => {
     if (
-      playScope === "versus" ||
+      isOnlineVersus ||
       !state.current.running ||
       (state.current.paused && !state.current.pauseMenuOpen)
     )
@@ -1034,7 +1091,7 @@ export default function Home() {
     setPaused(nextOpen);
     void audioEngine.playSfx("click");
     if (!nextOpen) void audioEngine.resume();
-  }, [playScope]);
+  }, [isOnlineVersus]);
   const resumeFromPause = () => {
     setPauseMenuOpen(false);
     setPaused(false);
@@ -1314,6 +1371,7 @@ export default function Home() {
     setVersusOpponent(opponent || "RIVAL");
     setVersusOpponentHearts(3);
     setVersusPoints(0);
+    versusPointsRef.current = 0;
     setVersusResult("");
     setVersusIntermissionReady(false);
     incomingAttacksRef.current = [];
@@ -1391,18 +1449,42 @@ export default function Home() {
     versusMatchRef.current = null;
     await poll();
   };
+  const startBotPractice = () => {
+    invalidateVersusSearch();
+    closeVersusChannel();
+    versusMatchRef.current = null;
+    versusFinishedRef.current = false;
+    incomingAttacksRef.current = [];
+    spawnedAttackIdsRef.current.clear();
+    botAttackPointsRef.current = 0;
+    playerAttacksAgainstBotRef.current = [];
+    setMainView("versus");
+    setPlayScope("practice");
+    setVersusPhase("playing");
+    setVersusOpponent("TRAINING BOT");
+    setVersusOpponentHearts(BOT_MAX_HEARTS);
+    setVersusPoints(0);
+    versusPointsRef.current = 0;
+    setVersusCountdown(15);
+    setVersusResult("");
+    setVersusIntermissionReady(false);
+    reset();
+  };
   const clearVersusLocalSession = () => {
     versusMatchRef.current = null;
     closeVersusChannel();
     incomingAttacksRef.current = [];
     spawnedAttackIdsRef.current.clear();
     versusAttackBusyRef.current = false;
+    botAttackPointsRef.current = 0;
+    playerAttacksAgainstBotRef.current = [];
     setVersusAttackBusy(false);
     setVersusIntermissionReady(false);
     setPlayScope("single");
     setVersusPhase("idle");
     setPaused(false);
     setVersusPoints(0);
+    versusPointsRef.current = 0;
     setVersusOpponent("WAITING…");
     setVersusOpponentHearts(3);
   };
@@ -1466,8 +1548,7 @@ export default function Home() {
     setMainView("endless");
   };
   const backToMenu = () => {
-    const wasVersus =
-      playScope === "versus" || Boolean(versusMatchRef.current);
+    const wasVersus = isVersusRun || Boolean(versusMatchRef.current);
     if (wasVersus) {
       void leaveVersusSession().then((left) => {
         if (!left) return;
@@ -1481,14 +1562,28 @@ export default function Home() {
     }
   };
   const sendVersusAttack = async (kind: VersusAttackKind) => {
+    const attack = VERSUS_ATTACKS.find((entry) => entry.kind === kind);
     if (
-      !versusMatchRef.current ||
+      !attack ||
       versusPhase !== "intermission" ||
       !versusIntermissionReady ||
       versusCountdown <= 0 ||
       versusAttackBusyRef.current
     )
       return;
+    if (isBotPractice) {
+      if (versusPointsRef.current < attack.cost) {
+        setVersusResult("NOT ENOUGH ATTACK COINS");
+        return;
+      }
+      versusPointsRef.current -= attack.cost;
+      playerAttacksAgainstBotRef.current.push(kind);
+      setVersusPoints(versusPointsRef.current);
+      setVersusResult(`${attack.label} QUEUED FOR THE BOT'S NEXT WAVE`);
+      void audioEngine.playSfx("click");
+      return;
+    }
+    if (!versusMatchRef.current) return;
     const matchId = versusMatchRef.current;
     const refreshAttackCoins = async () => {
       const { data } = await supabase.rpc("get_1v1_state", {
@@ -1549,7 +1644,7 @@ export default function Home() {
         e.preventDefault();
         move(1);
       }
-      if (e.key === " " && state.current.running && playScope !== "versus") {
+      if (e.key === " " && state.current.running && !isOnlineVersus) {
         e.preventDefault();
         toggleManualPause();
       }
@@ -1562,7 +1657,7 @@ export default function Home() {
     };
     addEventListener("keydown", key);
     return () => removeEventListener("keydown", key);
-  }, [move, reset, playScope, mainView, toggleManualPause]);
+  }, [move, reset, isOnlineVersus, mainView, toggleManualPause]);
   useEffect(() => {
     if (!running || paused || wavePause) return;
     let raf = 0,
@@ -1578,9 +1673,9 @@ export default function Home() {
           gemThreshold =
             mode === "impossible" ? 0.86 : mode === "hardcore" ? 0.9 : 0.94;
         let kind: Kind;
-        if (playScope === "versus" && r < 0.27) kind = "coin";
-        else if (playScope === "versus" && r > 0.975) kind = "gem";
-        else if (r < danger || playScope === "versus")
+        if (isVersusRun && r < 0.27) kind = "coin";
+        else if (isOnlineVersus && r > 0.975) kind = "gem";
+        else if (r < danger || isVersusRun)
           kind = (["log", "snowflake", "rock", "barrel", "spikes"] as Kind[])[
             Math.floor(Math.random() * 5)
           ];
@@ -1619,18 +1714,33 @@ export default function Home() {
                 speedFactor *
                 dt,
           };
+          const isHazard = n.kind !== "gem" && n.kind !== "coin";
+          const crossedRunnerBand = item.y < 91 && n.y >= 65;
+          const rogueGraze =
+            activeCharacter === "trickster_rogue" &&
+            isHazard &&
+            Math.abs(n.lane - state.current.lane) === 1 &&
+            crossedRunnerBand &&
+            !rogueGrazedItemIdsRef.current.has(n.id);
+          if (rogueGraze) {
+            rogueGrazedItemIdsRef.current.add(n.id);
+            if (rogueGrazeCooldownUntilRef.current <= Date.now()) {
+              rogueGrazeCooldownUntilRef.current = Date.now() + 1250;
+              grantInvincibility(450);
+              showAbilityNotice("SHADOWSTEP · GRAZE SHIELD");
+            }
+          }
           const rangerPickup =
             activeCharacter === "runner_ranger" &&
             (n.kind === "gem" ||
-              (n.kind === "coin" && playScope !== "versus")) &&
+              (n.kind === "coin" && !isVersusRun)) &&
             Math.abs(n.lane - state.current.lane) <= 1;
           const rangerPulled =
             rangerPickup && n.lane !== state.current.lane;
           if (
             !damageLockedRef.current &&
             (n.lane === state.current.lane || rangerPickup) &&
-            n.y > 65 &&
-            n.y < 91
+            crossedRunnerBand
           ) {
             if (rangerPulled)
               showAbilityNotice("PICKUP MAGNET · ADJACENT PICKUP");
@@ -1661,7 +1771,10 @@ export default function Home() {
                   });
             } else if (n.kind === "coin") {
               void audioEngine.playSfx("coin");
-              if (playScope === "versus" && versusMatchRef.current) {
+              if (isBotPractice) {
+                versusPointsRef.current += 2;
+                setVersusPoints(versusPointsRef.current);
+              } else if (isOnlineVersus && versusMatchRef.current) {
                 setVersusPoints((v) => v + 2);
                 void supabase
                   .rpc("award_1v1_points", {
@@ -1790,7 +1903,11 @@ export default function Home() {
                 setRunning(false);
                 setPauseMenuOpen(false);
                 setOver(true);
-                if (guest) {
+                if (isBotPractice) {
+                  setVersusResult("PRACTICE DEFEAT");
+                  setVersusPhase("finished");
+                  setVersusIntermissionReady(false);
+                } else if (guest) {
                   setGems(0);
                   gemsRef.current = 0;
                 } else {
@@ -1839,13 +1956,20 @@ export default function Home() {
             }
             return [];
           }
-          return n.y < 108 ? [n] : [];
+          if (n.y < 108) return [n];
+          rogueGrazedItemIdsRef.current.delete(n.id);
+          return [];
         });
-        if (!clearRecoveryZone) return advanced;
         // Keep the runner in place and clear every nearby object after impact.
-        return advanced.filter(
-          (item) => item.y <= 45 || item.y >= 105,
-        );
+        const retained = clearRecoveryZone
+          ? advanced.filter((item) => item.y <= 45 || item.y >= 105)
+          : advanced;
+        const retainedIds = new Set(retained.map((item) => item.id));
+        rogueGrazedItemIdsRef.current.forEach((itemId) => {
+          if (!retainedIds.has(itemId))
+            rogueGrazedItemIdsRef.current.delete(itemId);
+        });
+        return retained;
       });
       const rawProgressGain = (dt / 12) * (1 + wave * 0.01);
       const waveProgressGain = Math.max(1, Math.round(rawProgressGain));
@@ -1889,6 +2013,9 @@ export default function Home() {
     activeClass,
     activeCharacter,
     playScope,
+    isBotPractice,
+    isOnlineVersus,
+    isVersusRun,
     modeMultiplier,
     classScoreMultiplier,
     grantInvincibility,
@@ -1925,7 +2052,38 @@ export default function Home() {
           showAbilityNotice("TRIAGE CYCLE · +2.5 HP", 1200);
         setHearts((v) => Math.min(maxHearts, v + healAmount));
       }
-      if (playScope === "versus" && versusMatchRef.current) {
+      if (isBotPractice) {
+        const queuedAttacks = playerAttacksAgainstBotRef.current;
+        playerAttacksAgainstBotRef.current = [];
+        const outcome = simulateBotWave(
+          versusOpponentHearts,
+          queuedAttacks,
+          next - 1,
+        );
+        setVersusOpponentHearts(outcome.hearts);
+        if (outcome.hearts <= 0) {
+          setVersusResult("PRACTICE VICTORY");
+          setVersusPhase("finished");
+          setVersusIntermissionReady(false);
+          setPaused(false);
+          setRunning(false);
+          setOver(true);
+          return;
+        }
+        const simulatedBotCoinPickups = Math.floor(Math.random() * 3) * 2;
+        botAttackPointsRef.current += 3 + simulatedBotCoinPickups;
+        versusPointsRef.current += 3;
+        setVersusPoints(versusPointsRef.current);
+        setVersusCountdown(15);
+        setVersusPhase("intermission");
+        setVersusIntermissionReady(true);
+        setVersusResult(
+          queuedAttacks.length === 0
+            ? "THE BOT SURVIVED THE WAVE"
+            : `BOT WAVE: ${outcome.landed} HIT · ${outcome.dodged} DODGED`,
+        );
+        setPaused(true);
+      } else if (isOnlineVersus && versusMatchRef.current) {
         setVersusPoints((v) => v + 3);
         setVersusCountdown(15);
         setVersusPhase("intermission");
@@ -1953,11 +2111,53 @@ export default function Home() {
     activeClass,
     activeCharacter,
     playScope,
+    isBotPractice,
+    isOnlineVersus,
+    versusOpponentHearts,
     showAbilityNotice,
   ]);
   useEffect(() => {
     if (versusPhase !== "intermission") return;
     if (versusCountdown <= 0) {
+      if (isBotPractice) {
+        let botBudget = botAttackPointsRef.current;
+        const botAttacks: VersusAttackKind[] = [];
+        const attackLimit = Math.min(6, 1 + Math.ceil(wave / 3));
+        while (botBudget >= 2 && botAttacks.length < attackLimit) {
+          const affordable = VERSUS_ATTACKS.filter(
+            (attack) => attack.cost <= botBudget,
+          );
+          if (affordable.length === 0) break;
+          const chosen = affordable[Math.floor(Math.random() * affordable.length)];
+          botAttacks.push(chosen.kind);
+          botBudget -= chosen.cost;
+        }
+        botAttackPointsRef.current = botBudget;
+        if (botAttacks.length > 0) {
+          const shuffledLanes = [0, 1, 2, 3, 4].sort(
+            () => Math.random() - 0.5,
+          );
+          setItems((current) => [
+            ...current,
+            ...botAttacks.map((attack, index): Item => ({
+              id: id.current++,
+              lane: shuffledLanes[index % shuffledLanes.length],
+              y: -10 - index * 18,
+              kind: attack === "spike" ? "spikes" : attack,
+            })),
+          ]);
+        }
+        setVersusResult(
+          botAttacks.length > 0
+            ? `TRAINING BOT SENT ${botAttacks.length} HAZARD${botAttacks.length === 1 ? "" : "S"}`
+            : "TRAINING BOT SAVED ITS ATTACK COINS",
+        );
+        setVersusPhase("playing");
+        setVersusIntermissionReady(false);
+        setPaused(false);
+        announceWave(wave);
+        return;
+      }
       const matchId = versusMatchRef.current;
       if (matchId)
         void supabase
@@ -2029,6 +2229,7 @@ export default function Home() {
     acknowledgeSpawnedVersusAttacks,
     wave,
     hearts,
+    isBotPractice,
   ]);
   useEffect(() => {
     if (playScope !== "versus" || !versusMatchRef.current) return;
@@ -2269,6 +2470,7 @@ export default function Home() {
     setPlayScope("single");
     setVersusPhase("idle");
     setVersusPoints(0);
+    versusPointsRef.current = 0;
     setVersusResult("");
     setVersusAttackBusy(false);
     setVersusIntermissionReady(false);
@@ -2302,7 +2504,10 @@ export default function Home() {
     scoreCarryRef.current = 0;
     pacerRushRemainingRef.current = 0;
     scoutShieldCooldownUntilRef.current = 0;
-    rogueAbilityCooldownUntilRef.current = 0;
+    rogueGrazeCooldownUntilRef.current = 0;
+    rogueGrazedItemIdsRef.current.clear();
+    botAttackPointsRef.current = 0;
+    playerAttacksAgainstBotRef.current = [];
     turnLockedRef.current = false;
     if (delayedMoveTimerRef.current) {
       clearTimeout(delayedMoveTimerRef.current);
@@ -2836,7 +3041,7 @@ export default function Home() {
       </main>
     );
   return (
-    <main className={`game-shell ${flash}`}>
+    <main className={`game-shell mode-${mode} ${flash}`}>
       <div className={`game-layout view-${mainView}`}>
         <section className="mode-actions" aria-label="Game modes">
           <button
@@ -2845,7 +3050,9 @@ export default function Home() {
             aria-pressed={mainView === "endless"}
             aria-controls="main-game-panel"
             aria-label={
-              playScope === "versus"
+              isBotPractice
+                ? "Switch to Endless and end bot practice"
+                : isOnlineVersus
                 ? "Switch to Endless and leave the current 1v1 match"
                 : "Switch to Endless"
             }
@@ -2856,8 +3063,10 @@ export default function Home() {
             <span>
               <b>ENDLESS</b>
               <small>
-                {playScope === "versus"
-                  ? "LEAVE MATCH · FORFEIT"
+                {isBotPractice
+                  ? "END PRACTICE"
+                  : isOnlineVersus
+                    ? "LEAVE MATCH · FORFEIT"
                   : "SOLO · CHASE YOUR BEST"}
               </small>
             </span>
@@ -2881,7 +3090,7 @@ export default function Home() {
           <nav className="game-actions" aria-label="Player menus">
           <button
             className="action-leaderboard"
-            disabled={playScope === "versus"}
+            disabled={isVersusRun}
             onClick={() => {
               void loadLeaderboard();
               setPauseMenuOpen(false);
@@ -2893,7 +3102,7 @@ export default function Home() {
           </button>
           <button
             className="action-shop"
-            disabled={playScope === "versus"}
+            disabled={isVersusRun}
             onClick={() => {
               setShopOpen(true);
               setPauseMenuOpen(false);
@@ -2911,7 +3120,7 @@ export default function Home() {
           </button>
           <button
             className="action-inventory"
-            disabled={playScope === "versus"}
+            disabled={isVersusRun}
             onClick={() => {
               setInventoryOpen(true);
               setPauseMenuOpen(false);
@@ -2933,7 +3142,7 @@ export default function Home() {
             </span>
             <b>INVENTORY</b>
           </button>
-          {!guest && playScope !== "versus" && (
+          {!guest && !isVersusRun && (
             <button
               className="action-settings"
               onClick={() => {
@@ -2946,7 +3155,7 @@ export default function Home() {
               <b>SETTINGS</b>
             </button>
           )}
-          {isAdmin && !guest && playScope !== "versus" && (
+          {isAdmin && !guest && !isVersusRun && (
             <button className="action-admin" onClick={loadReports}>
               <span>★</span>
               <b>ADMIN</b>
@@ -2956,19 +3165,19 @@ export default function Home() {
         )}
         <section
           id="main-game-panel"
-          className={`game-card${mainView === "versus" && playScope !== "versus" ? " versus-hub-card" : ""}`}
+          className={`game-card${mainView === "versus" && playScope === "single" ? " versus-hub-card" : ""}`}
           aria-label={
-            mainView === "versus" && playScope !== "versus"
+            mainView === "versus" && playScope === "single"
               ? "Skyway Sprint 1v1 hub"
               : "Skyway Sprint runner game"
           }
           aria-labelledby={
-            mainView === "versus" && playScope !== "versus"
+            mainView === "versus" && playScope === "single"
               ? "versus-hub-title"
               : undefined
           }
         >
-          {mainView === "versus" && playScope !== "versus" ? (
+          {mainView === "versus" && playScope === "single" ? (
             <div className="versus-hub">
               <header className="versus-hub-heading">
                 <div>
@@ -3031,6 +3240,17 @@ export default function Home() {
                           Sign in to enter account-based 1v1 matchmaking.
                         </small>
                       )}
+                      <div className="versus-practice-divider" aria-hidden="true">
+                        <span>OR</span>
+                      </div>
+                      <button
+                        className="versus-practice"
+                        onClick={startBotPractice}
+                        disabled={versusLeaving}
+                      >
+                        <b>PRACTICE VS BOT</b>
+                        <small>LOCAL · UNRANKED · NO REWARDS · GUESTS OK</small>
+                      </button>
                     </div>
                   )}
                   {versusResult && (
@@ -3059,6 +3279,10 @@ export default function Home() {
                     <li>
                       Spend attack coins during the 15-second intermission to
                       send hazards into your rival&apos;s next wave.
+                    </li>
+                    <li>
+                      Bot practice uses the same local rules but never changes
+                      ranked wins, losses, or rating.
                     </li>
                   </ol>
                 </section>
@@ -3202,7 +3426,7 @@ export default function Home() {
                 <span key={index} />
               ))}
             </div>
-            {playScope === "versus" && (
+            {isVersusRun && (
               <div className="versus-hud">
                 <div>
                   <small>YOU</small>
@@ -3218,7 +3442,7 @@ export default function Home() {
                 </em>
               </div>
             )}
-            {playScope === "versus" &&
+            {isVersusRun &&
               versusResult &&
               !over &&
               versusPhase !== "intermission" && (
@@ -3292,7 +3516,7 @@ export default function Home() {
               <div className="overlay">
                 <p>{over ? "RUN OVER" : "FIVE LANES. NO BRAKES."}</p>
                 <h1>
-                  {over && playScope === "versus" && versusResult
+                  {over && isVersusRun && versusResult
                     ? versusResult
                     : over
                       ? `${score.toLocaleString()} POINTS`
@@ -3333,12 +3557,12 @@ export default function Home() {
                 )}
                 <button
                   onClick={
-                    playScope === "versus"
+                    isVersusRun
                       ? backToMenu
                       : reset
                   }
                 >
-                  {playScope === "versus"
+                  {isVersusRun
                     ? "RETURN TO 1V1 HUB"
                     : over
                       ? "RUN AGAIN"
@@ -3398,7 +3622,7 @@ export default function Home() {
                 )}
               </div>
             )}
-            {running && paused && pauseMenuOpen && playScope !== "versus" && (
+            {running && paused && pauseMenuOpen && !isOnlineVersus && (
               <div
                 className="overlay compact pause-overlay"
                 role="dialog"
@@ -3511,13 +3735,13 @@ export default function Home() {
               className="pause"
               disabled={
                 !running ||
-                playScope === "versus" ||
+                isOnlineVersus ||
                 (paused && !pauseMenuOpen)
               }
               onClick={toggleManualPause}
               aria-label={pauseMenuOpen ? "Resume" : "Pause"}
             >
-              {playScope === "versus" ? "⚔" : pauseMenuOpen ? "▶" : "Ⅱ"}
+              {isOnlineVersus ? "⚔" : pauseMenuOpen ? "▶" : "Ⅱ"}
             </button>
           </footer>
             </>
@@ -3913,6 +4137,11 @@ export default function Home() {
                             <small>{description}</small>
                           </span>
                         </summary>
+                        <p className="inventory-kit-note">
+                          <b>{roster[0].name} is the included default kit.</b>{" "}
+                          Other {label.toLowerCase()} variants stay locked until
+                          they are extracted from a box.
+                        </p>
                         <div className="inventory-roster">
                           {roster.map((character) => {
                             const unlock = unlocks.find(
