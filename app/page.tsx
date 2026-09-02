@@ -88,6 +88,7 @@ type StoredLoadout = {
   environment_cosmetic?: string | null;
 } | null;
 type ExtractionOption = "regular" | "ten";
+type ExtractionAnimation = "idle" | "shaking" | "opening";
 type PlayScope = "single" | "versus" | "practice";
 type MainView = "endless" | "versus";
 type VersusAttackKind =
@@ -445,15 +446,18 @@ const INVENTORY_CLASSES: ReadonlyArray<{
       `NORMAL: 2 starting/max HP · heal 1 HP after each wave · 1.15× class score, which does not change wave timing. ${BASE_DAMAGE_DESCRIPTION} HARDCORE: 1 HP · no healing · class score bonus disabled · same damage values.`,
   },
 ];
+const EXTRACTION_UNIT_COST = 4;
+const EXTRACTION_MAX_BATCH = 100;
 const EXTRACTION_BOXES = {
   regular: {
     name: "NORMAL BOX",
-    cost: 2,
+    cost: EXTRACTION_UNIT_COST,
     pullCount: 1,
     icon: "◇",
     mix: "5% CHARACTER · 95% COSMETIC",
     oddsLabel: "NORMAL PULL ODDS",
-    note: "DUPLICATES AWARD NOTHING · LISTED RARITY WEIGHTS ARE NORMALIZED",
+    note:
+      "DUPLICATES AWARD NOTHING · EVERY 10TH ITEM IN ONE MULTI-OPEN USES THE 10× BONUS ODDS",
     odds: [
       ["common", "45.75%"],
       ["uncommon", "30.2%"],
@@ -465,7 +469,7 @@ const EXTRACTION_BOXES = {
   },
   ten: {
     name: "10× NORMAL BOX",
-    cost: 20,
+    cost: EXTRACTION_UNIT_COST * 10,
     pullCount: 10,
     icon: "◇×10",
     mix: "9 NORMAL PULLS · 1 LEGENDARY-ODDS PULL",
@@ -573,6 +577,13 @@ export default function Home() {
     [inventoryOpen, setInventoryOpen] = useState(false),
     [inventoryStatus, setInventoryStatus] = useState(""),
     [extractBusy, setExtractBusy] = useState(false),
+    [extractQuantities, setExtractQuantities] = useState<
+      Record<ExtractionOption, number>
+    >({ regular: 1, ten: 1 }),
+    [extractingOption, setExtractingOption] =
+      useState<ExtractionOption | null>(null),
+    [extractAnimation, setExtractAnimation] =
+      useState<ExtractionAnimation>("idle"),
     [leaderboardOpen, setLeaderboardOpen] = useState(false),
     [leaders, setLeaders] = useState<Leader[]>([]);
   const [soundtrack, setSoundtrack] = useState<Soundtrack>("energetic"),
@@ -2729,36 +2740,105 @@ export default function Home() {
       return;
     }
     const box = EXTRACTION_BOXES[option];
+    const maxQuantity = Math.min(
+      Math.floor(EXTRACTION_MAX_BATCH / box.pullCount),
+      Math.floor(gemsRef.current / box.cost),
+    );
+    const quantity = Math.floor(extractQuantities[option]);
+    if (!Number.isFinite(quantity) || quantity < 1 || quantity > maxQuantity) {
+      setShopStatus(
+        maxQuantity < 1
+          ? `You need ♦ ${box.cost} to open this box.`
+          : `Choose a QTY from 1 to ${maxQuantity}.`,
+      );
+      return;
+    }
+    const pullCount = box.pullCount * quantity;
+    const startedAt = Date.now();
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
     extractBusyRef.current = true;
     setExtractBusy(true);
+    setExtractingOption(option);
+    setExtractAnimation("shaking");
     setExtractResults([]);
-    setShopStatus(`Opening ${box.name.toLowerCase()}…`);
+    setShopStatus(
+      `Opening ${quantity} ${box.name.toLowerCase()}${quantity === 1 ? "" : "es"}…`,
+    );
     try {
       const { data, error } = await supabase.rpc("extract_items", {
-        pull_count: box.pullCount,
+        pull_count: pullCount,
         box_type: "regular",
       });
       if (error) {
         setShopStatus(error.message);
         return;
       }
+      const shakeTimeRemaining = reduceMotion
+        ? 0
+        : Math.max(0, 700 - (Date.now() - startedAt));
+      if (shakeTimeRemaining > 0) {
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, shakeTimeRemaining),
+        );
+      }
+      setExtractAnimation("opening");
+      if (!reduceMotion) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 550));
+      }
       const results = (data?.results ?? []) as ExtractionResult[];
+      setExtractAnimation("idle");
+      setExtractingOption(null);
       setExtractResults(results);
-      gemsRef.current = data.gems;
-      setGems(data.gems);
+      const nextGems = Number(data?.gems ?? gemsRef.current);
+      gemsRef.current = nextGems;
+      setGems(nextGems);
+      setExtractQuantities((current) => ({
+        regular: Math.max(
+          1,
+          Math.min(
+            current.regular,
+            Math.max(
+              1,
+              Math.min(
+                EXTRACTION_MAX_BATCH,
+                Math.floor(nextGems / EXTRACTION_BOXES.regular.cost),
+              ),
+            ),
+          ),
+        ),
+        ten: Math.max(
+          1,
+          Math.min(
+            current.ten,
+            Math.max(
+              1,
+              Math.min(
+                Math.floor(
+                  EXTRACTION_MAX_BATCH / EXTRACTION_BOXES.ten.pullCount,
+                ),
+                Math.floor(nextGems / EXTRACTION_BOXES.ten.cost),
+              ),
+            ),
+          ),
+        ),
+      }));
       const newCount = results.filter((item) => item.is_new).length;
       const duplicateCount = results.length - newCount;
       setShopStatus(
-        box.pullCount === 10
-          ? `${box.name} OPENED — ${newCount} NEW · ${duplicateCount} DUPLICATE${duplicateCount === 1 ? "" : "S"}`
-          : newCount === 0
-            ? "Duplicate pulled — nothing was added to your collection."
-            : `${box.name} OPENED — NEW ITEM UNLOCKED!`,
+        `${results.length} ITEM${results.length === 1 ? "" : "S"} REVEALED — ${newCount} NEW · ${duplicateCount} DUPLICATE${duplicateCount === 1 ? "" : "S"}`,
       );
       await loadCollection();
+    } catch {
+      setShopStatus(
+        "The box request could not be confirmed. Check your balance before trying again.",
+      );
     } finally {
       extractBusyRef.current = false;
       setExtractBusy(false);
+      setExtractingOption(null);
+      setExtractAnimation("idle");
     }
   };
   const equipInventoryCharacter = async (
@@ -3934,25 +4014,109 @@ export default function Home() {
         )}
         {shopOpen && (
           <div className="report-backdrop">
-            <section className="powerup-modal">
+            <section
+              className="powerup-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="extraction-shop-title"
+            >
               <button
                 className="report-close"
+                aria-label="Close extraction shop"
                 disabled={extractBusy}
                 onClick={() => {
                   setShopOpen(false);
                   setPaused(false);
                   setExtractResults([]);
                   setShopStatus("");
+                  setExtractAnimation("idle");
+                  setExtractingOption(null);
                 }}
               >
                 ×
               </button>
               <p>GEM SHOP</p>
-              <h2>EXTRACTION SHOP</h2>
-              <div className="extract-actions">
+              <h2 id="extraction-shop-title">EXTRACTION SHOP</h2>
+              <small className="extract-cap-note">
+                MAX OPENS AS MANY AS YOU CAN AFFORD, UP TO 100 ITEMS PER
+                REQUEST.
+              </small>
+              {extractResults.length > 0 && (
+                <div
+                  className={`extract-results${extractResults.length > 1 ? " bundle" : ""}`}
+                >
+                  {extractResults.map((item, index) => (
+                    <span
+                      key={item.item_key + index}
+                      className={`${item.rarity}${item.is_new ? "" : " duplicate"}${item.draw_profile === "legendary" ? " legendary-roll" : ""}`}
+                    >
+                      <b>
+                        {item.pull_number ? `#${item.pull_number} · ` : ""}
+                        {item.rarity}
+                      </b>
+                      {item.display_name ?? item.item_key.replaceAll("_", " ")}
+                      <small>
+                        {item.draw_profile === "legendary"
+                          ? "BUNDLE BONUS · LEGENDARY ODDS · "
+                          : ""}
+                        {item.is_new
+                          ? `NEW ${item.category}`
+                          : "DUPLICATE · NOTHING ADDED"}
+                      </small>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {extractAnimation !== "idle" && extractingOption ? (
+                <div
+                  className={`extract-opening-stage ${extractAnimation} ${extractingOption}`}
+                  aria-live="polite"
+                >
+                  <div
+                    className={`opening-crate${extractQuantities[extractingOption] > 1 ? " multi" : ""}`}
+                    aria-hidden="true"
+                  >
+                    <span className="opening-lid" />
+                    <span className="opening-body">◇</span>
+                    <i />
+                    <i />
+                    <i />
+                  </div>
+                  <strong>
+                    {extractAnimation === "shaking"
+                      ? `OPENING ${extractQuantities[extractingOption]} BOX${extractQuantities[extractingOption] === 1 ? "" : "ES"}…`
+                      : "ITEMS REVEALED!"}
+                  </strong>
+                </div>
+              ) : (
+                <div className="extract-actions">
                 {(Object.keys(EXTRACTION_BOXES) as ExtractionOption[]).map(
                   (option) => {
                     const box = EXTRACTION_BOXES[option];
+                    const batchLimit = Math.floor(
+                      EXTRACTION_MAX_BATCH / box.pullCount,
+                    );
+                    const maxQuantity = Math.min(
+                      batchLimit,
+                      Math.floor(gems / box.cost),
+                    );
+                    const quantity = Math.max(
+                      1,
+                      Math.min(batchLimit, extractQuantities[option]),
+                    );
+                    const itemCount = quantity * box.pullCount;
+                    const totalCost = quantity * box.cost;
+                    const setQuantity = (next: number) =>
+                      setExtractQuantities((current) => ({
+                        ...current,
+                        [option]: Math.max(
+                          1,
+                          Math.min(
+                            Math.max(1, maxQuantity),
+                            Math.floor(next) || 1,
+                          ),
+                        ),
+                      }));
                     return (
                       <article
                         key={option}
@@ -3975,50 +4139,80 @@ export default function Home() {
                           ))}
                         </span>
                         <small className="box-note">{box.note}</small>
+                        <strong className="box-price">♦ {box.cost}</strong>
+                        <div className="extract-quantity">
+                          <b>QTY</b>
+                          <button
+                            type="button"
+                            aria-label={`Decrease ${box.name} quantity`}
+                            disabled={extractBusy || quantity <= 1}
+                            onClick={() => setQuantity(quantity - 1)}
+                          >
+                            −
+                          </button>
+                          <input
+                            aria-label={`${box.name} quantity`}
+                            type="number"
+                            inputMode="numeric"
+                            min={1}
+                            max={Math.max(1, maxQuantity)}
+                            value={quantity}
+                            disabled={extractBusy || maxQuantity < 1}
+                            onChange={(event) =>
+                              setQuantity(Number(event.target.value))
+                            }
+                          />
+                          <button
+                            type="button"
+                            aria-label={`Increase ${box.name} quantity`}
+                            disabled={
+                              extractBusy ||
+                              maxQuantity < 1 ||
+                              quantity >= maxQuantity
+                            }
+                            onClick={() => setQuantity(quantity + 1)}
+                          >
+                            +
+                          </button>
+                          <button
+                            type="button"
+                            className="quantity-max"
+                            aria-label={`Set ${box.name} quantity to maximum`}
+                            disabled={extractBusy || maxQuantity < 1}
+                            onClick={() => setQuantity(maxQuantity)}
+                          >
+                            MAX
+                          </button>
+                        </div>
+                        <small className="quantity-summary">
+                          {quantity} BOX{quantity === 1 ? "" : "ES"} ·{" "}
+                          {itemCount} ITEM{itemCount === 1 ? "" : "S"}
+                        </small>
                         <button
-                          disabled={extractBusy}
+                          disabled={
+                            extractBusy ||
+                            maxQuantity < 1 ||
+                            quantity > maxQuantity
+                          }
                           onClick={() => extract(option)}
                         >
-                          {extractBusy
+                          {extractBusy && extractingOption === option
                             ? "OPENING…"
-                            : `OPEN ${box.pullCount}`}{" "}
-                          <span>♦ {box.cost}</span>
+                            : `OPEN ${itemCount}`}{" "}
+                          <span>TOTAL ♦ {totalCost}</span>
                         </button>
                       </article>
                     );
                   },
                 )}
-              </div>
-              {extractResults.length > 0 && (
-                <div
-                  className={`extract-results${extractResults.length > 1 ? " bundle" : ""}`}
-                >
-                  {extractResults.map((item, index) => (
-                    <span
-                      key={item.item_key + index}
-                      className={`${item.rarity}${item.is_new ? "" : " duplicate"}${item.draw_profile === "legendary" ? " legendary-roll" : ""}`}
-                    >
-                      <b>
-                        {item.pull_number
-                          ? `#${item.pull_number} · `
-                          : ""}
-                        {item.rarity}
-                      </b>
-                      {item.display_name ?? item.item_key.replaceAll("_", " ")}
-                      <small>
-                        {item.draw_profile === "legendary"
-                          ? "10TH · LEGENDARY ODDS · "
-                          : ""}
-                        {item.is_new
-                          ? `NEW ${item.category}`
-                          : "DUPLICATE · NOTHING ADDED"}
-                      </small>
-                    </span>
-                  ))}
                 </div>
               )}
               <strong className="shop-balance">BALANCE: ♦ {gems}</strong>
-              {shopStatus && <div className="report-status">{shopStatus}</div>}
+              {shopStatus && (
+                <div className="report-status" role="status" aria-live="polite">
+                  {shopStatus}
+                </div>
+              )}
             </section>
           </div>
         )}
