@@ -77,6 +77,8 @@ type ExtractionResult = Unlock & {
   is_new: boolean;
   category: "character" | "cosmetic";
   display_name?: string;
+  pull_number?: number;
+  draw_profile?: "regular" | "legendary";
 };
 type StoredLoadout = {
   class_key?: string | null;
@@ -85,7 +87,7 @@ type StoredLoadout = {
   obstacle_cosmetic?: string | null;
   environment_cosmetic?: string | null;
 } | null;
-type BoxType = "regular" | "legendary";
+type ExtractionOption = "regular" | "ten";
 type PlayScope = "single" | "versus" | "practice";
 type MainView = "endless" | "versus";
 type VersusAttackKind =
@@ -447,7 +449,10 @@ const EXTRACTION_BOXES = {
   regular: {
     name: "NORMAL BOX",
     cost: 2,
+    pullCount: 1,
+    icon: "◇",
     mix: "5% CHARACTER · 95% COSMETIC",
+    oddsLabel: "NORMAL PULL ODDS",
     note: "DUPLICATES AWARD NOTHING · LISTED RARITY WEIGHTS ARE NORMALIZED",
     odds: [
       ["common", "45.75%"],
@@ -458,11 +463,14 @@ const EXTRACTION_BOXES = {
       ["mythic", "0.01%"],
     ],
   },
-  legendary: {
-    name: "LEGENDARY BOX",
+  ten: {
+    name: "10× NORMAL BOX",
     cost: 20,
-    mix: "20% CHARACTER · 80% COSMETIC",
-    note: "GUARANTEED TO BE NEW",
+    pullCount: 10,
+    icon: "◇×10",
+    mix: "9 NORMAL PULLS · 1 LEGENDARY-ODDS PULL",
+    oddsLabel: "10TH: 20% CHARACTER · 80% COSMETIC",
+    note: "DUPLICATES AWARD NOTHING · THE 10TH PULL IS NOT GUARANTEED NEW",
     odds: [
       ["common", "3%"],
       ["uncommon", "12%"],
@@ -473,11 +481,14 @@ const EXTRACTION_BOXES = {
     ],
   },
 } as const satisfies Record<
-  BoxType,
+  ExtractionOption,
   {
     name: string;
     cost: number;
+    pullCount: 1 | 10;
+    icon: string;
     mix: string;
+    oddsLabel: string;
     note: string;
     odds: readonly (readonly [Rarity, string])[];
   }
@@ -603,6 +614,7 @@ export default function Home() {
     spawnedAttackIdsRef = useRef<Set<string>>(new Set()),
     versusFinishedRef = useRef(false),
     versusPointsRef = useRef(0),
+    extractBusyRef = useRef(false),
     botAttackPointsRef = useRef(0),
     playerAttacksAgainstBotRef = useRef<VersusAttackKind[]>([]),
     state = useRef({
@@ -2705,20 +2717,21 @@ export default function Home() {
     setObstacleCosmetic(safeLoadout.obstacleCosmetic);
     setEnvironmentCosmetic(safeLoadout.environmentCosmetic);
   };
-  const extract = async (boxType: BoxType) => {
-    if (extractBusy) return;
+  const extract = async (option: ExtractionOption) => {
+    if (extractBusyRef.current) return;
     if (guest) {
       setShopStatus("Sign in to extract permanent items.");
       return;
     }
-    const box = EXTRACTION_BOXES[boxType];
+    const box = EXTRACTION_BOXES[option];
+    extractBusyRef.current = true;
     setExtractBusy(true);
     setExtractResults([]);
     setShopStatus(`Opening ${box.name.toLowerCase()}…`);
     try {
       const { data, error } = await supabase.rpc("extract_items", {
-        pull_count: 1,
-        box_type: boxType,
+        pull_count: box.pullCount,
+        box_type: "regular",
       });
       if (error) {
         setShopStatus(error.message);
@@ -2728,13 +2741,18 @@ export default function Home() {
       setExtractResults(results);
       gemsRef.current = data.gems;
       setGems(data.gems);
+      const newCount = results.filter((item) => item.is_new).length;
+      const duplicateCount = results.length - newCount;
       setShopStatus(
-        results[0]?.is_new === false
-          ? "Duplicate pulled — nothing was added to your collection."
-          : `${box.name} OPENED — NEW ITEM UNLOCKED!`,
+        box.pullCount === 10
+          ? `${box.name} OPENED — ${newCount} NEW · ${duplicateCount} DUPLICATE${duplicateCount === 1 ? "" : "S"}`
+          : newCount === 0
+            ? "Duplicate pulled — nothing was added to your collection."
+            : `${box.name} OPENED — NEW ITEM UNLOCKED!`,
       );
       await loadCollection();
     } finally {
+      extractBusyRef.current = false;
       setExtractBusy(false);
     }
   };
@@ -2829,10 +2847,18 @@ export default function Home() {
     }
     setVersusLeadersLoading(true);
     setVersusLeadersError("");
-    const { data, error } = await supabase.rpc("get_1v1_leaderboard");
+    const { data, error } = await supabase.rpc("get_1v1_leaderboard", {
+      p_limit: 50,
+      p_offset: 0,
+    });
     if (error) {
       setVersusLeaders([]);
-      setVersusLeadersError(error.message);
+      setVersusLeadersError(
+        error.message.includes("get_1v1_leaderboard") &&
+          error.message.toLowerCase().includes("schema cache")
+          ? "1V1 LEADERBOARD DATABASE SETUP IS MISSING · RUN MULTI-DEVICE 03"
+          : error.message,
+      );
     } else setVersusLeaders((data ?? []) as VersusLeader[]);
     setVersusLeadersLoading(false);
   };
@@ -3108,6 +3134,7 @@ export default function Home() {
               setPauseMenuOpen(false);
               setPaused(true);
               setShopStatus("");
+              setExtractResults([]);
               void loadCollection();
             }}
           >
@@ -3905,9 +3932,12 @@ export default function Home() {
             <section className="powerup-modal">
               <button
                 className="report-close"
+                disabled={extractBusy}
                 onClick={() => {
                   setShopOpen(false);
                   setPaused(false);
+                  setExtractResults([]);
+                  setShopStatus("");
                 }}
               >
                 ×
@@ -3915,19 +3945,22 @@ export default function Home() {
               <p>GEM SHOP</p>
               <h2>EXTRACTION SHOP</h2>
               <div className="extract-actions">
-                {(Object.keys(EXTRACTION_BOXES) as BoxType[]).map(
-                  (boxType) => {
-                    const box = EXTRACTION_BOXES[boxType];
+                {(Object.keys(EXTRACTION_BOXES) as ExtractionOption[]).map(
+                  (option) => {
+                    const box = EXTRACTION_BOXES[option];
                     return (
                       <article
-                        key={boxType}
-                        className={`extract-box ${boxType}`}
+                        key={option}
+                        className={`extract-box ${option}`}
                       >
                         <span className="box-icon" aria-hidden="true">
-                          {boxType === "legendary" ? "✦" : "◇"}
+                          {box.icon}
                         </span>
                         <b>{box.name}</b>
                         <small className="box-mix">{box.mix}</small>
+                        <small className="box-odds-label">
+                          {box.oddsLabel}
+                        </small>
                         <span className="rarity-chances">
                           {box.odds.map(([rarity, chance]) => (
                             <small key={rarity} className={rarity}>
@@ -3939,9 +3972,11 @@ export default function Home() {
                         <small className="box-note">{box.note}</small>
                         <button
                           disabled={extractBusy}
-                          onClick={() => extract(boxType)}
+                          onClick={() => extract(option)}
                         >
-                          {extractBusy ? "OPENING…" : "OPEN"}{" "}
+                          {extractBusy
+                            ? "OPENING…"
+                            : `OPEN ${box.pullCount}`}{" "}
                           <span>♦ {box.cost}</span>
                         </button>
                       </article>
@@ -3950,15 +3985,25 @@ export default function Home() {
                 )}
               </div>
               {extractResults.length > 0 && (
-                <div className="extract-results">
+                <div
+                  className={`extract-results${extractResults.length > 1 ? " bundle" : ""}`}
+                >
                   {extractResults.map((item, index) => (
                     <span
                       key={item.item_key + index}
-                      className={`${item.rarity}${item.is_new ? "" : " duplicate"}`}
+                      className={`${item.rarity}${item.is_new ? "" : " duplicate"}${item.draw_profile === "legendary" ? " legendary-roll" : ""}`}
                     >
-                      <b>{item.rarity}</b>
+                      <b>
+                        {item.pull_number
+                          ? `#${item.pull_number} · `
+                          : ""}
+                        {item.rarity}
+                      </b>
                       {item.display_name ?? item.item_key.replaceAll("_", " ")}
                       <small>
+                        {item.draw_profile === "legendary"
+                          ? "10TH · LEGENDARY ODDS · "
+                          : ""}
                         {item.is_new
                           ? `NEW ${item.category}`
                           : "DUPLICATE · NOTHING ADDED"}
