@@ -980,29 +980,6 @@ export function AdminPlayerEditor({
                 )}
               </div>
 
-              <div className="player-detail-subsection">
-                <h4>RECEIPTS <span>{receipts.length}</span></h4>
-                {receipts.length === 0 ? (
-                  <div className="player-editor-empty">No recorded shop receipts.</div>
-                ) : (
-                  <div className="account-record-list receipt-list">
-                    {receipts.map((receipt, index) => (
-                      <article key={String(receipt.id ?? index)}>
-                        <header>
-                          <strong>{humanize(receipt.item_key ?? "Unknown item")}</strong>
-                          <span>{String(receipt.gem_cost ?? 0)} GEMS</span>
-                        </header>
-                        <p>
-                          {humanize(receipt.box_type ?? "box")} ·{" "}
-                          {humanize(receipt.rarity ?? "unknown rarity")} ·{" "}
-                          {receipt.was_new ? "NEW ITEM" : "DUPLICATE"}
-                        </p>
-                        <small>{formatDate(receipt.created_at)}</small>
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </div>
             </section>
 
             <section className="player-detail-section inventory-info-section">
@@ -1067,14 +1044,14 @@ export function AdminPlayerEditor({
               )}
             </section>
 
-            <section className="player-detail-section player-record-section">
-              <header className="player-detail-title">
+            <details className="player-detail-section player-record-section">
+              <summary className="player-detail-title">
                 <span>03</span>
                 <div>
                   <small>MODERATION HISTORY</small>
                   <h3>RECORD <em>{recordEntries.length}</em></h3>
                 </div>
-              </header>
+              </summary>
               {recordEntries.length === 0 ? (
                 <div className="player-editor-empty">No bans or commands on record.</div>
               ) : (
@@ -1136,6 +1113,36 @@ export function AdminPlayerEditor({
                       </article>
                     );
                   })}
+                </div>
+              )}
+            </details>
+
+            <section className="player-detail-section receipt-info-section">
+              <header className="player-detail-title">
+                <span>04</span>
+                <div>
+                  <small>SHOP ACTIVITY</small>
+                  <h3>RECEIPTS <em>{receipts.length}</em></h3>
+                </div>
+              </header>
+              {receipts.length === 0 ? (
+                <div className="player-editor-empty">No recorded shop receipts.</div>
+              ) : (
+                <div className="account-record-list receipt-list player-receipt-list">
+                  {receipts.map((receipt, index) => (
+                    <article key={String(receipt.id ?? index)}>
+                      <header>
+                        <strong>{humanize(receipt.item_key ?? "Unknown item")}</strong>
+                        <span>{String(receipt.gem_cost ?? 0)} GEMS</span>
+                      </header>
+                      <p>
+                        {humanize(receipt.box_type ?? "box")} ·{" "}
+                        {humanize(receipt.rarity ?? "unknown rarity")} ·{" "}
+                        {receipt.was_new ? "NEW ITEM" : "DUPLICATE"}
+                      </p>
+                      <small>{formatDate(receipt.created_at)}</small>
+                    </article>
+                  ))}
                 </div>
               )}
             </section>
