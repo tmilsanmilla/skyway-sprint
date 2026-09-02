@@ -362,6 +362,8 @@ const BASE_DAMAGE_DESCRIPTION =
   "DAMAGE BEFORE PASSIVES: barrel 0.5 HP · log/car/spikes 1 HP · rock 2 HP · snowflake 0 HP plus a 3-second freeze that delays every turn by 0.25 seconds.";
 const BASE_ITEM_SPEED = 0.0452;
 const WAVE_SPEED_STEP = 0.25;
+const getWaveSpeedMultiplier = (waveNumber: number) =>
+  1 + Math.max(0, waveNumber - 1) * WAVE_SPEED_STEP;
 const INVENTORY_CLASSES: ReadonlyArray<{
   key: keyof typeof CLASS_CHARACTERS;
   label: string;
@@ -522,7 +524,7 @@ export default function Home() {
     gemsRef = useRef(0),
     scoreRef = useRef(0),
     highScoreRef = useRef(0),
-    scoreMultiplierCarryRef = useRef(0),
+    scoreCarryRef = useRef(0),
     pacerRushRemainingRef = useRef(0),
     scoutShieldCooldownUntilRef = useRef(0),
     invincibleUntilRef = useRef(0),
@@ -919,7 +921,7 @@ export default function Home() {
     hammerBreakWaveRef.current = 0;
     sentinelLastStandUsedRef.current = false;
     phantomPhaseWaveRef.current = 0;
-    scoreMultiplierCarryRef.current = 0;
+    scoreCarryRef.current = 0;
     pacerRushRemainingRef.current = 0;
     scoutShieldCooldownUntilRef.current = 0;
     rogueAbilityCooldownUntilRef.current = 0;
@@ -964,7 +966,7 @@ export default function Home() {
     hammerBreakWaveRef.current = 0;
     sentinelLastStandUsedRef.current = false;
     phantomPhaseWaveRef.current = 0;
-    scoreMultiplierCarryRef.current = 0;
+    scoreCarryRef.current = 0;
     pacerRushRemainingRef.current = 0;
     scoutShieldCooldownUntilRef.current = 0;
     rogueAbilityCooldownUntilRef.current = 0;
@@ -1213,6 +1215,7 @@ export default function Home() {
 
     setLane(2);
     setItems([]);
+    scoreCarryRef.current = 0;
     setScore(restoredScore);
     setWaveProgress((restoredWave - 1) * 2250);
     setWave(restoredWave);
@@ -1567,6 +1570,7 @@ export default function Home() {
     const tick = (now: number) => {
       const dt = Math.min(32, now - prev);
       prev = now;
+      const currentSpeedMultiplier = getWaveSpeedMultiplier(wave);
       if (now - last.current > Math.max(330, 980 - wave * 55)) {
         last.current = now;
         const r = Math.random(),
@@ -1611,7 +1615,7 @@ export default function Home() {
             y:
               item.y +
               BASE_ITEM_SPEED *
-                (1 + (wave - 1) * WAVE_SPEED_STEP) *
+                currentSpeedMultiplier *
                 speedFactor *
                 dt,
           };
@@ -1845,11 +1849,6 @@ export default function Home() {
       });
       const rawProgressGain = (dt / 12) * (1 + wave * 0.01);
       const waveProgressGain = Math.max(1, Math.round(rawProgressGain));
-      const baseScoreGain = Math.max(
-        1,
-        Math.round(rawProgressGain * modeMultiplier),
-      );
-      let scoreGain = baseScoreGain;
       const pacerRushActive =
         activeCharacter === "runner_pacer" &&
         pacerRushRemainingRef.current > 0;
@@ -1861,19 +1860,19 @@ export default function Home() {
             : 1;
       const totalScoreMultiplier =
         classScoreMultiplier * characterScoreMultiplier;
-      if (totalScoreMultiplier > 1) {
-        scoreMultiplierCarryRef.current +=
-          baseScoreGain * (totalScoreMultiplier - 1);
-        const bonus = Math.floor(scoreMultiplierCarryRef.current);
-        scoreMultiplierCarryRef.current -= bonus;
-        scoreGain += bonus;
-      }
+      scoreCarryRef.current +=
+        rawProgressGain *
+        currentSpeedMultiplier *
+        modeMultiplier *
+        totalScoreMultiplier;
+      const scoreGain = Math.floor(scoreCarryRef.current);
+      scoreCarryRef.current -= scoreGain;
       if (pacerRushActive)
         pacerRushRemainingRef.current = Math.max(
           0,
           pacerRushRemainingRef.current - dt,
         );
-      setScore((v) => v + scoreGain);
+      if (scoreGain > 0) setScore((v) => v + scoreGain);
       setWaveProgress((v) => v + waveProgressGain);
       raf = requestAnimationFrame(tick);
     };
@@ -2300,7 +2299,7 @@ export default function Home() {
     hammerBreakWaveRef.current = 0;
     sentinelLastStandUsedRef.current = false;
     phantomPhaseWaveRef.current = 0;
-    scoreMultiplierCarryRef.current = 0;
+    scoreCarryRef.current = 0;
     pacerRushRemainingRef.current = 0;
     scoutShieldCooldownUntilRef.current = 0;
     rogueAbilityCooldownUntilRef.current = 0;
@@ -3258,7 +3257,7 @@ export default function Home() {
               <div className="wave-chip">
                 WAVE {wave}
                 <small>
-                  SPEED ×{(1 + (wave - 1) * WAVE_SPEED_STEP).toFixed(2)}
+                  SPEED ×{getWaveSpeedMultiplier(wave).toFixed(2)}
                 </small>
               </div>
               {items.map((x) => (
