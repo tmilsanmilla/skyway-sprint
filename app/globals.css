@@ -360,3 +360,8 @@
 @media(max-width:760px){.game-layout.view-versus .game-card{height:calc(100dvh - 113px);min-height:0}.versus-hub-heading{padding:14px 16px}.versus-hub-heading h2{font-size:28px}.versus-hub-heading>strong{font-size:8px}.versus-hub-scroll{grid-template-columns:1fr;gap:11px;padding:11px 10px 28px}.versus-armory-panel,.versus-leaderboard-panel{grid-column:auto}.versus-attack-catalog{grid-template-columns:repeat(2,minmax(0,1fr))}.versus-leader-list li{grid-template-columns:38px minmax(0,1fr)}.versus-leader-list li>span:last-child{grid-column:2;text-align:left}.mode-actions small{font-size:9px}.versus-intermission .attack-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:430px){.versus-hub-heading>strong{display:none}.versus-hub-panel>header>span{flex-basis:42px}.versus-hub-panel>header h3{font-size:16px}.versus-attack-catalog{grid-template-columns:1fr}.versus-rule-list{font-size:10px}.versus-ready .rival-card{grid-template-columns:1fr}.versus-ready .rival-card>strong{font-size:9px}.versus-leader-list li{padding:8px}.versus-leader-list strong{font-size:10px}}
 @media(prefers-reduced-motion:reduce){.matchmaking-spinner{animation:none}}
+
+/* Fractional HP keeps the full-heart color, but only half of the glyph is visible. */
+.health>span{display:inline-block;flex:0 0 1em;text-align:center}
+.health>.partial{color:var(--orange);background:none;background-clip:border-box;-webkit-background-clip:border-box;clip-path:inset(0 50% 0 0)}
+.health.glass>.partial{color:#9cefff;background:none;background-clip:border-box;-webkit-background-clip:border-box}
