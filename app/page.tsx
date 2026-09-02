@@ -3,7 +3,13 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 type Kind =
   "gem" | "coin" | "car" | "log" | "snowflake" | "rock" | "barrel" | "spikes";
-type Item = { id: number; lane: number; y: number; kind: Kind };
+type Item = {
+  id: number;
+  lane: number;
+  y: number;
+  kind: Kind;
+  hasHitPlayer?: boolean;
+};
 type GameMode = "normal" | "hardcore" | "impossible";
 type PlayerReport = {
   id: number;
@@ -193,6 +199,7 @@ export default function Home() {
     invincibleUntilRef = useRef(0),
     slowUntilRef = useRef(0),
     turnLockedRef = useRef(false),
+    damageLockedRef = useRef(false),
     slowedRef = useRef(false),
     versusMatchRef = useRef<string | null>(null),
     versusSearchingRef = useRef(false),
@@ -287,6 +294,7 @@ export default function Home() {
     setSlowed(false);
     invincibleUntilRef.current = 0;
     slowUntilRef.current = 0;
+    damageLockedRef.current = false;
     setRunning(true);
     last.current = 0;
     announceWave(1);
@@ -310,6 +318,7 @@ export default function Home() {
     setSlowed(false);
     invincibleUntilRef.current = 0;
     slowUntilRef.current = 0;
+    damageLockedRef.current = false;
   };
   const move = useCallback((d: number) => {
     if (!state.current.running || state.current.paused || turnLockedRef.current)
@@ -544,7 +553,13 @@ export default function Home() {
             ...item,
             y: item.y + (0.04 + wave * 0.0052) * speedFactor * dt,
           };
-          if (n.lane === state.current.lane && n.y > 65 && n.y < 91) {
+          if (
+            !n.hasHitPlayer &&
+            !damageLockedRef.current &&
+            n.lane === state.current.lane &&
+            n.y > 65 &&
+            n.y < 91
+          ) {
             if (n.kind === "gem") {
               const total = gemsRef.current + 1;
               gemsRef.current = total;
@@ -595,6 +610,7 @@ export default function Home() {
               setTimeout(() => setFlash(""), 120);
               return [];
             } else {
+              damageLockedRef.current = true;
               setHearts((v) => {
                 const rawDamage =
                   mode === "impossible"
@@ -674,8 +690,9 @@ export default function Home() {
               setTimeout(() => {
                 setFlash("");
                 setPaused(false);
+                damageLockedRef.current = false;
               }, 480);
-              return [n];
+              return [{ ...n, hasHitPlayer: true }];
             }
             return [];
           }
@@ -952,6 +969,7 @@ export default function Home() {
     setWavePause(false);
     setSlowed(false);
     slowUntilRef.current = 0;
+    damageLockedRef.current = false;
     setItems([]);
     setOver(false);
     setScore(0);
