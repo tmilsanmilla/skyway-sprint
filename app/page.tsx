@@ -191,16 +191,21 @@ export default function Home() {
     [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
     [unlocks, setUnlocks] = useState<Unlock[]>([]),
     [extractResults, setExtractResults] = useState<Unlock[]>([]);
+  const classBlockedByMode =
+    mode === "impossible" ||
+    (mode === "hardcore" &&
+      (playerClass === "medic" || playerClass === "tank"));
+  const activeClass = classBlockedByMode ? "runner" : playerClass;
+  const activeCharacter =
+    mode === "impossible" || classBlockedByMode
+      ? "runner_ace"
+      : selectedCharacter;
   const baseHearts =
-    playerClass === "tank" ? 5 : playerClass === "trickster" ? 2 : 3;
+    activeClass === "tank" ? 5 : activeClass === "trickster" ? 2 : 3;
   const maxHearts =
-    playerClass === "medic"
-      ? mode === "normal"
-        ? 5
-        : mode === "hardcore"
-          ? 4
-          : 1
-      : baseHearts;
+    mode === "impossible" ? 1 : activeClass === "medic" ? 5 : baseHearts;
+  const modeMultiplier =
+    mode === "impossible" ? 3 : mode === "hardcore" ? 1.75 : 1;
   const announceWave = useCallback((number: number) => {
     setWaveMessage(`WAVE ${number}`);
     setWavePause(true);
@@ -539,7 +544,7 @@ export default function Home() {
                         ? 0.5
                         : 1;
                 const damage =
-                  mode !== "impossible" && playerClass === "trickster"
+                  mode !== "impossible" && activeClass === "trickster"
                     ? rawDamage * 2
                     : rawDamage;
                 const h = v - damage;
@@ -624,7 +629,7 @@ export default function Home() {
             Math.round(
               (dt / 12) *
                 (1 + wave * 0.01) *
-                (mode === "impossible" ? 2 : mode === "hardcore" ? 1.5 : 1),
+                modeMultiplier,
             ),
           ),
       );
@@ -640,17 +645,18 @@ export default function Home() {
     guest,
     mode,
     maxHearts,
-    playerClass,
+    activeClass,
     playScope,
+    modeMultiplier,
   ]);
   useEffect(() => {
     if (!running) return;
     const next = Math.floor(score / 2250) + 1;
     if (next !== wave) {
       setWave(next);
-      if (mode === "normal" || playerClass === "medic")
+      if (mode === "normal")
         setHearts((v) =>
-          Math.min(maxHearts, v + (playerClass === "tank" ? 0.5 : 1)),
+          Math.min(maxHearts, v + (activeClass === "tank" ? 0.5 : 1)),
         );
       if (playScope === "versus" && versusMatchRef.current) {
         setVersusPoints((v) => v + 3);
@@ -676,7 +682,7 @@ export default function Home() {
     announceWave,
     mode,
     maxHearts,
-    playerClass,
+    activeClass,
     playScope,
   ]);
   useEffect(() => {
@@ -1046,6 +1052,21 @@ export default function Home() {
     await loadCollection();
   };
   const equipClass = async (item: string) => {
+    if (running) {
+      setShopStatus("Class changes are only available before a run.");
+      return;
+    }
+    if (mode === "impossible" && item !== "runner") {
+      setShopStatus("Impossible mode uses Runner Ace only.");
+      return;
+    }
+    if (
+      mode === "hardcore" &&
+      (item === "medic" || item === "tank")
+    ) {
+      setShopStatus("Medic and Tank cannot be used in Hardcore mode.");
+      return;
+    }
     const { error } = await supabase.rpc("set_loadout", {
       p_slot: "class",
       p_item: item,
@@ -1062,6 +1083,14 @@ export default function Home() {
     setShopStatus(`${item.toUpperCase()} equipped.`);
   };
   const equipCharacter = async (item: string) => {
+    if (running) {
+      setShopStatus("Character changes are only available before a run.");
+      return;
+    }
+    if (mode === "impossible" && item !== "runner_ace") {
+      setShopStatus("Impossible mode always uses the default Runner Ace.");
+      return;
+    }
     const { error } = await supabase.rpc("set_loadout", {
       p_slot: "character",
       p_item: item,
@@ -1333,7 +1362,7 @@ export default function Home() {
                 </div>
               ))}
               <div
-                className={`runner character-${selectedCharacter}${invincible ? " invincible" : ""}`}
+                className={`runner character-${activeCharacter}${invincible ? " invincible" : ""}`}
                 style={{ left: `${(lane + 0.5) * 20}%` }}
               >
                 <div className="head" />
@@ -1370,14 +1399,14 @@ export default function Home() {
                       onClick={() => setMode("hardcore")}
                     >
                       <b>HARDCORE</b>
-                      <small>3 glass hearts · 1.5× score</small>
+                      <small>No healing · no Medic/Tank · 1.75× score</small>
                     </button>
                     <button
                       className={mode === "impossible" ? "selected" : ""}
                       onClick={() => setMode("impossible")}
                     >
                       <b>IMPOSSIBLE</b>
-                      <small>1 glass heart · 2× score</small>
+                      <small>1 heart · Runner Ace only · 3× score</small>
                     </button>
                   </div>
                 )}
@@ -1760,13 +1789,20 @@ export default function Home() {
                 </div>
               )}
               <h3>CLASSES</h3>
+              {mode !== "normal" && (
+                <div className="mode-class-note">
+                  {mode === "impossible"
+                    ? "IMPOSSIBLE MODE FORCES RUNNER ACE, 1 HEART, AND ZERO HEALING."
+                    : "HARDCORE DISABLES MEDIC, TANK, AND ALL HEALING."}
+                </div>
+              )}
               <div className="class-grid">
                 <button
-                  className={playerClass === "runner" ? "equipped" : ""}
+                  className={activeClass === "runner" ? "equipped" : ""}
                   onClick={() => equipClass("runner")}
                 >
                   <b>RUNNER</b>
-                  <small>Standard balanced class</small>
+                  <small>Movement and scoring</small>
                 </button>
                 {["medic", "tank", "trickster"].map((key) => {
                   const owned = unlocks.some(
@@ -1775,33 +1811,46 @@ export default function Home() {
                   return (
                     <button
                       key={key}
-                      disabled={!owned}
-                      className={playerClass === key ? "equipped" : ""}
+                      disabled={
+                        !owned ||
+                        mode === "impossible" ||
+                        (mode === "hardcore" &&
+                          (key === "medic" || key === "tank"))
+                      }
+                      className={activeClass === key ? "equipped" : ""}
                       onClick={() => equipClass(key)}
                     >
                       <b>{key.toUpperCase()}</b>
                       <small>
-                        {owned
+                        {owned &&
+                        (mode === "impossible" ||
+                          (mode === "hardcore" &&
+                            (key === "medic" || key === "tank")))
+                          ? "UNAVAILABLE IN THIS MODE"
+                          : owned
                           ? key === "medic"
-                            ? "Overheal beyond max HP"
+                            ? "Overhealing and special healing"
                             : key === "tank"
-                              ? "5 HP · heals ½"
-                              : "2 HP · double damage · graze bonus"
+                              ? "Defense and extra health"
+                              : "Graze, dodging, and counterplay"
                           : "LOCKED — extract to unlock"}
                       </small>
                     </button>
                   );
                 })}
               </div>
-              <h3>{playerClass.toUpperCase()} CHARACTERS</h3>
+              <h3>{activeClass.toUpperCase()} CHARACTERS</h3>
               <div className="character-grid">
                 {CLASS_CHARACTERS[
-                  playerClass as keyof typeof CLASS_CHARACTERS
+                  activeClass as keyof typeof CLASS_CHARACTERS
                 ].map((character) => (
                   <button
                     key={character.key}
+                    disabled={
+                      mode === "impossible" && character.key !== "runner_ace"
+                    }
                     className={
-                      selectedCharacter === character.key ? "equipped" : ""
+                      activeCharacter === character.key ? "equipped" : ""
                     }
                     onClick={() => equipCharacter(character.key)}
                   >
