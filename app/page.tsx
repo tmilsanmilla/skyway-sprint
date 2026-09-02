@@ -20,11 +20,29 @@ type AdminUser = {
   role: "main" | "co_admin";
 };
 type Leader = { rank: number; username: string; high_score: number };
+type Rarity =
+  | "common"
+  | "uncommon"
+  | "rare"
+  | "epic"
+  | "legendary"
+  | "mythic";
 type Unlock = {
   item_key: string;
-  item_type: "class" | "player" | "obstacle" | "environment";
-  rarity: string;
+  item_type:
+    | "class"
+    | "character"
+    | "player"
+    | "obstacle"
+    | "environment";
+  rarity: Rarity;
 };
+type ExtractionResult = Unlock & {
+  is_new: boolean;
+  category: "character" | "cosmetic";
+  display_name?: string;
+};
+type BoxType = "regular" | "legendary";
 type PlayScope = "single" | "versus";
 type VersusPhase =
   "idle" | "searching" | "ready" | "playing" | "intermission" | "finished";
@@ -50,6 +68,45 @@ const CLASS_CHARACTERS = {
     { key: "trickster_phantom", name: "Phantom", weapon: "Moon Scythe" },
   ],
 } as const;
+const EXTRACTION_BOXES = {
+  regular: {
+    name: "NORMAL BOX",
+    cost: 2,
+    mix: "5% CHARACTER · 95% COSMETIC",
+    note: "DUPLICATES AWARD NOTHING · LISTED RARITY WEIGHTS ARE NORMALIZED",
+    odds: [
+      ["common", "45.75%"],
+      ["uncommon", "30.2%"],
+      ["rare", "15.4%"],
+      ["epic", "8%"],
+      ["legendary", "1%"],
+      ["mythic", "0.01%"],
+    ],
+  },
+  legendary: {
+    name: "LEGENDARY BOX",
+    cost: 20,
+    mix: "20% CHARACTER · 80% COSMETIC",
+    note: "GUARANTEED TO BE NEW",
+    odds: [
+      ["common", "3%"],
+      ["uncommon", "12%"],
+      ["rare", "40.3%"],
+      ["epic", "41.5%"],
+      ["legendary", "3%"],
+      ["mythic", "0.2%"],
+    ],
+  },
+} as const satisfies Record<
+  BoxType,
+  {
+    name: string;
+    cost: number;
+    mix: string;
+    note: string;
+    odds: readonly (readonly [Rarity, string])[];
+  }
+>;
 const supabase = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
@@ -124,6 +181,7 @@ export default function Home() {
     [slowed, setSlowed] = useState(false),
     [shopOpen, setShopOpen] = useState(false),
     [shopStatus, setShopStatus] = useState(""),
+    [extractBusy, setExtractBusy] = useState(false),
     [leaderboardOpen, setLeaderboardOpen] = useState(false),
     [leaders, setLeaders] = useState<Leader[]>([]);
   const id = useRef(0),
@@ -189,8 +247,11 @@ export default function Home() {
     [versusResult, setVersusResult] = useState("");
   const [playerClass, setPlayerClass] = useState("runner"),
     [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
+    [playerCosmetic, setPlayerCosmetic] = useState(""),
+    [obstacleCosmetic, setObstacleCosmetic] = useState(""),
+    [environmentCosmetic, setEnvironmentCosmetic] = useState(""),
     [unlocks, setUnlocks] = useState<Unlock[]>([]),
-    [extractResults, setExtractResults] = useState<Unlock[]>([]);
+    [extractResults, setExtractResults] = useState<ExtractionResult[]>([]);
   const classBlockedByMode =
     mode === "impossible" ||
     (mode === "hardcore" &&
@@ -776,7 +837,9 @@ export default function Home() {
           supabase.rpc("get_admin_role"),
           supabase
             .from("player_loadouts")
-            .select("class_key,character_key")
+            .select(
+              "class_key,character_key,player_cosmetic,obstacle_cosmetic,environment_cosmetic",
+            )
             .eq("user_id", user.id)
             .maybeSingle(),
         ]);
@@ -803,11 +866,17 @@ export default function Home() {
         setAdminRole(role);
         if (loadout?.class_key) setPlayerClass(loadout.class_key);
         if (loadout?.character_key) setSelectedCharacter(loadout.character_key);
+        setPlayerCosmetic(loadout?.player_cosmetic ?? "");
+        setObstacleCosmetic(loadout?.obstacle_cosmetic ?? "");
+        setEnvironmentCosmetic(loadout?.environment_cosmetic ?? "");
       } else {
         setUsername("");
         setUsernameRequired(false);
         setIsAdmin(false);
         setAdminRole(null);
+        setPlayerCosmetic("");
+        setObstacleCosmetic("");
+        setEnvironmentCosmetic("");
       }
       setAuthReady(true);
     };
@@ -1025,31 +1094,50 @@ export default function Home() {
       supabase.from("player_unlocks").select("item_key,item_type,rarity"),
       supabase
         .from("player_loadouts")
-        .select("class_key,character_key")
+        .select(
+          "class_key,character_key,player_cosmetic,obstacle_cosmetic,environment_cosmetic",
+        )
         .maybeSingle(),
     ]);
     setUnlocks((owned ?? []) as Unlock[]);
     if (loadout?.class_key) setPlayerClass(loadout.class_key);
     if (loadout?.character_key) setSelectedCharacter(loadout.character_key);
+    setPlayerCosmetic(loadout?.player_cosmetic ?? "");
+    setObstacleCosmetic(loadout?.obstacle_cosmetic ?? "");
+    setEnvironmentCosmetic(loadout?.environment_cosmetic ?? "");
   };
-  const extract = async (count: 1 | 10) => {
+  const extract = async (boxType: BoxType) => {
+    if (extractBusy) return;
     if (guest) {
       setShopStatus("Sign in to extract permanent items.");
       return;
     }
-    setShopStatus("Extracting…");
-    const { data, error } = await supabase.rpc("extract_items", {
-      pull_count: count,
-    });
-    if (error) {
-      setShopStatus(error.message);
-      return;
+    const box = EXTRACTION_BOXES[boxType];
+    setExtractBusy(true);
+    setExtractResults([]);
+    setShopStatus(`Opening ${box.name.toLowerCase()}…`);
+    try {
+      const { data, error } = await supabase.rpc("extract_items", {
+        pull_count: 1,
+        box_type: boxType,
+      });
+      if (error) {
+        setShopStatus(error.message);
+        return;
+      }
+      const results = (data?.results ?? []) as ExtractionResult[];
+      setExtractResults(results);
+      gemsRef.current = data.gems;
+      setGems(data.gems);
+      setShopStatus(
+        results[0]?.is_new === false
+          ? "Duplicate pulled — nothing was added to your collection."
+          : `${box.name} OPENED — NEW ITEM UNLOCKED!`,
+      );
+      await loadCollection();
+    } finally {
+      setExtractBusy(false);
     }
-    setExtractResults((data?.results ?? []) as Unlock[]);
-    gemsRef.current = data.gems;
-    setGems(data.gems);
-    setShopStatus(`${count} extraction${count === 1 ? "" : "s"} complete!`);
-    await loadCollection();
   };
   const equipClass = async (item: string) => {
     if (running) {
@@ -1075,11 +1163,7 @@ export default function Home() {
       setShopStatus(error.message);
       return;
     }
-    setPlayerClass(item);
-    const defaultCharacter =
-      CLASS_CHARACTERS[item as keyof typeof CLASS_CHARACTERS]?.[0]?.key ??
-      "runner_ace";
-    setSelectedCharacter(defaultCharacter);
+    await loadCollection();
     setShopStatus(`${item.toUpperCase()} equipped.`);
   };
   const equipCharacter = async (item: string) => {
@@ -1107,6 +1191,12 @@ export default function Home() {
       p_slot: item.item_type,
       p_item: item.item_key,
     });
+    if (!error) {
+      if (item.item_type === "player") setPlayerCosmetic(item.item_key);
+      if (item.item_type === "obstacle") setObstacleCosmetic(item.item_key);
+      if (item.item_type === "environment")
+        setEnvironmentCosmetic(item.item_key);
+    }
     setShopStatus(
       error
         ? error.message
@@ -1312,7 +1402,9 @@ export default function Home() {
               <span>{guest ? "GUEST RUNNER" : username || userEmail}</span>
             </div>
           </header>
-          <div className="playfield">
+          <div
+            className={`playfield${environmentCosmetic ? ` environment-${environmentCosmetic}` : ""}`}
+          >
             {playScope === "versus" && (
               <div className="versus-hud">
                 <div>
@@ -1354,7 +1446,11 @@ export default function Home() {
               {items.map((x) => (
                 <div
                   key={x.id}
-                  className={`item ${x.kind}`}
+                  className={`item ${x.kind}${
+                    obstacleCosmetic && x.kind !== "gem" && x.kind !== "coin"
+                      ? ` obstacle-${obstacleCosmetic}`
+                      : ""
+                  }`}
                   style={{ left: `${(x.lane + 0.5) * 20}%`, top: `${x.y}%` }}
                   aria-label={x.kind}
                 >
@@ -1362,7 +1458,7 @@ export default function Home() {
                 </div>
               ))}
               <div
-                className={`runner character-${activeCharacter}${invincible ? " invincible" : ""}`}
+                className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${invincible ? " invincible" : ""}`}
                 style={{ left: `${(lane + 0.5) * 20}%` }}
               >
                 <div className="head" />
@@ -1769,26 +1865,59 @@ export default function Home() {
               <p>GEM SHOP</p>
               <h2>EXTRACTION + LOADOUT</h2>
               <div className="extract-actions">
-                <button onClick={() => extract(1)}>
-                  <b>EXTRACT ×1</b>
-                  <span>♦ 2</span>
-                </button>
-                <button onClick={() => extract(10)}>
-                  <b>EXTRACT ×10</b>
-                  <span>♦ 20</span>
-                  <small>10th is rare or better</small>
-                </button>
+                {(Object.keys(EXTRACTION_BOXES) as BoxType[]).map(
+                  (boxType) => {
+                    const box = EXTRACTION_BOXES[boxType];
+                    return (
+                      <article
+                        key={boxType}
+                        className={`extract-box ${boxType}`}
+                      >
+                        <span className="box-icon" aria-hidden="true">
+                          {boxType === "legendary" ? "✦" : "◇"}
+                        </span>
+                        <b>{box.name}</b>
+                        <small className="box-mix">{box.mix}</small>
+                        <span className="rarity-chances">
+                          {box.odds.map(([rarity, chance]) => (
+                            <small key={rarity} className={rarity}>
+                              <b>{rarity}</b>
+                              {chance}
+                            </small>
+                          ))}
+                        </span>
+                        <small className="box-note">{box.note}</small>
+                        <button
+                          disabled={extractBusy}
+                          onClick={() => extract(boxType)}
+                        >
+                          {extractBusy ? "OPENING…" : "OPEN"}{" "}
+                          <span>♦ {box.cost}</span>
+                        </button>
+                      </article>
+                    );
+                  },
+                )}
               </div>
               {extractResults.length > 0 && (
                 <div className="extract-results">
                   {extractResults.map((item, index) => (
-                    <span key={item.item_key + index} className={item.rarity}>
-                      {item.rarity} · {item.item_key.replaceAll("_", " ")}
+                    <span
+                      key={item.item_key + index}
+                      className={`${item.rarity}${item.is_new ? "" : " duplicate"}`}
+                    >
+                      <b>{item.rarity}</b>
+                      {item.display_name ?? item.item_key.replaceAll("_", " ")}
+                      <small>
+                        {item.is_new
+                          ? `NEW ${item.category}`
+                          : "DUPLICATE · NOTHING ADDED"}
+                      </small>
                     </span>
                   ))}
                 </div>
               )}
-              <h3>CLASSES</h3>
+              <h3>CHARACTER CLASSES</h3>
               {mode !== "normal" && (
                 <div className="mode-class-note">
                   {mode === "impossible"
@@ -1805,9 +1934,21 @@ export default function Home() {
                   <small>Movement and scoring</small>
                 </button>
                 {["medic", "tank", "trickster"].map((key) => {
-                  const owned = unlocks.some(
+                  const roster =
+                    CLASS_CHARACTERS[
+                      key as keyof typeof CLASS_CHARACTERS
+                    ];
+                  const legacyUnlock = unlocks.some(
                     (x) => x.item_type === "class" && x.item_key === key,
                   );
+                  const ownedCharacters = roster.filter((character) =>
+                    unlocks.some(
+                      (x) =>
+                        x.item_type === "character" &&
+                        x.item_key === character.key,
+                    ),
+                  ).length;
+                  const owned = legacyUnlock || ownedCharacters > 0;
                   return (
                     <button
                       key={key}
@@ -1829,10 +1970,10 @@ export default function Home() {
                           ? "UNAVAILABLE IN THIS MODE"
                           : owned
                           ? key === "medic"
-                            ? "Overhealing and special healing"
+                            ? `${ownedCharacters} OWNED · OVERHEALING AND SPECIAL HEALING`
                             : key === "tank"
-                              ? "Defense and extra health"
-                              : "Graze, dodging, and counterplay"
+                              ? `${ownedCharacters} OWNED · DEFENSE AND EXTRA HEALTH`
+                              : `${ownedCharacters} OWNED · GRAZE, DODGING, AND COUNTERPLAY`
                           : "LOCKED — extract to unlock"}
                       </small>
                     </button>
@@ -1843,45 +1984,95 @@ export default function Home() {
               <div className="character-grid">
                 {CLASS_CHARACTERS[
                   activeClass as keyof typeof CLASS_CHARACTERS
-                ].map((character) => (
-                  <button
-                    key={character.key}
-                    disabled={
-                      mode === "impossible" && character.key !== "runner_ace"
-                    }
-                    className={
-                      activeCharacter === character.key ? "equipped" : ""
-                    }
-                    onClick={() => equipCharacter(character.key)}
-                  >
-                    <span className={`character-portrait ${character.key}`}>
-                      <i />
-                    </span>
-                    <b>{character.name}</b>
-                    <small>{character.weapon}</small>
-                  </button>
-                ))}
-              </div>
-              <h3>COSMETICS</h3>
-              <div className="cosmetic-grid">
-                {unlocks.filter((x) => x.item_type !== "class").length === 0 ? (
-                  <small>No cosmetics unlocked yet.</small>
-                ) : (
-                  unlocks
-                    .filter((x) => x.item_type !== "class")
-                    .map((item) => (
-                      <button
-                        key={item.item_key}
-                        onClick={() => equipCosmetic(item)}
+                ].map((character) => {
+                  const unlock = unlocks.find(
+                    (item) =>
+                      item.item_type === "character" &&
+                      item.item_key === character.key,
+                  );
+                  const owned = character.key === "runner_ace" || Boolean(unlock);
+                  return (
+                    <button
+                      key={character.key}
+                      disabled={
+                        !owned ||
+                        (mode === "impossible" &&
+                          character.key !== "runner_ace")
+                      }
+                      className={
+                        activeCharacter === character.key ? "equipped" : ""
+                      }
+                      onClick={() => equipCharacter(character.key)}
+                    >
+                      <span className={`character-portrait ${character.key}`}>
+                        <i />
+                      </span>
+                      <b>{character.name}</b>
+                      <small>{character.weapon}</small>
+                      <small
+                        className={`character-rarity ${unlock?.rarity ?? "common"}`}
                       >
-                        <b>{item.item_key.replaceAll("_", " ")}</b>
-                        <small>
-                          {item.rarity} · {item.item_type}
-                        </small>
-                      </button>
-                    ))
-                )}
+                        {character.key === "runner_ace"
+                          ? "STARTER"
+                          : unlock?.rarity ?? "LOCKED · EXTRACT TO UNLOCK"}
+                      </small>
+                    </button>
+                  );
+                })}
               </div>
+              <h3>COSMETIC COLLECTION</h3>
+              {(
+                [
+                  ["player", "PLAYER LOOKS"],
+                  ["obstacle", "OBSTACLE LOOKS"],
+                  ["environment", "ENVIRONMENTS"],
+                ] as const
+              ).map(([itemType, label]) => {
+                const items = unlocks.filter(
+                  (item) => item.item_type === itemType,
+                );
+                return (
+                  <div className="collection-group" key={itemType}>
+                    <h4>
+                      {label} <span>{items.length}</span>
+                    </h4>
+                    <div className="cosmetic-grid">
+                      {items.length === 0 ? (
+                        <small>Nothing collected in this category yet.</small>
+                      ) : (
+                        items.map((item) => (
+                          <button
+                            key={item.item_key}
+                            className={`rarity-${item.rarity}${
+                              (itemType === "player" &&
+                                playerCosmetic === item.item_key) ||
+                              (itemType === "obstacle" &&
+                                obstacleCosmetic === item.item_key) ||
+                              (itemType === "environment" &&
+                                environmentCosmetic === item.item_key)
+                                ? " equipped"
+                                : ""
+                            }`}
+                            onClick={() => equipCosmetic(item)}
+                          >
+                            <b>{item.item_key.replaceAll("_", " ")}</b>
+                            <small>
+                              {item.rarity}
+                              {((itemType === "player" &&
+                                playerCosmetic === item.item_key) ||
+                                (itemType === "obstacle" &&
+                                  obstacleCosmetic === item.item_key) ||
+                                (itemType === "environment" &&
+                                  environmentCosmetic === item.item_key)) &&
+                                " · EQUIPPED"}
+                            </small>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
               <strong className="shop-balance">BALANCE: ♦ {gems}</strong>
               {shopStatus && <div className="report-status">{shopStatus}</div>}
             </section>
