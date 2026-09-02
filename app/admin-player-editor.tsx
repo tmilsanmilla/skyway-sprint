@@ -553,7 +553,7 @@ export function AdminPlayerEditor({
             id="admin-player-search"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="tedmils or player@email.com"
+            placeholder="Username or email"
           />
           <button disabled={searching}>{searching ? "SEARCHING…" : "SEARCH"}</button>
         </div>
