@@ -91,6 +91,32 @@ const CLASS_CHARACTERS = {
     { key: "trickster_phantom", name: "Phantom", weapon: "Moon Scythe" },
   ],
 } as const;
+const INVENTORY_CLASSES: ReadonlyArray<{
+  key: keyof typeof CLASS_CHARACTERS;
+  label: string;
+  description: string;
+}> = [
+  {
+    key: "runner",
+    label: "RUNNER",
+    description: "Fast, balanced characters built for pure lane-running.",
+  },
+  {
+    key: "medic",
+    label: "HEALER",
+    description: "Recovery specialists with overhealing and support tools.",
+  },
+  {
+    key: "tank",
+    label: "TANK",
+    description: "Heavy characters with extra health and sturdy defenses.",
+  },
+  {
+    key: "trickster",
+    label: "TRICKSTER",
+    description: "Risky characters built around grazes, dodges, and counters.",
+  },
+];
 const EXTRACTION_BOXES = {
   regular: {
     name: "NORMAL BOX",
@@ -205,6 +231,8 @@ export default function Home() {
     [slowed, setSlowed] = useState(false),
     [shopOpen, setShopOpen] = useState(false),
     [shopStatus, setShopStatus] = useState(""),
+    [inventoryOpen, setInventoryOpen] = useState(false),
+    [inventoryStatus, setInventoryStatus] = useState(""),
     [extractBusy, setExtractBusy] = useState(false),
     [leaderboardOpen, setLeaderboardOpen] = useState(false),
     [leaders, setLeaders] = useState<Leader[]>([]);
@@ -320,6 +348,10 @@ export default function Home() {
     [versusResult, setVersusResult] = useState("");
   const [playerClass, setPlayerClass] = useState("runner"),
     [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
+    [inventoryCharacter, setInventoryCharacter] = useState<{
+      classKey: keyof typeof CLASS_CHARACTERS;
+      characterKey: string;
+    }>({ classKey: "runner", characterKey: "runner_ace" }),
     [playerCosmetic, setPlayerCosmetic] = useState(""),
     [obstacleCosmetic, setObstacleCosmetic] = useState(""),
     [environmentCosmetic, setEnvironmentCosmetic] = useState(""),
@@ -1058,6 +1090,13 @@ export default function Home() {
         setUsernameRequired(false);
         setIsAdmin(false);
         setAdminRole(null);
+        setUnlocks([]);
+        setPlayerClass("runner");
+        setSelectedCharacter("runner_ace");
+        setInventoryCharacter({
+          classKey: "runner",
+          characterKey: "runner_ace",
+        });
         setPlayerCosmetic("");
         setObstacleCosmetic("");
         setEnvironmentCosmetic("");
@@ -1149,8 +1188,16 @@ export default function Home() {
     setSettingsOpen(false);
     setAdminOpen(false);
     setShopOpen(false);
+    setInventoryOpen(false);
     setLeaderboardOpen(false);
     setGuest(false);
+    setUnlocks([]);
+    setPlayerClass("runner");
+    setSelectedCharacter("runner_ace");
+    setInventoryCharacter({
+      classKey: "runner",
+      characterKey: "runner_ace",
+    });
     userIdRef.current = null;
     audioEngine.stop();
     if (userEmail) {
@@ -1162,6 +1209,16 @@ export default function Home() {
     void audioEngine.start(soundtrack);
     void audioEngine.playSfx("click");
     setGuest(true);
+    setUnlocks([]);
+    setPlayerClass("runner");
+    setSelectedCharacter("runner_ace");
+    setInventoryCharacter({
+      classKey: "runner",
+      characterKey: "runner_ace",
+    });
+    setPlayerCosmetic("");
+    setObstacleCosmetic("");
+    setEnvironmentCosmetic("");
     setGems(0);
     setHighScore(0);
     gemsRef.current = 0;
@@ -1334,54 +1391,72 @@ export default function Home() {
       setExtractBusy(false);
     }
   };
-  const equipClass = async (item: string) => {
+  const equipInventoryCharacter = async (
+    classKey: keyof typeof CLASS_CHARACTERS,
+    characterKey: string,
+  ) => {
     if (running) {
-      setShopStatus("Class changes are only available before a run.");
+      setInventoryStatus("Character changes are only available before a run.");
       return;
     }
-    if (mode === "impossible" && item !== "runner") {
-      setShopStatus("Impossible mode uses Runner Ace only.");
+    if (
+      mode === "impossible" &&
+      (classKey !== "runner" || characterKey !== "runner_ace")
+    ) {
+      setInventoryStatus("Impossible mode always uses the default Runner Ace.");
       return;
     }
     if (
       mode === "hardcore" &&
-      (item === "medic" || item === "tank")
+      (classKey === "medic" || classKey === "tank")
     ) {
-      setShopStatus("Medic and Tank cannot be used in Hardcore mode.");
+      setInventoryStatus("Healer and Tank cannot be used in Hardcore mode.");
       return;
     }
-    const { error } = await supabase.rpc("set_loadout", {
+    const owned =
+      characterKey === "runner_ace" ||
+      unlocks.some(
+        (item) =>
+          item.item_type === "character" && item.item_key === characterKey,
+      );
+    if (!owned) {
+      setInventoryStatus("That character is locked. Extract it in the Shop first.");
+      return;
+    }
+    if (guest) {
+      setPlayerClass(classKey);
+      setSelectedCharacter(characterKey);
+      setInventoryStatus("Starter equipped for this guest session.");
+      return;
+    }
+    setInventoryStatus("Equipping character…");
+    const { error: classError } = await supabase.rpc("set_loadout", {
       p_slot: "class",
-      p_item: item,
+      p_item: classKey,
     });
-    if (error) {
-      setShopStatus(error.message);
+    if (classError) {
+      setInventoryStatus(classError.message);
       return;
     }
-    await loadCollection();
-    setShopStatus(`${item.toUpperCase()} equipped.`);
-  };
-  const equipCharacter = async (item: string) => {
-    if (running) {
-      setShopStatus("Character changes are only available before a run.");
-      return;
-    }
-    if (mode === "impossible" && item !== "runner_ace") {
-      setShopStatus("Impossible mode always uses the default Runner Ace.");
-      return;
-    }
-    const { error } = await supabase.rpc("set_loadout", {
+    const { error: characterError } = await supabase.rpc("set_loadout", {
       p_slot: "character",
-      p_item: item,
+      p_item: characterKey,
     });
-    if (error) {
-      setShopStatus(error.message);
+    if (characterError) {
+      setInventoryStatus(characterError.message);
       return;
     }
-    setSelectedCharacter(item);
-    setShopStatus(`${item.replaceAll("_", " ").toUpperCase()} selected.`);
+    setPlayerClass(classKey);
+    setSelectedCharacter(characterKey);
+    setInventoryStatus(
+      `${characterKey.replaceAll("_", " ").toUpperCase()} equipped.`,
+    );
   };
   const equipCosmetic = async (item: Unlock) => {
+    if (guest) {
+      setInventoryStatus("Sign in to equip permanent cosmetics.");
+      return;
+    }
     const { error } = await supabase.rpc("set_loadout", {
       p_slot: item.item_type,
       p_item: item.item_key,
@@ -1392,7 +1467,7 @@ export default function Home() {
       if (item.item_type === "environment")
         setEnvironmentCosmetic(item.item_key);
     }
-    setShopStatus(
+    setInventoryStatus(
       error
         ? error.message
         : `${item.item_key.replaceAll("_", " ").toUpperCase()} equipped.`,
@@ -1403,6 +1478,18 @@ export default function Home() {
     setLeaders((data ?? []) as Leader[]);
     setLeaderboardOpen(true);
   };
+  const ownedPlayerCosmetics = unlocks.filter(
+    (item) => item.item_type === "player",
+  );
+  const ownedObstacleCosmetics = unlocks.filter(
+    (item) => item.item_type === "obstacle",
+  );
+  const ownedEnvironments = unlocks.filter(
+    (item) => item.item_type === "environment",
+  );
+  const focusedCharacter = CLASS_CHARACTERS[
+    inventoryCharacter.classKey
+  ].find((character) => character.key === inventoryCharacter.characterKey);
   if (!authReady)
     return (
       <main className="auth-shell">
@@ -1509,6 +1596,44 @@ export default function Home() {
   return (
     <main className={`game-shell ${flash}`}>
       <div className="game-layout">
+        <section className="mode-actions" aria-label="Game modes">
+          <button
+            className={`mode-endless${playScope === "single" && !versusOpen ? " active" : ""}`}
+            aria-pressed={playScope === "single" && !versusOpen}
+            onClick={() => {
+              if (versusPhase === "searching") {
+                void cancelVersus();
+                return;
+              }
+              setVersusOpen(false);
+              setPauseMenuOpen(false);
+              if (playScope === "versus") backToMenu();
+              else setPaused(false);
+            }}
+          >
+            <span>∞</span>
+            <span>
+              <b>ENDLESS</b>
+              <small>SOLO · CHASE YOUR BEST</small>
+            </span>
+          </button>
+          <button
+            className={`mode-versus${playScope === "versus" || versusOpen ? " active" : ""}`}
+            aria-pressed={playScope === "versus" || versusOpen}
+            disabled={playScope === "versus"}
+            onClick={() => {
+              setPauseMenuOpen(false);
+              setPaused(true);
+              setVersusOpen(true);
+            }}
+          >
+            <span>⚔</span>
+            <span>
+              <b>1V1</b>
+              <small>REALTIME · OUTLAST A RIVAL</small>
+            </span>
+          </button>
+        </section>
         <nav className="game-actions">
           <button
             className="action-leaderboard"
@@ -1521,18 +1646,6 @@ export default function Home() {
           >
             <span className="trophy-icon">🏆</span>
             <b>LEADERBOARD</b>
-          </button>
-          <button
-            className="action-versus"
-            disabled={playScope === "versus"}
-            onClick={() => {
-              setPauseMenuOpen(false);
-              setPaused(true);
-              setVersusOpen(true);
-            }}
-          >
-            <span>⚔</span>
-            <b>1V1</b>
           </button>
           <button
             className="action-shop"
@@ -1551,6 +1664,30 @@ export default function Home() {
               <i />
             </span>
             <b>SHOP</b>
+          </button>
+          <button
+            className="action-inventory"
+            disabled={playScope === "versus"}
+            onClick={() => {
+              setInventoryOpen(true);
+              setPauseMenuOpen(false);
+              setPaused(true);
+              setInventoryStatus("");
+              setInventoryCharacter({
+                classKey: (activeClass in CLASS_CHARACTERS
+                  ? activeClass
+                  : "runner") as keyof typeof CLASS_CHARACTERS,
+                characterKey: activeCharacter,
+              });
+              void loadCollection();
+            }}
+          >
+            <span className="inventory-icon" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+            <b>INVENTORY</b>
           </button>
           {!guest && playScope !== "versus" && (
             <button
@@ -2131,7 +2268,7 @@ export default function Home() {
                 ×
               </button>
               <p>GEM SHOP</p>
-              <h2>EXTRACTION + LOADOUT</h2>
+              <h2>EXTRACTION SHOP</h2>
               <div className="extract-actions">
                 {(Object.keys(EXTRACTION_BOXES) as BoxType[]).map(
                   (boxType) => {
@@ -2185,164 +2322,318 @@ export default function Home() {
                   ))}
                 </div>
               )}
-              <h3>CHARACTER CLASSES</h3>
-              {mode !== "normal" && (
-                <div className="mode-class-note">
-                  {mode === "impossible"
-                    ? "IMPOSSIBLE MODE FORCES RUNNER ACE, 1 HEART, AND ZERO HEALING."
-                    : "HARDCORE DISABLES MEDIC, TANK, AND ALL HEALING."}
-                </div>
-              )}
-              <div className="class-grid">
+              <div className="shop-inventory-callout">
+                <b>OPENED SOMETHING NEW?</b>
+                <small>
+                  Characters and cosmetics now live in your Inventory.
+                </small>
                 <button
-                  className={activeClass === "runner" ? "equipped" : ""}
-                  onClick={() => equipClass("runner")}
+                  onClick={() => {
+                    setShopOpen(false);
+                    setInventoryOpen(true);
+                    setInventoryStatus("");
+                    setInventoryCharacter({
+                      classKey: (activeClass in CLASS_CHARACTERS
+                        ? activeClass
+                        : "runner") as keyof typeof CLASS_CHARACTERS,
+                      characterKey: activeCharacter,
+                    });
+                    void loadCollection();
+                  }}
                 >
-                  <b>RUNNER</b>
-                  <small>Movement and scoring</small>
+                  OPEN INVENTORY →
                 </button>
-                {["medic", "tank", "trickster"].map((key) => {
-                  const roster =
-                    CLASS_CHARACTERS[
-                      key as keyof typeof CLASS_CHARACTERS
-                    ];
-                  const legacyUnlock = unlocks.some(
-                    (x) => x.item_type === "class" && x.item_key === key,
-                  );
-                  const ownedCharacters = roster.filter((character) =>
-                    unlocks.some(
-                      (x) =>
-                        x.item_type === "character" &&
-                        x.item_key === character.key,
-                    ),
-                  ).length;
-                  const owned = legacyUnlock || ownedCharacters > 0;
-                  return (
-                    <button
-                      key={key}
-                      disabled={
-                        !owned ||
-                        mode === "impossible" ||
-                        (mode === "hardcore" &&
-                          (key === "medic" || key === "tank"))
-                      }
-                      className={activeClass === key ? "equipped" : ""}
-                      onClick={() => equipClass(key)}
-                    >
-                      <b>{key.toUpperCase()}</b>
-                      <small>
-                        {owned &&
-                        (mode === "impossible" ||
-                          (mode === "hardcore" &&
-                            (key === "medic" || key === "tank")))
-                          ? "UNAVAILABLE IN THIS MODE"
-                          : owned
-                          ? key === "medic"
-                            ? `${ownedCharacters} OWNED · OVERHEALING AND SPECIAL HEALING`
-                            : key === "tank"
-                              ? `${ownedCharacters} OWNED · DEFENSE AND EXTRA HEALTH`
-                              : `${ownedCharacters} OWNED · GRAZE, DODGING, AND COUNTERPLAY`
-                          : "LOCKED — extract to unlock"}
-                      </small>
-                    </button>
-                  );
-                })}
               </div>
-              <h3>{activeClass.toUpperCase()} CHARACTERS</h3>
-              <div className="character-grid">
-                {CLASS_CHARACTERS[
-                  activeClass as keyof typeof CLASS_CHARACTERS
-                ].map((character) => {
-                  const unlock = unlocks.find(
-                    (item) =>
-                      item.item_type === "character" &&
-                      item.item_key === character.key,
-                  );
-                  const owned = character.key === "runner_ace" || Boolean(unlock);
-                  return (
-                    <button
-                      key={character.key}
-                      disabled={
-                        !owned ||
-                        (mode === "impossible" &&
-                          character.key !== "runner_ace")
-                      }
-                      className={
-                        activeCharacter === character.key ? "equipped" : ""
-                      }
-                      onClick={() => equipCharacter(character.key)}
-                    >
-                      <span className={`character-portrait ${character.key}`}>
-                        <i />
-                      </span>
-                      <b>{character.name}</b>
-                      <small>{character.weapon}</small>
-                      <small
-                        className={`character-rarity ${unlock?.rarity ?? "common"}`}
-                      >
-                        {character.key === "runner_ace"
-                          ? "STARTER"
-                          : unlock?.rarity ?? "LOCKED · EXTRACT TO UNLOCK"}
-                      </small>
-                    </button>
-                  );
-                })}
-              </div>
-              <h3>COSMETIC COLLECTION</h3>
-              {(
-                [
-                  ["player", "PLAYER LOOKS"],
-                  ["obstacle", "OBSTACLE LOOKS"],
-                  ["environment", "ENVIRONMENTS"],
-                ] as const
-              ).map(([itemType, label]) => {
-                const items = unlocks.filter(
-                  (item) => item.item_type === itemType,
-                );
-                return (
-                  <div className="collection-group" key={itemType}>
-                    <h4>
-                      {label} <span>{items.length}</span>
-                    </h4>
-                    <div className="cosmetic-grid">
-                      {items.length === 0 ? (
-                        <small>Nothing collected in this category yet.</small>
-                      ) : (
-                        items.map((item) => (
-                          <button
-                            key={item.item_key}
-                            className={`rarity-${item.rarity}${
-                              (itemType === "player" &&
-                                playerCosmetic === item.item_key) ||
-                              (itemType === "obstacle" &&
-                                obstacleCosmetic === item.item_key) ||
-                              (itemType === "environment" &&
-                                environmentCosmetic === item.item_key)
-                                ? " equipped"
-                                : ""
-                            }`}
-                            onClick={() => equipCosmetic(item)}
-                          >
-                            <b>{item.item_key.replaceAll("_", " ")}</b>
-                            <small>
-                              {item.rarity}
-                              {((itemType === "player" &&
-                                playerCosmetic === item.item_key) ||
-                                (itemType === "obstacle" &&
-                                  obstacleCosmetic === item.item_key) ||
-                                (itemType === "environment" &&
-                                  environmentCosmetic === item.item_key)) &&
-                                " · EQUIPPED"}
-                            </small>
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
               <strong className="shop-balance">BALANCE: ♦ {gems}</strong>
               {shopStatus && <div className="report-status">{shopStatus}</div>}
+            </section>
+          </div>
+        )}
+        {inventoryOpen && (
+          <div className="report-backdrop inventory-backdrop">
+            <section
+              className="inventory-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="inventory-title"
+            >
+              <button
+                className="report-close"
+                aria-label="Close inventory"
+                onClick={() => {
+                  setInventoryOpen(false);
+                  setPaused(false);
+                }}
+              >
+                ×
+              </button>
+              <header className="inventory-heading">
+                <div>
+                  <p>COLLECTION + LOADOUT</p>
+                  <h2 id="inventory-title">INVENTORY</h2>
+                </div>
+                <strong>
+                  {guest ? "GUEST COLLECTION" : `${unlocks.length} UNLOCKS`}
+                </strong>
+              </header>
+              <div className="inventory-directory" aria-hidden="true">
+                <span>01 OBSTACLE</span>
+                <span>02 RUNNER</span>
+                <span>03 HEALER</span>
+                <span>04 TANK</span>
+                <span>05 TRICKSTER</span>
+              </div>
+              <div className="inventory-scroll">
+                <section
+                  className="inventory-section inventory-obstacles"
+                  id="inventory-obstacle"
+                >
+                  <header className="inventory-section-heading">
+                    <span>01</span>
+                    <div>
+                      <h3>OBSTACLE</h3>
+                      <p>
+                        Equip a collected look across hazards, or change the
+                        track around them.
+                      </p>
+                    </div>
+                  </header>
+                  <div
+                    className={`inventory-obstacle-preview obstacle-${obstacleCosmetic || "default"}`}
+                    aria-hidden="true"
+                  >
+                    {(["barrel", "log", "rock", "spikes"] as Kind[]).map(
+                      (kind) => (
+                        <span key={kind} className={`preview-${kind}`}>
+                          <Obstacle kind={kind} />
+                        </span>
+                      ),
+                    )}
+                  </div>
+                  <h4>
+                    OBSTACLE LOOKS <span>{ownedObstacleCosmetics.length}</span>
+                  </h4>
+                  <div className="inventory-cosmetic-grid">
+                    {ownedObstacleCosmetics.length === 0 ? (
+                      <div className="inventory-empty">
+                        {guest
+                          ? "Sign in and extract boxes to keep obstacle looks."
+                          : "No obstacle cosmetics collected yet. Open a box in the Shop."}
+                      </div>
+                    ) : (
+                      ownedObstacleCosmetics.map((item) => (
+                        <button
+                          key={item.item_key}
+                          className={`rarity-${item.rarity}${
+                            obstacleCosmetic === item.item_key
+                              ? " equipped"
+                              : ""
+                          }`}
+                          onClick={() => void equipCosmetic(item)}
+                        >
+                          <span className="cosmetic-swatch">◆</span>
+                          <b>{item.item_key.replaceAll("_", " ")}</b>
+                          <small>
+                            {item.rarity}
+                            {obstacleCosmetic === item.item_key
+                              ? " · EQUIPPED"
+                              : ""}
+                          </small>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                  <h4>
+                    TRACK + ENVIRONMENT <span>{ownedEnvironments.length}</span>
+                  </h4>
+                  <div className="inventory-cosmetic-grid environments">
+                    {ownedEnvironments.length === 0 ? (
+                      <div className="inventory-empty">
+                        No environment cosmetics collected yet.
+                      </div>
+                    ) : (
+                      ownedEnvironments.map((item) => (
+                        <button
+                          key={item.item_key}
+                          className={`rarity-${item.rarity}${
+                            environmentCosmetic === item.item_key
+                              ? " equipped"
+                              : ""
+                          }`}
+                          onClick={() => void equipCosmetic(item)}
+                        >
+                          <span className="cosmetic-swatch">▰</span>
+                          <b>{item.item_key.replaceAll("_", " ")}</b>
+                          <small>
+                            {item.rarity}
+                            {environmentCosmetic === item.item_key
+                              ? " · EQUIPPED"
+                              : ""}
+                          </small>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </section>
+
+                {INVENTORY_CLASSES.map(
+                  ({ key: classKey, label, description }, classIndex) => {
+                    const roster = CLASS_CHARACTERS[classKey];
+                    const sectionFocused =
+                      inventoryCharacter.classKey === classKey;
+                    return (
+                      <section
+                        className={`inventory-section inventory-characters inventory-${classKey}`}
+                        id={`inventory-${classKey}`}
+                        key={classKey}
+                      >
+                        <header className="inventory-section-heading">
+                          <span>0{classIndex + 2}</span>
+                          <div>
+                            <h3>{label}</h3>
+                            <p>{description}</p>
+                          </div>
+                        </header>
+                        <div className="inventory-roster">
+                          {roster.map((character) => {
+                            const unlock = unlocks.find(
+                              (item) =>
+                                item.item_type === "character" &&
+                                item.item_key === character.key,
+                            );
+                            const owned =
+                              character.key === "runner_ace" || Boolean(unlock);
+                            const focused =
+                              sectionFocused &&
+                              inventoryCharacter.characterKey === character.key;
+                            const equipped =
+                              activeClass === classKey &&
+                              activeCharacter === character.key;
+                            return (
+                              <button
+                                key={character.key}
+                                className={`${focused ? "focused" : ""}${
+                                  equipped ? " equipped" : ""
+                                }${owned ? "" : " locked"}`}
+                                disabled={!owned}
+                                onClick={() => {
+                                  setInventoryCharacter({
+                                    classKey,
+                                    characterKey: character.key,
+                                  });
+                                  setInventoryStatus("");
+                                }}
+                              >
+                                <span
+                                  className={`character-portrait ${character.key}`}
+                                  aria-hidden="true"
+                                >
+                                  <i />
+                                </span>
+                                <span className="inventory-character-name">
+                                  <b>{character.name}</b>
+                                  <small>{character.weapon}</small>
+                                </span>
+                                <small
+                                  className={`character-rarity ${unlock?.rarity ?? "common"}`}
+                                >
+                                  {character.key === "runner_ace"
+                                    ? "STARTER"
+                                    : unlock?.rarity ?? "LOCKED"}
+                                </small>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {sectionFocused && focusedCharacter && (
+                          <div className="inventory-character-detail">
+                            <div className="inventory-character-summary">
+                              <span
+                                className={`character-portrait ${focusedCharacter.key}`}
+                                aria-hidden="true"
+                              >
+                                <i />
+                              </span>
+                              <div>
+                                <small>{label} LOADOUT</small>
+                                <h4>{focusedCharacter.name}</h4>
+                                <p>{focusedCharacter.weapon}</p>
+                              </div>
+                              <button
+                                className="equip-character"
+                                disabled={
+                                  running ||
+                                  (mode === "impossible" &&
+                                    focusedCharacter.key !== "runner_ace") ||
+                                  (mode === "hardcore" &&
+                                    (classKey === "medic" ||
+                                      classKey === "tank"))
+                                }
+                                onClick={() =>
+                                  void equipInventoryCharacter(
+                                    classKey,
+                                    focusedCharacter.key,
+                                  )
+                                }
+                              >
+                                {activeClass === classKey &&
+                                activeCharacter === focusedCharacter.key
+                                  ? "EQUIPPED"
+                                  : "EQUIP CHARACTER"}
+                              </button>
+                            </div>
+                            <div className="inventory-look-header">
+                              <div>
+                                <b>OWNED LOOKS FOR {focusedCharacter.name}</b>
+                                <small>
+                                  Runner cosmetics work with every owned
+                                  character.
+                                </small>
+                              </div>
+                              <span>{ownedPlayerCosmetics.length}</span>
+                            </div>
+                            <div className="inventory-cosmetic-grid player-looks">
+                              {ownedPlayerCosmetics.length === 0 ? (
+                                <div className="inventory-empty">
+                                  {guest
+                                    ? "Guest loadouts only include Runner Ace. Sign in to build a permanent collection."
+                                    : "No runner cosmetics collected yet. Open a box in the Shop."}
+                                </div>
+                              ) : (
+                                ownedPlayerCosmetics.map((item) => (
+                                  <button
+                                    key={item.item_key}
+                                    className={`rarity-${item.rarity}${
+                                      playerCosmetic === item.item_key
+                                        ? " equipped"
+                                        : ""
+                                    }`}
+                                    onClick={() => void equipCosmetic(item)}
+                                  >
+                                    <span className="cosmetic-swatch">✦</span>
+                                    <b>{item.item_key.replaceAll("_", " ")}</b>
+                                    <small>
+                                      {item.rarity}
+                                      {playerCosmetic === item.item_key
+                                        ? " · EQUIPPED"
+                                        : ""}
+                                    </small>
+                                  </button>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </section>
+                    );
+                  },
+                )}
+              </div>
+              {inventoryStatus && (
+                <div className="inventory-status" role="status">
+                  {inventoryStatus}
+                </div>
+              )}
             </section>
           </div>
         )}
