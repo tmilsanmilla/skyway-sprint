@@ -9,7 +9,6 @@ type Item = {
   lane: number;
   y: number;
   kind: Kind;
-  hasHitPlayer?: boolean;
 };
 type GameMode = "normal" | "hardcore" | "impossible";
 type PlayerReport = {
@@ -731,8 +730,9 @@ export default function Home() {
           return [...v, { id: id.current++, lane: spawnLane, y: -10, kind }];
         });
       }
-      setItems((old) =>
-        old.flatMap((item) => {
+      setItems((old) => {
+        let clearRecoveryZone = false;
+        const advanced = old.flatMap((item) => {
           const speedFactor =
             item.kind === "barrel"
               ? 1.75
@@ -748,7 +748,6 @@ export default function Home() {
             y: item.y + (0.04 + wave * 0.0052) * speedFactor * dt,
           };
           if (
-            !n.hasHitPlayer &&
             !damageLockedRef.current &&
             n.lane === state.current.lane &&
             n.y > 65 &&
@@ -807,6 +806,7 @@ export default function Home() {
               setTimeout(() => setFlash(""), 120);
               return [];
             } else {
+              clearRecoveryZone = true;
               damageLockedRef.current = true;
               void audioEngine.playSfx("hit");
               const rawDamage =
@@ -857,27 +857,6 @@ export default function Home() {
                 }
                 return Math.max(0, h);
               });
-              const blockedLanes = new Set(
-                old
-                  .filter(
-                    (x) =>
-                      x.id !== n.id &&
-                      x.kind !== "gem" &&
-                      x.kind !== "coin" &&
-                      x.kind !== "snowflake" &&
-                      x.y > 50 &&
-                      x.y < 96,
-                  )
-                  .map((x) => x.lane),
-              );
-              const safe = [0, 1, 2, 3, 4]
-                .filter((l) => l !== n.lane && !blockedLanes.has(l))
-                .sort(
-                  (a, b) =>
-                    Math.abs(a - state.current.lane) -
-                    Math.abs(b - state.current.lane),
-                );
-              if (safe.length) setLane(safe[0]);
               setPaused(true);
               setFlash(
                 damage <= 0.5
@@ -891,13 +870,18 @@ export default function Home() {
                 setPaused(false);
                 damageLockedRef.current = false;
               }, 480);
-              return [{ ...n, hasHitPlayer: true }];
+              return [];
             }
             return [];
           }
           return n.y < 108 ? [n] : [];
-        }),
-      );
+        });
+        if (!clearRecoveryZone) return advanced;
+        // Keep the runner in place and clear every nearby object after impact.
+        return advanced.filter(
+          (item) => item.y <= 45 || item.y >= 105,
+        );
+      });
       setScore(
         (v) =>
           v +
