@@ -157,7 +157,7 @@ const VERSUS_ATTACKS: ReadonlyArray<{
     label: "SNOWFLAKE",
     cost: 3,
     icon: "❄",
-    description: "Delays the next turn",
+    description: "3-second freeze · every turn delayed 0.25 seconds",
   },
   {
     kind: "spike",
@@ -229,7 +229,7 @@ const CHARACTER_ABILITIES = {
   runner_scout: {
     name: "QUICKSTEP",
     description:
-      "Snowflakes never delay the next lane change. A snowflake also grants 1 second of invincibility when QUICKSTEP is ready; its shield has a 4-second cooldown.",
+      "Snowflakes never apply their 3-second freeze or 0.25-second turn delay. A snowflake also grants 1 second of invincibility when QUICKSTEP is ready; its shield has a 4-second cooldown.",
   },
   runner_ranger: {
     name: "PICKUP MAGNET",
@@ -359,7 +359,7 @@ const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
   };
 };
 const BASE_DAMAGE_DESCRIPTION =
-  "DAMAGE BEFORE PASSIVES: barrel 0.5 HP · log/car/spikes 1 HP · rock 2 HP · snowflake 0 HP.";
+  "DAMAGE BEFORE PASSIVES: barrel 0.5 HP · log/car/spikes 1 HP · rock 2 HP · snowflake 0 HP plus a 3-second freeze that delays every turn by 0.25 seconds.";
 const INVENTORY_CLASSES: ReadonlyArray<{
   key: keyof typeof CLASS_CHARACTERS;
   label: string;
@@ -532,8 +532,9 @@ export default function Home() {
     rogueAbilityCooldownUntilRef = useRef(0),
     turnLockedRef = useRef(false),
     delayedMoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
+    freezeEffectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     damageLockedRef = useRef(false),
-    freezeNextMoveRef = useRef(false),
+    frozenUntilRef = useRef(0),
     firstGuardWaveRef = useRef(0),
     hammerBreakWaveRef = useRef(0),
     sentinelLastStandUsedRef = useRef(false),
@@ -570,6 +571,8 @@ export default function Home() {
     () => () => {
       if (delayedMoveTimerRef.current)
         clearTimeout(delayedMoveTimerRef.current);
+      if (freezeEffectTimerRef.current)
+        clearTimeout(freezeEffectTimerRef.current);
       if (invincibilityTimerRef.current)
         clearTimeout(invincibilityTimerRef.current);
       if (abilityNoticeTimerRef.current)
@@ -835,6 +838,28 @@ export default function Home() {
       }
     }, until - now + 25);
   }, []);
+  const clearFreezeEffect = useCallback(() => {
+    frozenUntilRef.current = 0;
+    if (freezeEffectTimerRef.current) {
+      clearTimeout(freezeEffectTimerRef.current);
+      freezeEffectTimerRef.current = null;
+    }
+    setSlowed(false);
+  }, []);
+  const applyFreezeEffect = useCallback((durationMs = 3000) => {
+    const until = Date.now() + durationMs;
+    frozenUntilRef.current = until;
+    if (freezeEffectTimerRef.current)
+      clearTimeout(freezeEffectTimerRef.current);
+    setSlowed(true);
+    freezeEffectTimerRef.current = setTimeout(() => {
+      if (frozenUntilRef.current <= Date.now()) {
+        frozenUntilRef.current = 0;
+        setSlowed(false);
+        freezeEffectTimerRef.current = null;
+      }
+    }, durationMs + 25);
+  }, []);
   const announceWave = useCallback(
     (number: number) => {
       void audioEngine.playSfx("wave");
@@ -873,7 +898,7 @@ export default function Home() {
     setPaused(false);
     setPauseMenuOpen(false);
     setInvincible(false);
-    setSlowed(false);
+    clearFreezeEffect();
     setAbilityNotice("");
     invincibleUntilRef.current = 0;
     if (invincibilityTimerRef.current) {
@@ -888,7 +913,6 @@ export default function Home() {
       clearTimeout(waveAnnouncementTimerRef.current);
       waveAnnouncementTimerRef.current = null;
     }
-    freezeNextMoveRef.current = false;
     firstGuardWaveRef.current = 0;
     hammerBreakWaveRef.current = 0;
     sentinelLastStandUsedRef.current = false;
@@ -907,7 +931,7 @@ export default function Home() {
     last.current = 0;
     void audioEngine.start(soundtrack);
     announceWave(1);
-  }, [announceWave, soundtrack, startingHearts]);
+  }, [announceWave, clearFreezeEffect, soundtrack, startingHearts]);
   const resetGameToMenu = () => {
     setRunning(false);
     setPaused(false);
@@ -919,7 +943,7 @@ export default function Home() {
     setWave(1);
     setHearts(startingHearts);
     setInvincible(false);
-    setSlowed(false);
+    clearFreezeEffect();
     setAbilityNotice("");
     invincibleUntilRef.current = 0;
     if (invincibilityTimerRef.current) {
@@ -934,7 +958,6 @@ export default function Home() {
       clearTimeout(waveAnnouncementTimerRef.current);
       waveAnnouncementTimerRef.current = null;
     }
-    freezeNextMoveRef.current = false;
     firstGuardWaveRef.current = 0;
     hammerBreakWaveRef.current = 0;
     sentinelLastStandUsedRef.current = false;
@@ -960,8 +983,7 @@ export default function Home() {
       return;
     const destination = Math.max(0, Math.min(4, state.current.lane + d));
     if (destination === state.current.lane) return;
-    if (freezeNextMoveRef.current) {
-      freezeNextMoveRef.current = false;
+    if (frozenUntilRef.current > Date.now()) {
       turnLockedRef.current = true;
       delayedMoveTimerRef.current = setTimeout(() => {
         if (
@@ -980,10 +1002,9 @@ export default function Home() {
             showAbilityNotice("SHADOWSTEP · 0.45 SECOND SHIELD");
           }
         }
-        setSlowed(false);
         turnLockedRef.current = false;
         delayedMoveTimerRef.current = null;
-      }, 200);
+      }, 250);
       return;
     }
     setLane(destination);
@@ -1206,7 +1227,12 @@ export default function Home() {
     setRunning(!eliminated);
     setPauseMenuOpen(false);
     setInvincible(false);
-    setSlowed(false);
+    clearFreezeEffect();
+    if (delayedMoveTimerRef.current) {
+      clearTimeout(delayedMoveTimerRef.current);
+      delayedMoveTimerRef.current = null;
+    }
+    turnLockedRef.current = false;
     setAbilityNotice("");
     last.current = 0;
 
@@ -1644,21 +1670,19 @@ export default function Home() {
             } else if (n.kind === "snowflake") {
               if (activeCharacter === "runner_scout") {
                 void audioEngine.playSfx("shield");
-                freezeNextMoveRef.current = false;
-                setSlowed(false);
+                clearFreezeEffect();
                 if (scoutShieldCooldownUntilRef.current <= Date.now()) {
                   scoutShieldCooldownUntilRef.current = Date.now() + 4000;
                   grantInvincibility(1000);
                   showAbilityNotice(
-                    "QUICKSTEP · SLOW BLOCKED + 1 SECOND SHIELD",
+                    "QUICKSTEP · FREEZE BLOCKED + 1 SECOND SHIELD",
                   );
                 } else {
-                  showAbilityNotice("QUICKSTEP · SLOW BLOCKED");
+                  showAbilityNotice("QUICKSTEP · FREEZE BLOCKED");
                 }
               } else {
                 void audioEngine.playSfx("freeze");
-                freezeNextMoveRef.current = true;
-                setSlowed(true);
+                applyFreezeEffect(3000);
                 setFlash("freeze-hit");
                 setTimeout(() => {
                   setFlash((value) =>
@@ -1860,6 +1884,8 @@ export default function Home() {
     modeMultiplier,
     classScoreMultiplier,
     grantInvincibility,
+    applyFreezeEffect,
+    clearFreezeEffect,
     showAbilityNotice,
     activeAbility.name,
   ]);
@@ -2246,7 +2272,7 @@ export default function Home() {
     setPauseMenuOpen(false);
     setWavePause(false);
     setInvincible(false);
-    setSlowed(false);
+    clearFreezeEffect();
     setAbilityNotice("");
     invincibleUntilRef.current = 0;
     if (invincibilityTimerRef.current) {
@@ -2261,7 +2287,6 @@ export default function Home() {
       clearTimeout(waveAnnouncementTimerRef.current);
       waveAnnouncementTimerRef.current = null;
     }
-    freezeNextMoveRef.current = false;
     firstGuardWaveRef.current = 0;
     hammerBreakWaveRef.current = 0;
     sentinelLastStandUsedRef.current = false;
