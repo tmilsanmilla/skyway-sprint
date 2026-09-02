@@ -28,6 +28,28 @@ type Unlock = {
 type PlayScope = "single" | "versus";
 type VersusPhase =
   "idle" | "searching" | "ready" | "playing" | "intermission" | "finished";
+const CLASS_CHARACTERS = {
+  runner: [
+    { key: "runner_ace", name: "Ace", weapon: "Baton" },
+    { key: "runner_scout", name: "Scout", weapon: "Twin Blades" },
+    { key: "runner_ranger", name: "Ranger", weapon: "Pixel Bow" },
+  ],
+  medic: [
+    { key: "medic_patch", name: "Patch", weapon: "Med Staff" },
+    { key: "medic_mercy", name: "Mercy", weapon: "Injector" },
+    { key: "medic_vial", name: "Vial", weapon: "Tonic Flask" },
+  ],
+  tank: [
+    { key: "tank_bulwark", name: "Bulwark", weapon: "Tower Shield" },
+    { key: "tank_hammer", name: "Hammer", weapon: "War Hammer" },
+    { key: "tank_sentinel", name: "Sentinel", weapon: "Steel Spear" },
+  ],
+  trickster: [
+    { key: "trickster_rogue", name: "Rogue", weapon: "Daggers" },
+    { key: "trickster_jester", name: "Jester", weapon: "Card Fan" },
+    { key: "trickster_phantom", name: "Phantom", weapon: "Moon Scythe" },
+  ],
+} as const;
 const supabase = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
@@ -166,6 +188,7 @@ export default function Home() {
     [versusOpponentHearts, setVersusOpponentHearts] = useState(3),
     [versusResult, setVersusResult] = useState("");
   const [playerClass, setPlayerClass] = useState("runner"),
+    [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
     [unlocks, setUnlocks] = useState<Unlock[]>([]),
     [extractResults, setExtractResults] = useState<Unlock[]>([]);
   const baseHearts =
@@ -731,6 +754,7 @@ export default function Home() {
           { data: profile },
           { data: admin },
           { data: role },
+          { data: loadout },
         ] = await Promise.all([
           supabase
             .from("player_stats")
@@ -744,6 +768,11 @@ export default function Home() {
             .maybeSingle(),
           supabase.rpc("is_admin"),
           supabase.rpc("get_admin_role"),
+          supabase
+            .from("player_loadouts")
+            .select("class_key,character_key")
+            .eq("user_id", user.id)
+            .maybeSingle(),
         ]);
         if (statsError)
           console.error("Could not load account stats:", statsError.message);
@@ -766,6 +795,8 @@ export default function Home() {
         } else setUsernameRequired(true);
         setIsAdmin(Boolean(admin));
         setAdminRole(role);
+        if (loadout?.class_key) setPlayerClass(loadout.class_key);
+        if (loadout?.character_key) setSelectedCharacter(loadout.character_key);
       } else {
         setUsername("");
         setUsernameRequired(false);
@@ -986,10 +1017,14 @@ export default function Home() {
     if (guest) return;
     const [{ data: owned }, { data: loadout }] = await Promise.all([
       supabase.from("player_unlocks").select("item_key,item_type,rarity"),
-      supabase.from("player_loadouts").select("class_key").maybeSingle(),
+      supabase
+        .from("player_loadouts")
+        .select("class_key,character_key")
+        .maybeSingle(),
     ]);
     setUnlocks((owned ?? []) as Unlock[]);
     if (loadout?.class_key) setPlayerClass(loadout.class_key);
+    if (loadout?.character_key) setSelectedCharacter(loadout.character_key);
   };
   const extract = async (count: 1 | 10) => {
     if (guest) {
@@ -1020,7 +1055,23 @@ export default function Home() {
       return;
     }
     setPlayerClass(item);
+    const defaultCharacter =
+      CLASS_CHARACTERS[item as keyof typeof CLASS_CHARACTERS]?.[0]?.key ??
+      "runner_ace";
+    setSelectedCharacter(defaultCharacter);
     setShopStatus(`${item.toUpperCase()} equipped.`);
+  };
+  const equipCharacter = async (item: string) => {
+    const { error } = await supabase.rpc("set_loadout", {
+      p_slot: "character",
+      p_item: item,
+    });
+    if (error) {
+      setShopStatus(error.message);
+      return;
+    }
+    setSelectedCharacter(item);
+    setShopStatus(`${item.replaceAll("_", " ").toUpperCase()} selected.`);
   };
   const equipCosmetic = async (item: Unlock) => {
     const { error } = await supabase.rpc("set_loadout", {
@@ -1032,71 +1083,6 @@ export default function Home() {
         ? error.message
         : `${item.item_key.replaceAll("_", " ").toUpperCase()} equipped.`,
     );
-  };
-  const activatePowerup = (kind: "score_boost" | "invincibility" | "heart") => {
-    if (kind === "score_boost") {
-      setScore((v) => v + 1000);
-      setShopStatus("+1,000 score activated!");
-    } else if (kind === "heart") {
-      if (mode !== "normal") {
-        setShopStatus("Glass hearts cannot be healed.");
-        return;
-      }
-      setHearts((v) => Math.min(maxHearts, v + 1));
-      setShopStatus("One heart restored!");
-    } else {
-      const until = Math.max(Date.now(), invincibleUntilRef.current) + 8000;
-      invincibleUntilRef.current = until;
-      setInvincible(true);
-      setShopStatus("Invincible for 8 seconds!");
-      setTimeout(
-        () => {
-          if (invincibleUntilRef.current <= Date.now()) setInvincible(false);
-        },
-        until - Date.now() + 50,
-      );
-    }
-  };
-  const buyPowerup = async (
-    kind: "score_boost" | "invincibility" | "heart",
-    cost: number,
-  ) => {
-    setShopStatus("");
-    if (kind === "heart" && mode !== "normal") {
-      setShopStatus("Glass hearts cannot be healed.");
-      return;
-    }
-    if (gemsRef.current < cost) {
-      setShopStatus("Not enough gems.");
-      return;
-    }
-    if (guest) {
-      const remaining = gemsRef.current - cost;
-      gemsRef.current = remaining;
-      setGems(remaining);
-      activatePowerup(kind);
-      setTimeout(() => {
-        setShopOpen(false);
-        setPaused(false);
-      }, 500);
-      return;
-    }
-    const { data, error } = await supabase.rpc("buy_powerup", {
-      powerup: kind,
-    });
-    if (error) {
-      setShopStatus(error.message);
-      return;
-    }
-    if (typeof data === "number") {
-      gemsRef.current = data;
-      setGems(data);
-    }
-    activatePowerup(kind);
-    setTimeout(() => {
-      setShopOpen(false);
-      setPaused(false);
-    }, 500);
   };
   const loadLeaderboard = async () => {
     const { data } = await supabase.rpc("get_leaderboard");
@@ -1347,7 +1333,7 @@ export default function Home() {
                 </div>
               ))}
               <div
-                className={invincible ? "runner invincible" : "runner"}
+                className={`runner character-${selectedCharacter}${invincible ? " invincible" : ""}`}
                 style={{ left: `${(lane + 0.5) * 20}%` }}
               >
                 <div className="head" />
@@ -1357,6 +1343,7 @@ export default function Home() {
                 <i className="leg g1" />
                 <i className="leg g2" />
                 <em />
+                <span className="character-weapon" aria-hidden="true" />
               </div>
             </div>
             {!running && (
@@ -1806,6 +1793,26 @@ export default function Home() {
                   );
                 })}
               </div>
+              <h3>{playerClass.toUpperCase()} CHARACTERS</h3>
+              <div className="character-grid">
+                {CLASS_CHARACTERS[
+                  playerClass as keyof typeof CLASS_CHARACTERS
+                ].map((character) => (
+                  <button
+                    key={character.key}
+                    className={
+                      selectedCharacter === character.key ? "equipped" : ""
+                    }
+                    onClick={() => equipCharacter(character.key)}
+                  >
+                    <span className={`character-portrait ${character.key}`}>
+                      <i />
+                    </span>
+                    <b>{character.name}</b>
+                    <small>{character.weapon}</small>
+                  </button>
+                ))}
+              </div>
               <h3>COSMETICS</h3>
               <div className="cosmetic-grid">
                 {unlocks.filter((x) => x.item_type !== "class").length === 0 ? (
@@ -1825,24 +1832,6 @@ export default function Home() {
                       </button>
                     ))
                 )}
-              </div>
-              <h3>POWERUPS</h3>
-              <div className="powerup-grid">
-                <button onClick={() => buyPowerup("score_boost", 8)}>
-                  <b>+1,000 SCORE</b>
-                  <span>♦ 8</span>
-                  <small>Instant score boost</small>
-                </button>
-                <button onClick={() => buyPowerup("invincibility", 13)}>
-                  <b>INVINCIBILITY</b>
-                  <span>♦ 13</span>
-                  <small>No damage for 8 seconds</small>
-                </button>
-                <button onClick={() => buyPowerup("heart", 5)}>
-                  <b>RESTORE HEART</b>
-                  <span>♦ 5</span>
-                  <small>Recover one lost heart</small>
-                </button>
               </div>
               <strong className="shop-balance">BALANCE: ♦ {gems}</strong>
               {shopStatus && <div className="report-status">{shopStatus}</div>}
