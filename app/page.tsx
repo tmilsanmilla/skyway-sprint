@@ -2,7 +2,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 type Kind =
-  "gem" | "boost" | "car" | "log" | "snowflake" | "rock" | "barrel" | "spikes";
+  "gem" | "coin" | "car" | "log" | "snowflake" | "rock" | "barrel" | "spikes";
 type Item = { id: number; lane: number; y: number; kind: Kind };
 type GameMode = "normal" | "hardcore" | "impossible";
 type PlayerReport = {
@@ -34,7 +34,7 @@ const supabase = createBrowserClient(
 );
 function Obstacle({ kind }: { kind: Kind }) {
   if (kind === "gem") return <span>♦</span>;
-  if (kind === "boost") return <span>+100</span>;
+  if (kind === "coin") return <span>●</span>;
 
   if (kind === "barrel")
     return (
@@ -416,16 +416,21 @@ export default function Home() {
       if (now - last.current > Math.max(330, 980 - wave * 55)) {
         last.current = now;
         const r = Math.random(),
-          danger = Math.min(0.79, 0.54 + wave * 0.025),
+          danger = Math.min(0.82, 0.59 + wave * 0.025),
           gemThreshold =
             mode === "impossible" ? 0.86 : mode === "hardcore" ? 0.9 : 0.94;
         let kind: Kind;
-        if (r < danger)
+        if (playScope === "versus" && r < 0.27) kind = "coin";
+        else if (playScope === "versus" && r > 0.975) kind = "gem";
+        else if (r < danger || playScope === "versus")
           kind = (["log", "snowflake", "rock", "barrel", "spikes"] as Kind[])[
             Math.floor(Math.random() * 5)
           ];
         else if (r > gemThreshold) kind = "gem";
-        else kind = "boost";
+        else
+          kind = (["log", "snowflake", "rock", "barrel", "spikes"] as Kind[])[
+            Math.floor(Math.random() * 5)
+          ];
         setItems((v) => {
           const blocked = new Set(v.map((x) => x.lane));
           const lanes = [0, 1, 2, 3, 4].filter((l) => !blocked.has(l));
@@ -458,19 +463,6 @@ export default function Home() {
               setGemBump(false);
               requestAnimationFrame(() => setGemBump(true));
               setTimeout(() => setGemBump(false), 500);
-              if (playScope === "versus" && versusMatchRef.current) {
-                setVersusPoints((v) => v + 2);
-                void supabase
-                  .rpc("award_1v1_points", {
-                    p_match_id: versusMatchRef.current,
-                    p_source: "melon",
-                    p_amount: 1,
-                  })
-                  .then(({ data }) => {
-                    if (typeof data?.obstacle_points === "number")
-                      setVersusPoints(data.obstacle_points);
-                  });
-              }
               if (userIdRef.current)
                 void supabase
                   .rpc("increment_player_gems")
@@ -484,20 +476,24 @@ export default function Home() {
                       setGems(data);
                     }
                   });
-            } else if (n.kind === "boost") {
-              setScore(
-                (v) =>
-                  v +
-                  Math.round(
-                    100 *
-                      (1 + wave * 0.01) *
-                      (mode === "impossible"
-                        ? 2
-                        : mode === "hardcore"
-                          ? 1.5
-                          : 1),
-                  ),
-              );
+            } else if (n.kind === "coin") {
+              if (playScope === "versus" && versusMatchRef.current) {
+                setVersusPoints((v) => v + 2);
+                void supabase
+                  .rpc("award_1v1_points", {
+                    p_match_id: versusMatchRef.current,
+                    p_source: "coin",
+                    p_amount: 1,
+                  })
+                  .then(({ data, error }) => {
+                    if (error) {
+                      setVersusResult(error.message);
+                      return;
+                    }
+                    if (typeof data?.obstacle_points === "number")
+                      setVersusPoints(data.obstacle_points);
+                  });
+              }
             } else if (n.kind === "snowflake") {
               const until = Date.now() + 5000;
               slowUntilRef.current = until;
@@ -563,7 +559,7 @@ export default function Home() {
                     (x) =>
                       x.id !== n.id &&
                       x.kind !== "gem" &&
-                      x.kind !== "boost" &&
+                      x.kind !== "coin" &&
                       x.kind !== "snowflake" &&
                       x.y > 50 &&
                       x.y < 96,
@@ -634,7 +630,7 @@ export default function Home() {
           Math.min(maxHearts, v + (playerClass === "tank" ? 0.5 : 1)),
         );
       if (playScope === "versus" && versusMatchRef.current) {
-        setVersusPoints((v) => v + 5);
+        setVersusPoints((v) => v + 3);
         setVersusCountdown(15);
         setVersusPhase("intermission");
         setPaused(true);
@@ -1016,8 +1012,8 @@ export default function Home() {
   };
   const equipClass = async (item: string) => {
     const { error } = await supabase.rpc("set_loadout", {
-      slot: "class",
-      item,
+      p_slot: "class",
+      p_item: item,
     });
     if (error) {
       setShopStatus(error.message);
@@ -1028,8 +1024,8 @@ export default function Home() {
   };
   const equipCosmetic = async (item: Unlock) => {
     const { error } = await supabase.rpc("set_loadout", {
-      slot: item.item_type,
-      item: item.item_key,
+      p_slot: item.item_type,
+      p_item: item.item_key,
     });
     setShopStatus(
       error
@@ -1430,22 +1426,22 @@ export default function Home() {
                 <strong>OBSTACLE POINTS: {versusPoints}</strong>
                 <div className="attack-grid">
                   <button
-                    disabled={versusPoints < 1}
+                    disabled={versusPoints < 2}
                     onClick={() => sendVersusAttack("barrel")}
                   >
-                    BARREL <small>1 OP</small>
-                  </button>
-                  <button
-                    disabled={versusPoints < 1}
-                    onClick={() => sendVersusAttack("log")}
-                  >
-                    LOG <small>1 OP</small>
+                    BARREL <small>2 OP</small>
                   </button>
                   <button
                     disabled={versusPoints < 2}
+                    onClick={() => sendVersusAttack("log")}
+                  >
+                    LOG <small>2 OP</small>
+                  </button>
+                  <button
+                    disabled={versusPoints < 3}
                     onClick={() => sendVersusAttack("car")}
                   >
-                    CAR <small>2 OP</small>
+                    CAR <small>3 OP</small>
                   </button>
                   <button
                     disabled={versusPoints < 3}
@@ -1716,14 +1712,14 @@ export default function Home() {
               ) : (
                 <>
                   <p className="versus-rules">
-                    Survive longer than your rival. Gems earn <b>2 OP</b> and
-                    completed waves earn <b>5 OP</b>. Spend OP during each
+                    Survive longer than your rival. Coins earn <b>2 OP</b> and
+                    completed waves earn <b>3 OP</b>. Spend OP during each
                     15-second intermission to send obstacles to your opponent.
                   </p>
                   <div className="cost-row">
-                    <span>LOG 1</span>
-                    <span>BARREL 1</span>
-                    <span>CAR 2</span>
+                    <span>LOG 2</span>
+                    <span>BARREL 2</span>
+                    <span>CAR 3</span>
                     <span>ROCK 3</span>
                   </div>
                   <button
