@@ -259,9 +259,13 @@ const CLASS_CHARACTERS = {
   runner: [
     { key: "runner_ace", name: "Ace", weapon: "Baton", rarity: "common" },
     { key: "runner_scout", name: "Scout", weapon: "Twin Blades", rarity: "common" },
+    { key: "runner_vault", name: "Vault", weapon: "Spring Pole", rarity: "common" },
     { key: "runner_drift", name: "Drift", weapon: "Slipstream Shoes", rarity: "uncommon" },
     { key: "runner_ranger", name: "Ranger", weapon: "Pixel Bow", rarity: "uncommon" },
+    { key: "runner_spark", name: "Spark", weapon: "Prism Baton", rarity: "uncommon" },
+    { key: "runner_flare", name: "Flare", weapon: "Signal Spear", rarity: "rare" },
     { key: "runner_fortune", name: "Fortune", weapon: "Lucky Compass", rarity: "rare" },
+    { key: "runner_orbit", name: "Orbit", weapon: "Ring Blades", rarity: "epic" },
     { key: "runner_relay", name: "Relay", weapon: "Circuit Baton", rarity: "epic" },
     { key: "runner_comet", name: "Comet", weapon: "Star Spear", rarity: "legendary" },
     { key: "runner_pacer", name: "Pacer", weapon: "Relay Rod", rarity: "mythic" },
@@ -269,8 +273,12 @@ const CLASS_CHARACTERS = {
   medic: [
     { key: "medic_patch", name: "Patch", weapon: "Med Staff", rarity: "common" },
     { key: "medic_bloom", name: "Bloom", weapon: "Bloom Wand", rarity: "common" },
+    { key: "medic_remedy", name: "Remedy", weapon: "Tonic Bell", rarity: "common" },
+    { key: "medic_reserve", name: "Reserve", weapon: "Field Pack", rarity: "uncommon" },
+    { key: "medic_mender", name: "Mender", weapon: "Clock Needle", rarity: "rare" },
     { key: "medic_mercy", name: "Mercy", weapon: "Injector", rarity: "rare" },
     { key: "medic_pulse", name: "Pulse", weapon: "Pulse Syringe", rarity: "rare" },
+    { key: "medic_halo", name: "Halo", weapon: "Sun Staff", rarity: "epic" },
     { key: "medic_suture", name: "Suture", weapon: "Pulse Thread", rarity: "epic" },
     { key: "medic_vial", name: "Vial", weapon: "Tonic Flask", rarity: "epic" },
     { key: "medic_lifeline", name: "Lifeline", weapon: "Rescue Hook", rarity: "legendary" },
@@ -278,21 +286,29 @@ const CLASS_CHARACTERS = {
   ],
   tank: [
     { key: "tank_bulwark", name: "Bulwark", weapon: "Tower Shield", rarity: "common" },
+    { key: "tank_drag", name: "Drag", weapon: "Chain Hook", rarity: "common" },
     { key: "tank_glacier", name: "Glacier", weapon: "Frost Shield", rarity: "uncommon" },
     { key: "tank_brace", name: "Brace", weapon: "Spike Buckler", rarity: "uncommon" },
+    { key: "tank_plow", name: "Plow", weapon: "Ram Shield", rarity: "uncommon" },
     { key: "tank_hammer", name: "Hammer", weapon: "War Hammer", rarity: "rare" },
     { key: "tank_anchor", name: "Anchor", weapon: "Ground Hook", rarity: "rare" },
+    { key: "tank_reactor", name: "Reactor", weapon: "Core Maul", rarity: "rare" },
+    { key: "tank_bastion", name: "Bastion", weapon: "Fortress Shield", rarity: "epic" },
     { key: "tank_rampart", name: "Rampart", weapon: "Siege Wall", rarity: "epic" },
     { key: "tank_sentinel", name: "Sentinel", weapon: "Steel Spear", rarity: "legendary" },
     { key: "tank_atlas", name: "Atlas", weapon: "World Maul", rarity: "mythic" },
   ],
   trickster: [
+    { key: "trickster_smoke", name: "Smoke", weapon: "Smoke Bombs", rarity: "common" },
     { key: "trickster_rogue", name: "Rogue", weapon: "Daggers", rarity: "uncommon" },
+    { key: "trickster_clockwork", name: "Clockwork", weapon: "Time Cards", rarity: "uncommon" },
     { key: "trickster_flicker", name: "Flicker", weapon: "Blink Knives", rarity: "uncommon" },
+    { key: "trickster_pickpocket", name: "Pickpocket", weapon: "Coin Dagger", rarity: "rare" },
     { key: "trickster_switch", name: "Switch", weapon: "Twin Coins", rarity: "rare" },
     { key: "trickster_gambit", name: "Gambit", weapon: "Loaded Cards", rarity: "rare" },
     { key: "trickster_jester", name: "Jester", weapon: "Card Fan", rarity: "epic" },
     { key: "trickster_mirage", name: "Mirage", weapon: "Prism Fans", rarity: "epic" },
+    { key: "trickster_wildcard", name: "Wildcard", weapon: "Dice Fans", rarity: "epic" },
     { key: "trickster_hex", name: "Hex", weapon: "Void Chakram", rarity: "legendary" },
     { key: "trickster_phantom", name: "Phantom", weapon: "Moon Scythe", rarity: "mythic" },
   ],
@@ -305,6 +321,8 @@ const CLASS_CHARACTERS = {
     rarity: Rarity;
   }>
 >;
+type RosterCharacterKey =
+  (typeof CLASS_CHARACTERS)[keyof typeof CLASS_CHARACTERS][number]["key"];
 const CHARACTER_ABILITIES = {
   runner_ace: {
     name: "MOMENTUM",
@@ -342,6 +360,25 @@ const CHARACTER_ABILITIES = {
     description:
       "Can make hazards move 2.5× faster and add a 2.5× score boost for the first 15 seconds of each wave, producing a 6.25× score rate.",
   },
+  runner_vault: {
+    name: "SPIKE VAULT",
+    description: "Can make spikes move 25% slower.",
+  },
+  runner_spark: {
+    name: "CRYSTAL CHARGE",
+    description:
+      "Can earn 20% more score for 5 seconds after collecting a gem. Another gem refreshes the boost.",
+  },
+  runner_flare: {
+    name: "CLEAN RUN",
+    description:
+      "Can earn 15% more score during the next wave after completing a wave without taking damage.",
+  },
+  runner_orbit: {
+    name: "LANE ORBIT",
+    description:
+      "Can wrap from one outside lane to the other by moving outward. Cooldown: 5 seconds.",
+  },
   medic_patch: {
     name: "FIELD DRESSING",
     description: "Can heal 1.5 HP after each wave and reach 5 HP.",
@@ -375,6 +412,25 @@ const CHARACTER_ABILITIES = {
   medic_seraph: {
     name: "DIVINE RECOVERY",
     description: "Can reach 6 HP and heal 2 HP after each wave.",
+  },
+  medic_remedy: {
+    name: "COLD REMEDY",
+    description:
+      "Can heal 0.5 HP from the first snowflake collected each wave.",
+  },
+  medic_reserve: {
+    name: "RESERVE DOSE",
+    description:
+      "Can store one 0.5 HP heal when a wave ends at full HP, then use it after surviving a hit.",
+  },
+  medic_mender: {
+    name: "STEADY MEND",
+    description:
+      "Can heal 0.5 HP once each wave after avoiding damage for 12 seconds.",
+  },
+  medic_halo: {
+    name: "RADIANT PACE",
+    description: "Can earn 15% more score while above 3 HP.",
   },
   tank_bulwark: {
     name: "HEAVY PLATE",
@@ -410,6 +466,24 @@ const CHARACTER_ABILITIES = {
   tank_atlas: {
     name: "WORLD BEARER",
     description: "Can reach 6 HP and heal 1 HP after each wave.",
+  },
+  tank_drag: {
+    name: "HEAVY DRAG",
+    description: "Can make barrels and logs move 15% slower.",
+  },
+  tank_plow: {
+    name: "LANE PLOW",
+    description:
+      "Can clear the remaining hazards in the current lane after surviving a hit.",
+  },
+  tank_reactor: {
+    name: "DANGER CORE",
+    description: "Can earn 25% more score while at 2 HP or less.",
+  },
+  tank_bastion: {
+    name: "HOLD GROUND",
+    description:
+      "Can gain 0.5 HP of armor after staying in one lane for 6 seconds. Moving before it charges restarts the timer. The next damaging hit consumes the armor.",
   },
   trickster_rogue: {
     name: "SHADOWSTEP",
@@ -449,8 +523,30 @@ const CHARACTER_ABILITIES = {
     name: "PHASE VEIL",
     description: "Can ignore the first damaging obstacle each wave.",
   },
-} as const;
-type CharacterKey = keyof typeof CHARACTER_ABILITIES;
+  trickster_smoke: {
+    name: "SMOKE SCREEN",
+    description:
+      "Can make hazards move 35% slower for 2.5 seconds after surviving a hit.",
+  },
+  trickster_clockwork: {
+    name: "TIME TRICK",
+    description:
+      "Can make hazards move 30% slower for 1.25 seconds after every sixth lane change. Cooldown: 5 seconds.",
+  },
+  trickster_pickpocket: {
+    name: "CLOSE COUNT",
+    description: "Can gain 75 score after every seventh hazard safely passed.",
+  },
+  trickster_wildcard: {
+    name: "LUCKY DRAW",
+    description:
+      "Can draw one wave-long bonus: 15% more score, 50% more gem spawns, or 15% slower hazards.",
+  },
+} as const satisfies Record<
+  RosterCharacterKey,
+  { name: string; description: string }
+>;
+type CharacterKey = RosterCharacterKey;
 const STARTER_CHARACTER_KEYS: ReadonlySet<CharacterKey> = new Set([
   "runner_ace",
   "medic_patch",
@@ -695,6 +791,10 @@ export default function Home() {
     scoreCarryRef = useRef(0),
     pacerRushRemainingRef = useRef(0),
     driftBoostRemainingRef = useRef(0),
+    sparkBoostRemainingRef = useRef(0),
+    flareDamageWaveRef = useRef(0),
+    flareBoostWaveRef = useRef(0),
+    orbitCooldownRemainingRef = useRef(0),
     cometChargeRemainingRef = useRef(8000),
     cometChargedRef = useRef(false),
     scoutShieldCooldownUntilRef = useRef(0),
@@ -708,6 +808,10 @@ export default function Home() {
     rogueGrazedItemIdsRef = useRef<Set<number>>(new Set()),
     bloomGemWaveRef = useRef(0),
     pulseGemCountRef = useRef(0),
+    remedySnowflakeWaveRef = useRef(0),
+    reserveHealStoredRef = useRef(false),
+    menderChargeRemainingRef = useRef(12000),
+    menderHealedWaveRef = useRef(0),
     lifelineUsedRef = useRef(false),
     rampartCollisionCountRef = useRef(0),
     flickerShieldWaveRef = useRef(0),
@@ -724,8 +828,16 @@ export default function Home() {
     frozenUntilRef = useRef(0),
     firstGuardWaveRef = useRef(0),
     hammerBreakWaveRef = useRef(0),
+    bastionChargeRemainingRef = useRef(6000),
+    bastionArmorChargedRef = useRef(false),
     sentinelLastStandUsedRef = useRef(false),
     phantomPhaseWaveRef = useRef(0),
+    smokeSlowRemainingRef = useRef(0),
+    clockworkMoveCountRef = useRef(0),
+    clockworkSlowRemainingRef = useRef(0),
+    clockworkCooldownRemainingRef = useRef(0),
+    pickpocketPassedCountRef = useRef(0),
+    wildcardBuffRef = useRef<"score" | "gems" | "slow" | null>(null),
     versusMatchRef = useRef<string | null>(null),
     versusSearchingRef = useRef(false),
     versusSearchTokenRef = useRef(0),
@@ -1076,6 +1188,10 @@ export default function Home() {
       scoreCarryRef.current = 0;
       pacerRushRemainingRef.current = 0;
       driftBoostRemainingRef.current = 0;
+      sparkBoostRemainingRef.current = 0;
+      flareDamageWaveRef.current = restoring ? restoredWave : 0;
+      flareBoostWaveRef.current = 0;
+      orbitCooldownRemainingRef.current = restoring ? 5000 : 0;
       cometChargeRemainingRef.current = 8000;
       cometChargedRef.current = false;
       scoutShieldCooldownUntilRef.current = restoring ? now + 4000 : 0;
@@ -1083,6 +1199,10 @@ export default function Home() {
       rogueGrazedItemIdsRef.current.clear();
       bloomGemWaveRef.current = restoring ? restoredWave : 0;
       pulseGemCountRef.current = 0;
+      remedySnowflakeWaveRef.current = restoring ? restoredWave : 0;
+      reserveHealStoredRef.current = false;
+      menderChargeRemainingRef.current = 12000;
+      menderHealedWaveRef.current = restoring ? restoredWave : 0;
       lifelineUsedRef.current = restoring;
       rampartCollisionCountRef.current = 0;
       flickerShieldWaveRef.current = restoring ? restoredWave : 0;
@@ -1092,6 +1212,14 @@ export default function Home() {
       gambitCooldownUntilRef.current = restoring ? now + 2500 : 0;
       mirageShieldCooldownUntilRef.current = restoring ? now + 2500 : 0;
       hexMoveCountRef.current = 0;
+      bastionChargeRemainingRef.current = 6000;
+      bastionArmorChargedRef.current = false;
+      smokeSlowRemainingRef.current = 0;
+      clockworkMoveCountRef.current = 0;
+      clockworkSlowRemainingRef.current = 0;
+      clockworkCooldownRemainingRef.current = restoring ? 5000 : 0;
+      pickpocketPassedCountRef.current = 0;
+      wildcardBuffRef.current = null;
     },
     [],
   );
@@ -1119,6 +1247,27 @@ export default function Home() {
         if (applyCharacterEffects && activeCharacter === "trickster_jester") {
           grantInvincibility(2500);
           showAbilityNotice("ENCORE · 2.5 SECOND SHIELD", 1400);
+        }
+        if (activeCharacter === "trickster_wildcard") {
+          const matchId = versusMatchRef.current;
+          const seed = `${matchId ?? "solo"}:${userIdRef.current ?? "guest"}:${number}`;
+          let hash = 0;
+          for (let index = 0; index < seed.length; index += 1)
+            hash = (hash * 31 + seed.charCodeAt(index)) | 0;
+          const roll = matchId
+            ? Math.abs(hash) % 3
+            : Math.floor(Math.random() * 3);
+          const buff = roll === 0 ? "score" : roll === 1 ? "gems" : "slow";
+          wildcardBuffRef.current = buff;
+          if (applyCharacterEffects)
+            showAbilityNotice(
+              buff === "score"
+                ? "LUCKY DRAW · SCORE ×1.15"
+                : buff === "gems"
+                  ? "LUCKY DRAW · GEM CHANCE ×1.50"
+                  : "LUCKY DRAW · HAZARDS 15% SLOWER",
+              1800,
+            );
         }
         waveAnnouncementTimerRef.current = null;
       }, 1250);
@@ -1223,6 +1372,11 @@ export default function Home() {
       setLane(destination);
       void audioEngine.playSfx("move");
       const now = Date.now();
+      if (
+        activeCharacter === "tank_bastion" &&
+        !bastionArmorChargedRef.current
+      )
+        bastionChargeRemainingRef.current = 6000;
       if (activeCharacter === "runner_drift") {
         driftBoostRemainingRef.current = 1250;
         showAbilityNotice("SLIPSTREAM · SCORE ×1.15", 700);
@@ -1276,6 +1430,17 @@ export default function Home() {
           });
         }
       }
+      if (activeCharacter === "trickster_clockwork") {
+        if (clockworkCooldownRemainingRef.current <= 0) {
+          clockworkMoveCountRef.current += 1;
+          if (clockworkMoveCountRef.current >= 6) {
+            clockworkMoveCountRef.current = 0;
+            clockworkSlowRemainingRef.current = 1250;
+            clockworkCooldownRemainingRef.current = 5000;
+            showAbilityNotice("TIME TRICK · HAZARDS 30% SLOWER", 1000);
+          }
+        }
+      }
     },
     [activeCharacter, grantInvincibility, showAbilityNotice, wave],
   );
@@ -1288,8 +1453,24 @@ export default function Home() {
         turnLockedRef.current
       )
         return;
-      const destination = Math.max(0, Math.min(4, state.current.lane + d));
+      const orbitWrap =
+        activeCharacter === "runner_orbit" &&
+        orbitCooldownRemainingRef.current <= 0 &&
+        ((state.current.lane === 0 && d < 0) ||
+          (state.current.lane === 4 && d > 0));
+      const destination = orbitWrap
+        ? state.current.lane === 0
+          ? 4
+          : 0
+        : Math.max(0, Math.min(4, state.current.lane + d));
       if (destination === state.current.lane) return;
+      const finishMove = () => {
+        completeMove(destination, d);
+        if (orbitWrap) {
+          orbitCooldownRemainingRef.current = 5000;
+          showAbilityNotice("LANE ORBIT · EDGE WRAP", 850);
+        }
+      };
       if (frozenUntilRef.current > Date.now()) {
         turnLockedRef.current = true;
         delayedMoveTimerRef.current = setTimeout(
@@ -1299,7 +1480,7 @@ export default function Home() {
               !state.current.paused &&
               !state.current.wavePause
             )
-              completeMove(destination, d);
+              finishMove();
             turnLockedRef.current = false;
             delayedMoveTimerRef.current = null;
           },
@@ -1307,9 +1488,9 @@ export default function Home() {
         );
         return;
       }
-      completeMove(destination, d);
+      finishMove();
     },
-    [activeCharacter, completeMove],
+    [activeCharacter, completeMove, showAbilityNotice],
   );
   const toggleManualPause = useCallback(() => {
     if (
@@ -1927,14 +2108,18 @@ export default function Home() {
           danger = Math.min(0.82, 0.59 + wave * 0.025),
           baseGemChance =
             mode === "impossible" ? 0.14 : mode === "hardcore" ? 0.1 : 0.06,
+          characterGemMultiplier =
+            (activeCharacter === "runner_fortune" ? 1.4 : 1) *
+            (activeCharacter === "trickster_wildcard" &&
+            wildcardBuffRef.current === "gems"
+              ? 1.5
+              : 1),
           gemChance = Math.min(
             0.3,
-            baseGemChance *
-              (activeCharacter === "runner_fortune" ? 1.4 : 1),
+            baseGemChance * characterGemMultiplier,
           ),
           gemThreshold = 1 - gemChance,
-          versusGemThreshold =
-            1 - 0.025 * (activeCharacter === "runner_fortune" ? 1.4 : 1);
+          versusGemThreshold = 1 - 0.025 * characterGemMultiplier;
         let kind: Kind;
         if (isVersusRun && r < 0.27) kind = "coin";
         else if (isVersusRun && r > versusGemThreshold) kind = "gem";
@@ -1957,8 +2142,10 @@ export default function Home() {
       }
       setItems((old) => {
         let clearRecoveryZone = false;
+        let clearDamagedLane = false;
         const advanced = old.flatMap((item) => {
-          const speedFactor =
+          const isHazard = item.kind !== "gem" && item.kind !== "coin";
+          let speedFactor =
             item.kind === "barrel"
               ? 1.75
               : item.kind === "car"
@@ -1966,8 +2153,33 @@ export default function Home() {
                 : item.kind === "log"
                   ? 0.72
                   : item.kind === "rock"
-                    ? 0.3
-                    : 1;
+                  ? 0.3
+                  : 1;
+          if (activeCharacter === "runner_vault" && item.kind === "spikes")
+            speedFactor *= 0.75;
+          if (
+            activeCharacter === "tank_drag" &&
+            (item.kind === "barrel" || item.kind === "log")
+          )
+            speedFactor *= 0.85;
+          if (
+            isHazard &&
+            activeCharacter === "trickster_smoke" &&
+            smokeSlowRemainingRef.current > 0
+          )
+            speedFactor *= 0.65;
+          if (
+            isHazard &&
+            activeCharacter === "trickster_clockwork" &&
+            clockworkSlowRemainingRef.current > 0
+          )
+            speedFactor *= 0.7;
+          if (
+            isHazard &&
+            activeCharacter === "trickster_wildcard" &&
+            wildcardBuffRef.current === "slow"
+          )
+            speedFactor *= 0.85;
           const n = {
             ...item,
             y:
@@ -1977,7 +2189,6 @@ export default function Home() {
                 speedFactor *
                 dt,
           };
-          const isHazard = n.kind !== "gem" && n.kind !== "coin";
           const crossedRunnerBand = item.y < 91 && n.y >= 65;
           const abilityGraze =
             (activeCharacter === "trickster_rogue" ||
@@ -2027,6 +2238,10 @@ export default function Home() {
               setGemBump(false);
               requestAnimationFrame(() => setGemBump(true));
               setTimeout(() => setGemBump(false), 500);
+              if (activeCharacter === "runner_spark") {
+                sparkBoostRemainingRef.current = 5000;
+                showAbilityNotice("CRYSTAL CHARGE · SCORE ×1.20", 900);
+              }
               if (
                 activeCharacter === "medic_bloom" &&
                 bloomGemWaveRef.current !== wave
@@ -2082,6 +2297,14 @@ export default function Home() {
                   });
               }
             } else if (n.kind === "snowflake") {
+              if (
+                activeCharacter === "medic_remedy" &&
+                remedySnowflakeWaveRef.current !== wave
+              ) {
+                remedySnowflakeWaveRef.current = wave;
+                setHearts((value) => Math.min(maxHearts, value + 0.5));
+                showAbilityNotice("COLD REMEDY · +0.5 HP", 900);
+              }
               if (activeCharacter === "runner_scout") {
                 void audioEngine.playSfx("shield");
                 clearFreezeEffect();
@@ -2147,7 +2370,6 @@ export default function Home() {
             } else {
               clearRecoveryZone = true;
               damageLockedRef.current = true;
-              void audioEngine.playSfx("hit");
               if (activeCharacter === "tank_rampart")
                 rampartCollisionCountRef.current += 1;
               if (activeCharacter === "runner_comet") {
@@ -2155,6 +2377,10 @@ export default function Home() {
                 cometChargedRef.current = false;
                 showAbilityNotice("STAR DRIVE · RECHARGING", 800);
               }
+              if (activeCharacter === "runner_flare")
+                flareDamageWaveRef.current = wave;
+              if (activeCharacter === "medic_mender")
+                menderChargeRemainingRef.current = 12000;
               const rawDamage =
                 mode === "impossible"
                   ? 1
@@ -2202,7 +2428,29 @@ export default function Home() {
                   } · BLOCKED 0.5 HP`,
                 );
               }
+              if (
+                activeCharacter === "tank_bastion" &&
+                bastionArmorChargedRef.current
+              ) {
+                bastionArmorChargedRef.current = false;
+                bastionChargeRemainingRef.current = 6000;
+                abilityAdjustedDamage = Math.max(
+                  0,
+                  abilityAdjustedDamage - 0.5,
+                );
+                showAbilityNotice("HOLD GROUND · 0.5 HP ARMOR USED", 1100);
+              }
               const damage = abilityAdjustedDamage;
+              if (damage === 0) {
+                void audioEngine.playSfx("shield");
+                setFlash("shield");
+                setTimeout(() => {
+                  setFlash((value) => (value === "shield" ? "" : value));
+                  damageLockedRef.current = false;
+                }, 150);
+                return [];
+              }
+              void audioEngine.playSfx("hit");
               let nextHearts = state.current.hearts - damage;
               if (
                 nextHearts <= 0 &&
@@ -2219,6 +2467,19 @@ export default function Home() {
                 activeCharacter === "medic_lifeline" &&
                 !lifelineUsedRef.current;
               if (triggerLifelineHeal) lifelineUsedRef.current = true;
+              const triggerReserveHeal =
+                nextHearts > 0 &&
+                activeCharacter === "medic_reserve" &&
+                reserveHealStoredRef.current;
+              if (triggerReserveHeal) reserveHealStoredRef.current = false;
+              if (nextHearts > 0 && activeCharacter === "tank_plow") {
+                clearDamagedLane = true;
+                showAbilityNotice("LANE PLOW · LANE CLEARED", 1000);
+              }
+              if (nextHearts > 0 && activeCharacter === "trickster_smoke") {
+                smokeSlowRemainingRef.current = 2500;
+                showAbilityNotice("SMOKE SCREEN · HAZARDS 35% SLOWER", 1100);
+              }
               setHearts(Math.max(0, nextHearts));
               if (nextHearts <= 0) {
                 setRunning(false);
@@ -2272,19 +2533,41 @@ export default function Home() {
                   setHearts((value) => Math.min(maxHearts, value + 1.5));
                   showAbilityNotice("LIFELINE · +1.5 HP", 1200);
                 }
+                if (triggerReserveHeal) {
+                  setHearts((value) => Math.min(maxHearts, value + 0.5));
+                  showAbilityNotice("RESERVE DOSE · +0.5 HP", 1200);
+                }
               }, 480);
               return [];
             }
             return [];
           }
           if (n.y < 108) return [n];
+          if (
+            isHazard &&
+            activeCharacter === "trickster_pickpocket"
+          ) {
+            pickpocketPassedCountRef.current += 1;
+            if (pickpocketPassedCountRef.current % 7 === 0) {
+              setScore((value) => value + 75);
+              showAbilityNotice("CLOSE COUNT · +75 SCORE", 950);
+            }
+          }
           rogueGrazedItemIdsRef.current.delete(n.id);
           return [];
         });
         // Keep the runner in place and clear every nearby object after impact.
-        const retained = clearRecoveryZone
+        const recoveryRetained = clearRecoveryZone
           ? advanced.filter((item) => item.y <= 45 || item.y >= 105)
           : advanced;
+        const retained = clearDamagedLane
+          ? recoveryRetained.filter(
+              (item) =>
+                item.lane !== state.current.lane ||
+                item.kind === "gem" ||
+                item.kind === "coin",
+            )
+          : recoveryRetained;
         const retainedIds = new Set(retained.map((item) => item.id));
         rogueGrazedItemIdsRef.current.forEach((itemId) => {
           if (!retainedIds.has(itemId))
@@ -2294,23 +2577,53 @@ export default function Home() {
       });
       const rawProgressGain = (dt / 12) * (1 + wave * 0.01);
       const waveProgressGain = Math.max(1, Math.round(rawProgressGain));
-      const characterScoreMultiplier =
-        activeCharacter === "runner_ace"
-          ? 1.1
-          : pacerRushActive
-            ? 2.5
-          : activeCharacter === "runner_drift" &&
-                driftBoostRemainingRef.current > 0
-              ? 1.15
-              : activeCharacter === "runner_relay"
-                ? 1 + Math.min(0.3, Math.max(0, wave - 1) * 0.03)
-                : activeCharacter === "runner_comet" &&
-                    cometChargedRef.current
-                  ? 1.5
-                  : activeCharacter === "trickster_gambit" &&
-                      gambitBoostRemainingRef.current > 0
-                    ? 1.75
-                    : 1;
+      let characterScoreMultiplier = 1;
+      if (activeCharacter === "runner_ace")
+        characterScoreMultiplier = 1.1;
+      else if (pacerRushActive) characterScoreMultiplier = 2.5;
+      else if (
+        activeCharacter === "runner_drift" &&
+        driftBoostRemainingRef.current > 0
+      )
+        characterScoreMultiplier = 1.15;
+      else if (
+        activeCharacter === "runner_spark" &&
+        sparkBoostRemainingRef.current > 0
+      )
+        characterScoreMultiplier = 1.2;
+      else if (
+        activeCharacter === "runner_flare" &&
+        flareBoostWaveRef.current === wave
+      )
+        characterScoreMultiplier = 1.15;
+      else if (activeCharacter === "runner_relay")
+        characterScoreMultiplier =
+          1 + Math.min(0.3, Math.max(0, wave - 1) * 0.03);
+      else if (
+        activeCharacter === "runner_comet" &&
+        cometChargedRef.current
+      )
+        characterScoreMultiplier = 1.5;
+      else if (
+        activeCharacter === "medic_halo" &&
+        state.current.hearts > 3
+      )
+        characterScoreMultiplier = 1.15;
+      else if (
+        activeCharacter === "tank_reactor" &&
+        state.current.hearts <= 2
+      )
+        characterScoreMultiplier = 1.25;
+      else if (
+        activeCharacter === "trickster_gambit" &&
+        gambitBoostRemainingRef.current > 0
+      )
+        characterScoreMultiplier = 1.75;
+      else if (
+        activeCharacter === "trickster_wildcard" &&
+        wildcardBuffRef.current === "score"
+      )
+        characterScoreMultiplier = 1.15;
       const totalScoreMultiplier =
         classScoreMultiplier * characterScoreMultiplier;
       scoreCarryRef.current +=
@@ -2330,11 +2643,66 @@ export default function Home() {
           0,
           driftBoostRemainingRef.current - dt,
         );
+      if (sparkBoostRemainingRef.current > 0)
+        sparkBoostRemainingRef.current = Math.max(
+          0,
+          sparkBoostRemainingRef.current - dt,
+        );
+      if (orbitCooldownRemainingRef.current > 0)
+        orbitCooldownRemainingRef.current = Math.max(
+          0,
+          orbitCooldownRemainingRef.current - dt,
+        );
       if (gambitBoostRemainingRef.current > 0)
         gambitBoostRemainingRef.current = Math.max(
           0,
           gambitBoostRemainingRef.current - dt,
         );
+      if (smokeSlowRemainingRef.current > 0)
+        smokeSlowRemainingRef.current = Math.max(
+          0,
+          smokeSlowRemainingRef.current - dt,
+        );
+      if (clockworkSlowRemainingRef.current > 0)
+        clockworkSlowRemainingRef.current = Math.max(
+          0,
+          clockworkSlowRemainingRef.current - dt,
+        );
+      if (clockworkCooldownRemainingRef.current > 0)
+        clockworkCooldownRemainingRef.current = Math.max(
+          0,
+          clockworkCooldownRemainingRef.current - dt,
+        );
+      if (
+        activeCharacter === "tank_bastion" &&
+        !bastionArmorChargedRef.current
+      ) {
+        bastionChargeRemainingRef.current = Math.max(
+          0,
+          bastionChargeRemainingRef.current - dt,
+        );
+        if (bastionChargeRemainingRef.current === 0) {
+          bastionArmorChargedRef.current = true;
+          showAbilityNotice("HOLD GROUND · 0.5 HP ARMOR READY", 1100);
+        }
+      }
+      if (
+        activeCharacter === "medic_mender" &&
+        menderHealedWaveRef.current !== wave
+      ) {
+        menderChargeRemainingRef.current = Math.max(
+          0,
+          menderChargeRemainingRef.current - dt,
+        );
+        if (
+          menderChargeRemainingRef.current === 0 &&
+          state.current.hearts < maxHearts
+        ) {
+          menderHealedWaveRef.current = wave;
+          setHearts((value) => Math.min(maxHearts, value + 0.5));
+          showAbilityNotice("STEADY MEND · +0.5 HP", 1000);
+        }
+      }
       if (
         activeCharacter === "runner_comet" &&
         !cometChargedRef.current
@@ -2380,9 +2748,29 @@ export default function Home() {
     if (!running) return;
     const next = Math.floor(waveProgress / 2250) + 1;
     if (next !== wave) {
+      const completedWave = next - 1;
       setWave(next);
+      wildcardBuffRef.current = null;
+      if (activeCharacter === "runner_flare") {
+        const cleanWave = flareDamageWaveRef.current !== completedWave;
+        flareBoostWaveRef.current = cleanWave ? next : 0;
+        if (cleanWave)
+          showAbilityNotice("CLEAN RUN · NEXT WAVE SCORE ×1.15", 1200);
+      }
+      if (activeCharacter === "medic_mender") {
+        menderChargeRemainingRef.current = 12000;
+        menderHealedWaveRef.current = 0;
+      }
+      if (
+        mode === "normal" &&
+        activeCharacter === "medic_reserve" &&
+        state.current.hearts >= maxHearts &&
+        !reserveHealStoredRef.current
+      ) {
+        reserveHealStoredRef.current = true;
+        showAbilityNotice("RESERVE DOSE · 0.5 HP STORED", 1100);
+      }
       if (mode === "normal") {
-        const completedWave = next - 1;
         const sutureFullRestore =
           activeCharacter === "medic_suture" && completedWave % 3 === 0;
         const healAmount =
@@ -4717,6 +5105,9 @@ export default function Home() {
                 {INVENTORY_CLASSES.map(
                   ({ key: classKey, label, description }, classIndex) => {
                     const roster = CLASS_CHARACTERS[classKey];
+                    const includedCharacter = roster.find((character) =>
+                      isStarterCharacter(character.key),
+                    );
                     const sectionFocused =
                       inventoryCharacter.classKey === classKey;
                     return (
@@ -4735,7 +5126,10 @@ export default function Home() {
                           </span>
                         </summary>
                         <p className="inventory-kit-note">
-                          <b>{roster[0].name} is the included default kit.</b>{" "}
+                          <b>
+                            {includedCharacter?.name ?? roster[0].name} is the
+                            included default kit.
+                          </b>{" "}
                           Other {label.toLowerCase()} variants stay locked until
                           they are extracted from a box.
                         </p>
