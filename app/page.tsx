@@ -469,7 +469,7 @@ const EXTRACTION_BOXES = {
     ],
   },
   ten: {
-    name: "10× NORMAL BOX",
+    name: "10 NORMAL BOXES",
     cost: EXTRACTION_UNIT_COST * 10,
     pullCount: 10,
     icon: "◇×10",
@@ -2771,8 +2771,9 @@ export default function Home() {
     setExtractingOption(option);
     setExtractAnimation("shaking");
     setExtractResults([]);
+    const totalBoxes = quantity * box.pullCount;
     setShopStatus(
-      `Opening ${quantity} ${box.name.toLowerCase()}${quantity === 1 ? "" : "es"}…`,
+      `Opening ${totalBoxes} normal box${totalBoxes === 1 ? "" : "es"}…`,
     );
     try {
       const { data, error } = await supabase.rpc("extract_items", {
@@ -4090,7 +4091,7 @@ export default function Home() {
                   </div>
                   <strong>
                     {extractAnimation === "shaking"
-                      ? `OPENING ${extractQuantities[extractingOption]} BOX${extractQuantities[extractingOption] === 1 ? "" : "ES"}…`
+                      ? "OPENING BOXES…"
                       : "ITEMS REVEALED!"}
                   </strong>
                 </div>
@@ -4108,7 +4109,6 @@ export default function Home() {
                       1,
                       Math.min(batchLimit, extractQuantities[option]),
                     );
-                    const itemCount = quantity * box.pullCount;
                     const totalCost = quantity * box.cost;
                     const setQuantity = (next: number) =>
                       setExtractQuantities((current) => ({
@@ -4188,11 +4188,8 @@ export default function Home() {
                             MAX
                           </button>
                         </div>
-                        <small className="quantity-summary">
-                          {quantity} BOX{quantity === 1 ? "" : "ES"} ·{" "}
-                          {itemCount} ITEM{itemCount === 1 ? "" : "S"}
-                        </small>
                         <button
+                          aria-label={`Open ${quantity * box.pullCount} normal box${quantity * box.pullCount === 1 ? "" : "es"} for ${totalCost} gems`}
                           disabled={
                             extractBusy ||
                             maxQuantity < 1 ||
@@ -4202,7 +4199,7 @@ export default function Home() {
                         >
                           {extractBusy && extractingOption === option
                             ? "OPENING…"
-                            : `OPEN ${itemCount}`}{" "}
+                            : "OPEN"}{" "}
                           <span>TOTAL ♦ {totalCost}</span>
                         </button>
                       </article>
@@ -4515,15 +4512,17 @@ export default function Home() {
                             <details className="inventory-subsection character-rules-subsection">
                               <summary className="inventory-subsection-heading">
                                 <span>
-                                  <b>PASSIVE ABILITY</b>
+                                  <b>
+                                    {focusedCharacterAbility?.name ??
+                                      "CHARACTER EFFECT"}
+                                  </b>
                                   <small>
-                                    HP, healing, damage, score, weapon, and
-                                    passive ability.
+                                    {focusedCharacterAbility?.description}
                                   </small>
                                 </span>
                               </summary>
                               <article className="class-rules-showcase">
-                                <small>{label} CLASS RULES</small>
+                                <small>{label} EXACT STATS</small>
                                 <b>{focusedCharacter.name}</b>
                                 <p>{description}</p>
                               </article>
@@ -4543,7 +4542,7 @@ export default function Home() {
                                   </div>
                                 </article>
                                 <article className="ability-showcase">
-                                  <small>PASSIVE ABILITY</small>
+                                  <small>WHAT IT DOES</small>
                                   <b>{focusedCharacterAbility?.name}</b>
                                   <p>{focusedCharacterAbility?.description}</p>
                                 </article>
