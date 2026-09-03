@@ -308,146 +308,146 @@ const CLASS_CHARACTERS = {
 const CHARACTER_ABILITIES = {
   runner_ace: {
     name: "MOMENTUM",
-    description: "Run score is multiplied by 1.10.",
+    description: "Can earn 10% more score.",
   },
   runner_scout: {
     name: "QUICKSTEP",
     description:
-      "Snowflakes apply no freeze or turn delay. Touching one grants 1 second of invincibility when its 4-second cooldown is ready.",
+      "Can ignore snowflake freeze. Can gain 1 second of invincibility from a snowflake every 4 seconds.",
   },
   runner_drift: {
     name: "SLIPSTREAM",
     description:
-      "Completing a lane change multiplies score by 1.15 for 1.25 seconds. Another lane change refreshes the timer.",
+      "Can gain 15% more score for 1.25 seconds after a lane change. Another lane change refreshes the boost.",
   },
   runner_ranger: {
     name: "PICKUP MAGNET",
-    description: "Collect gems from the current lane or either neighboring lane.",
+    description: "Can collect gems from either neighboring lane.",
   },
   runner_fortune: {
     name: "FORTUNE FINDER",
-    description: "Gem spawn chance is multiplied by 1.40.",
+    description: "Can make gems appear 40% more often.",
   },
   runner_relay: {
     name: "BATON CHAIN",
-    description:
-      "Each completed wave adds 0.03 to the score multiplier, up to 1.30.",
+    description: "Can add 3% more score per completed wave, up to 30%.",
   },
   runner_comet: {
     name: "STAR DRIVE",
     description:
-      "Going 8 seconds without damage multiplies score by 1.50 until the next damaging hit.",
+      "Can earn 50% more score after 8 seconds without damage. The boost ends when hit.",
   },
   runner_pacer: {
     name: "WAVE RUSH",
     description:
-      "For the first 15 seconds of each wave, obstacle speed is multiplied by 2.50 and score is multiplied by 2.50. Distance scoring makes the combined score rate 6.25 times faster.",
+      "Can make hazards move 2.5× faster and add a 2.5× score boost for the first 15 seconds of each wave, producing a 6.25× score rate.",
   },
   medic_patch: {
     name: "FIELD DRESSING",
-    description: "Wave completion heals 1.5 HP and can fill HP to 5.",
+    description: "Can heal 1.5 HP after each wave and reach 5 HP.",
   },
   medic_bloom: {
     name: "HEALING BLOOM",
-    description: "The first gem collected each wave heals 0.5 HP.",
+    description: "Can heal 0.5 HP with the first gem collected each wave.",
   },
   medic_mercy: {
     name: "GRACE GUARD",
     description:
-      "Once per wave, reduce the first hit of at least 1 HP by 0.5 HP.",
+      "Can reduce the first hit worth at least 1 HP by 0.5 HP once each wave.",
   },
   medic_pulse: {
     name: "VITAL PULSE",
-    description: "Every third gem collected heals 1 HP.",
+    description: "Can heal 1 HP with every third gem collected.",
   },
   medic_suture: {
     name: "TRIAGE CYCLE",
-    description: "Every third completed wave restores HP to 5.",
+    description: "Can restore HP to 5 after every third completed wave.",
   },
   medic_vial: {
     name: "CRYSTAL TONIC",
-    description: "Collecting a gem grants 2 seconds of invincibility.",
+    description: "Can gain 2 seconds of invincibility from every gem.",
   },
   medic_lifeline: {
     name: "LIFELINE",
     description:
-      "Once per run, surviving a hit at 1 HP or lower heals 1.5 HP when the hit pause ends.",
+      "Can heal 1.5 HP once per run after surviving a hit at 1 HP or less.",
   },
   medic_seraph: {
     name: "DIVINE RECOVERY",
-    description: "Max HP is 6. Wave completion heals 2 HP.",
+    description: "Can reach 6 HP and heal 2 HP after each wave.",
   },
   tank_bulwark: {
     name: "HEAVY PLATE",
-    description: "Once per wave, reduce the first hit of at least 1 HP by 0.5 HP.",
+    description:
+      "Can reduce the first hit worth at least 1 HP by 0.5 HP once each wave.",
   },
   tank_glacier: {
     name: "FROST ARMOR",
     description:
-      "Snowflake freeze lasts 1.5 seconds and frozen lane changes are delayed by 0.125 seconds.",
+      "Can cut snowflake freeze to 1.5 seconds and frozen lane-change delay to 0.125 seconds.",
   },
   tank_brace: {
     name: "SPIKE BRACE",
-    description: "Spikes deal 0.5 HP.",
+    description: "Can reduce spike damage to 0.5 HP.",
   },
   tank_hammer: {
     name: "DEMOLITION",
     description:
-      "Max HP is 5. Logs deal 0.5 HP. The first barrel each wave deals 0 HP.",
+      "Can reach 5 HP, reduce log damage to 0.5 HP, and ignore the first barrel each wave.",
   },
   tank_anchor: {
     name: "STONEGUARD",
-    description: "Rocks deal 1 HP.",
+    description: "Can reduce rock damage to 1 HP.",
   },
   tank_rampart: {
     name: "THIRD WALL",
-    description: "Every third damaging collision deals 0 HP.",
+    description: "Can ignore every third damaging collision.",
   },
   tank_sentinel: {
     name: "LAST STAND",
-    description: "Once per run, a lethal hit sets HP to 0.5.",
+    description: "Can survive one lethal hit per run with 0.5 HP.",
   },
   tank_atlas: {
     name: "WORLD BEARER",
-    description: "Max HP is 6. Wave completion heals 1 HP.",
+    description: "Can reach 6 HP and heal 1 HP after each wave.",
   },
   trickster_rogue: {
     name: "SHADOWSTEP",
     description:
-      "Graze a hazard as it crosses the runner line in an adjacent lane to gain 0.45 seconds of invincibility. Each hazard can trigger this once, with a 1.25-second cooldown.",
+      "Can gain 0.45 seconds of invincibility by grazing an adjacent hazard. Cooldown: 1.25 seconds.",
   },
   trickster_flicker: {
     name: "FIRST FLICKER",
     description:
-      "The first completed lane change each wave grants 0.75 seconds of invincibility.",
+      "Can gain 0.75 seconds of invincibility from the first lane change each wave.",
   },
   trickster_switch: {
     name: "REVERSAL",
     description:
-      "Reversing lane-change direction grants 0.5 seconds of invincibility. Cooldown is 2 seconds.",
+      "Can gain 0.5 seconds of invincibility by reversing lane-change direction. Cooldown: 2 seconds.",
   },
   trickster_gambit: {
     name: "HIGH STAKES",
     description:
-      "Grazing an obstacle in an adjacent lane multiplies score by 1.75 for 2 seconds. Cooldown is 2.5 seconds.",
+      "Can gain 75% more score for 2 seconds by grazing an adjacent hazard. Cooldown: 2.5 seconds.",
   },
   trickster_jester: {
     name: "ENCORE",
-    description: "Start every wave with 2.5 seconds of invincibility.",
+    description: "Can start every wave with 2.5 seconds of invincibility.",
   },
   trickster_mirage: {
     name: "AFTERIMAGE",
     description:
-      "Completing a lane change grants 0.65 seconds of invincibility. Cooldown is 2.5 seconds.",
+      "Can gain 0.65 seconds of invincibility from a lane change. Cooldown: 2.5 seconds.",
   },
   trickster_hex: {
     name: "VOID CUT",
     description:
-      "Every third completed lane change destroys the nearest damaging obstacle in the destination lane.",
+      "Can destroy the nearest damaging obstacle in the destination lane every third lane change.",
   },
   trickster_phantom: {
     name: "PHASE VEIL",
-    description: "The first damaging obstacle each wave deals 0 HP.",
+    description: "Can ignore the first damaging obstacle each wave.",
   },
 } as const;
 type CharacterKey = keyof typeof CHARACTER_ABILITIES;
@@ -2060,7 +2060,7 @@ export default function Home() {
                     }
                   });
             } else if (n.kind === "coin") {
-              void audioEngine.playSfx("coin");
+              void audioEngine.playSfx("gem");
               if (isBotPractice) {
                 versusPointsRef.current += 2;
                 setVersusPoints(versusPointsRef.current);
@@ -3933,9 +3933,9 @@ export default function Home() {
             <div
               className="active-ability-chip"
               title={activeAbility.description}
-              aria-label={`Active ability: ${activeAbility.name}. ${activeAbility.description}`}
+              aria-label={`Passive ability: ${activeAbility.name}. ${activeAbility.description}`}
             >
-              <small>ABILITY</small>
+              <small>PASSIVE</small>
               <b>{activeAbility.name}</b>
               <span>{activeAbility.description}</span>
             </div>
@@ -4792,7 +4792,7 @@ export default function Home() {
                                         character.key as CharacterKey
                                       ].name
                                     }
-                                    {" · SELECT · RULES BELOW"}
+                                    {" · SELECT · PASSIVE BELOW"}
                                   </em>
                                 </span>
                                 <small
@@ -4859,41 +4859,36 @@ export default function Home() {
                             <details className="inventory-subsection character-rules-subsection">
                               <summary className="inventory-subsection-heading">
                                 <span>
-                                  <b>
-                                    {focusedCharacterAbility?.name ??
-                                      "CHARACTER EFFECT"}
-                                  </b>
-                                  <small>
-                                    {focusedCharacterAbility?.description}
-                                  </small>
+                                  <b>PASSIVE ABILITY</b>
+                                  <small>{focusedCharacterAbility?.name}</small>
                                 </span>
                               </summary>
-                              <article className="class-rules-showcase">
-                                <small>{label} EXACT STATS</small>
-                                <b>{focusedCharacter.name}</b>
-                                <p>{description}</p>
+                              <article className="passive-ability-showcase">
+                                <small>{focusedCharacterAbility?.name}</small>
+                                <p>{focusedCharacterAbility?.description}</p>
                               </article>
-                              <div className="inventory-inspection">
-                                <article className="weapon-showcase">
-                                  <span
-                                    className={`weapon-showcase-icon character-${focusedCharacter.key}`}
-                                    aria-hidden="true"
-                                  />
-                                  <div>
-                                    <small>WEAPON PREVIEW</small>
-                                    <b>{focusedCharacter.weapon}</b>
-                                    <p>
-                                      Visual only — weapons unlock with their
-                                      character and add no separate stats.
-                                    </p>
-                                  </div>
-                                </article>
-                                <article className="ability-showcase">
-                                  <small>WHAT IT DOES</small>
-                                  <b>{focusedCharacterAbility?.name}</b>
-                                  <p>{focusedCharacterAbility?.description}</p>
-                                </article>
-                              </div>
+                            </details>
+                            <details className="inventory-subsection character-weapon-subsection">
+                              <summary className="inventory-subsection-heading">
+                                <span>
+                                  <b>WEAPON PREVIEW</b>
+                                  <small>{focusedCharacter.weapon}</small>
+                                </span>
+                              </summary>
+                              <article className="weapon-showcase standalone-weapon-showcase">
+                                <span
+                                  className={`weapon-showcase-icon character-${focusedCharacter.key}`}
+                                  aria-hidden="true"
+                                />
+                                <div>
+                                  <small>VISUAL ONLY</small>
+                                  <b>{focusedCharacter.weapon}</b>
+                                  <p>
+                                    Unlocks with {focusedCharacter.name} and
+                                    adds no separate stats.
+                                  </p>
+                                </div>
+                              </article>
                             </details>
                             <details className="inventory-subsection character-cosmetics-subsection">
                               <summary className="inventory-subsection-heading">
