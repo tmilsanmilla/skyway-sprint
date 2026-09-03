@@ -448,7 +448,7 @@ const INVENTORY_CLASSES: ReadonlyArray<{
   },
 ];
 const EXTRACTION_UNIT_COST = 4;
-const EXTRACTION_MAX_BATCH = 100;
+const EXTRACTION_MAX_QUANTITY = 100;
 const EXTRACTION_BOXES = {
   regular: {
     name: "NORMAL BOX",
@@ -2750,7 +2750,7 @@ export default function Home() {
     }
     const box = EXTRACTION_BOXES[option];
     const maxQuantity = Math.min(
-      Math.floor(EXTRACTION_MAX_BATCH / box.pullCount),
+      EXTRACTION_MAX_QUANTITY,
       Math.floor(gemsRef.current / box.cost),
     );
     const quantity = Math.floor(extractQuantities[option]);
@@ -2762,7 +2762,6 @@ export default function Home() {
       );
       return;
     }
-    const pullCount = box.pullCount * quantity;
     const startedAt = Date.now();
     const reduceMotion = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
@@ -2777,8 +2776,8 @@ export default function Home() {
     );
     try {
       const { data, error } = await supabase.rpc("extract_items", {
-        pull_count: pullCount,
-        box_type: "regular",
+        pull_count: quantity,
+        box_type: option,
       });
       if (error) {
         setShopStatus(error.message);
@@ -2811,7 +2810,7 @@ export default function Home() {
             Math.max(
               1,
               Math.min(
-                EXTRACTION_MAX_BATCH,
+                EXTRACTION_MAX_QUANTITY,
                 Math.floor(nextGems / EXTRACTION_BOXES.regular.cost),
               ),
             ),
@@ -2824,9 +2823,7 @@ export default function Home() {
             Math.max(
               1,
               Math.min(
-                Math.floor(
-                  EXTRACTION_MAX_BATCH / EXTRACTION_BOXES.ten.pullCount,
-                ),
+                EXTRACTION_MAX_QUANTITY,
                 Math.floor(nextGems / EXTRACTION_BOXES.ten.cost),
               ),
             ),
@@ -4047,7 +4044,7 @@ export default function Home() {
               <p>GEM SHOP</p>
               <h2 id="extraction-shop-title">EXTRACTION SHOP</h2>
               <small className="extract-cap-note">
-                MAX OPENS AS MANY AS YOU CAN AFFORD, UP TO 100 ITEMS PER
+                MAX OPENS AS MANY AS YOU CAN AFFORD, UP TO 100 BOXES PER
                 REQUEST.
               </small>
               {extractResults.length > 0 && (
@@ -4102,9 +4099,7 @@ export default function Home() {
                 {(Object.keys(EXTRACTION_BOXES) as ExtractionOption[]).map(
                   (option) => {
                     const box = EXTRACTION_BOXES[option];
-                    const batchLimit = Math.floor(
-                      EXTRACTION_MAX_BATCH / box.pullCount,
-                    );
+                    const batchLimit = EXTRACTION_MAX_QUANTITY;
                     const maxQuantity = Math.min(
                       batchLimit,
                       Math.floor(gems / box.cost),
