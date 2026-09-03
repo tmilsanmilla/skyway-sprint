@@ -177,6 +177,7 @@ const VERSUS_ATTACKS: ReadonlyArray<{
     description: "Slow threat · 2 HP",
   },
 ];
+const VERSUS_INTERMISSION_SECONDS = 10;
 const normalizeVersusObstacle = (value: unknown): Kind | null => {
   if (value === "spike" || value === "spikes") return "spikes";
   if (
@@ -748,7 +749,9 @@ export default function Home() {
     [versusPhase, setVersusPhase] = useState<VersusPhase>("idle"),
     [versusOpponent, setVersusOpponent] = useState("WAITING…"),
     [versusPoints, setVersusPoints] = useState(0),
-    [versusCountdown, setVersusCountdown] = useState(15),
+    [versusCountdown, setVersusCountdown] = useState(
+      VERSUS_INTERMISSION_SECONDS,
+    ),
     [versusOpponentHearts, setVersusOpponentHearts] = useState(3),
     [versusResult, setVersusResult] = useState(""),
     [versusAttackBusy, setVersusAttackBusy] = useState(false),
@@ -1351,7 +1354,10 @@ export default function Home() {
           : "DEFEAT",
       );
     } else if (matchStatus === "intermission") {
-      const remaining = secondsUntil(snapshot.match?.intermission_ends_at, 15);
+      const remaining = secondsUntil(
+        snapshot.match?.intermission_ends_at,
+        VERSUS_INTERMISSION_SECONDS,
+      );
       setVersusCountdown(remaining);
       setVersusPhase("intermission");
       setVersusIntermissionReady(remaining > 0);
@@ -1493,7 +1499,7 @@ export default function Home() {
     setVersusOpponentHearts(BOT_MAX_HEARTS);
     setVersusPoints(0);
     versusPointsRef.current = 0;
-    setVersusCountdown(15);
+    setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
     setVersusResult("");
     setVersusIntermissionReady(false);
     reset();
@@ -2102,7 +2108,7 @@ export default function Home() {
         botAttackPointsRef.current += 3 + simulatedBotCoinPickups;
         versusPointsRef.current += 3;
         setVersusPoints(versusPointsRef.current);
-        setVersusCountdown(15);
+        setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
         setVersusPhase("intermission");
         setVersusIntermissionReady(true);
         setVersusResult(
@@ -2113,7 +2119,7 @@ export default function Home() {
         setPaused(true);
       } else if (isOnlineVersus && versusMatchRef.current) {
         setVersusPoints((v) => v + 3);
-        setVersusCountdown(15);
+        setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
         setVersusPhase("intermission");
         setVersusIntermissionReady(false);
         setPaused(true);
@@ -2283,7 +2289,10 @@ export default function Home() {
       if (Number.isFinite(authoritativePoints))
         setVersusPoints(Math.max(0, authoritativePoints));
       if (nextStatus === "intermission") {
-        const remaining = secondsUntil(data?.match?.intermission_ends_at, 15);
+        const remaining = secondsUntil(
+          data?.match?.intermission_ends_at,
+          VERSUS_INTERMISSION_SECONDS,
+        );
         setVersusCountdown(remaining);
         setVersusIntermissionReady(remaining > 0);
       }
@@ -3389,7 +3398,7 @@ export default function Home() {
                     <li>Each track coin pickup adds <b>2 attack coins</b>.</li>
                     <li>Each completed wave adds <b>3 attack coins</b>.</li>
                     <li>
-                      Spend attack coins during the 15-second intermission to
+                      Spend attack coins during the 10-second intermission to
                       send hazards into your rival&apos;s next wave.
                     </li>
                     <li>
