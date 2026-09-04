@@ -117,22 +117,27 @@ const PLAYER_INVENTORY_GROUPS = [
   {
     key: "runner",
     label: "RUNNER",
-    description: "Owned Runner characters and legacy unlocks.",
+    description: "Movement or score.",
   },
   {
     key: "medic",
     label: "HEALER",
-    description: "Owned Healer characters and legacy unlocks.",
+    description: "Special healing or HP.",
   },
   {
     key: "tank",
     label: "TANK",
-    description: "Owned Tank characters and legacy unlocks.",
+    description: "Less damage or more health, but not healing.",
   },
   {
     key: "trickster",
     label: "TRICKSTER",
-    description: "Owned Trickster characters and legacy unlocks.",
+    description: "Special actions trigger invincibility or other rewards.",
+  },
+  {
+    key: "misc",
+    label: "MISC",
+    description: "Everything else.",
   },
   {
     key: "other",
@@ -141,14 +146,20 @@ const PLAYER_INVENTORY_GROUPS = [
   },
 ] as const;
 type PlayerInventoryGroupKey = (typeof PLAYER_INVENTORY_GROUPS)[number]["key"];
-const CHARACTER_CLASS_KEYS = new Set(["runner", "medic", "tank", "trickster"]);
+const CHARACTER_CLASS_KEYS = new Set([
+  "runner",
+  "medic",
+  "tank",
+  "trickster",
+  "misc",
+]);
 const RARITY_SORT_ORDER: Record<string, number> = {
-  mythic: 0,
-  legendary: 1,
-  epic: 2,
-  rare: 3,
-  uncommon: 4,
-  common: 5,
+  common: 0,
+  uncommon: 1,
+  rare: 2,
+  epic: 3,
+  legendary: 4,
+  mythic: 5,
 };
 
 const getPlayerInventoryGroup = (
@@ -162,6 +173,8 @@ const getPlayerInventoryGroup = (
     const catalogClass = String(item.character_class ?? "").toLowerCase();
     if (CHARACTER_CLASS_KEYS.has(catalogClass))
       return catalogClass as PlayerInventoryGroupKey;
+    if (String(item.item_key ?? "").toLowerCase() === "runner_scout")
+      return "misc";
     const keyPrefix = String(item.item_key ?? "").toLowerCase().split("_")[0];
     if (CHARACTER_CLASS_KEYS.has(keyPrefix))
       return keyPrefix as PlayerInventoryGroupKey;

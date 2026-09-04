@@ -304,16 +304,11 @@ type VersusPhase =
 const CLASS_CHARACTERS = {
   runner: [
     { key: "runner_ace", name: "Ace", weapon: "Baton", rarity: "common" },
-    { key: "runner_scout", name: "Scout", weapon: "Twin Blades", rarity: "common" },
-    { key: "runner_vault", name: "Vault", weapon: "Spring Pole", rarity: "common" },
-    { key: "runner_drift", name: "Drift", weapon: "Slipstream Shoes", rarity: "uncommon" },
-    { key: "runner_ranger", name: "Ranger", weapon: "Pixel Bow", rarity: "uncommon" },
-    { key: "runner_spark", name: "Spark", weapon: "Prism Baton", rarity: "uncommon" },
-    { key: "runner_flare", name: "Flare", weapon: "Signal Spear", rarity: "rare" },
-    { key: "runner_fortune", name: "Fortune", weapon: "Lucky Compass", rarity: "rare" },
+    { key: "tank_glacier", name: "Glacier", weapon: "Frost Shield", rarity: "uncommon" },
+    { key: "tank_reactor", name: "Reactor", weapon: "Core Maul", rarity: "rare" },
+    { key: "medic_halo", name: "Halo", weapon: "Sun Staff", rarity: "epic" },
     { key: "runner_orbit", name: "Orbit", weapon: "Ring Blades", rarity: "epic" },
     { key: "runner_relay", name: "Relay", weapon: "Circuit Baton", rarity: "epic" },
-    { key: "runner_comet", name: "Comet", weapon: "Star Spear", rarity: "legendary" },
     { key: "runner_pacer", name: "Pacer", weapon: "Relay Rod", rarity: "mythic" },
   ],
   medic: [
@@ -322,41 +317,48 @@ const CLASS_CHARACTERS = {
     { key: "medic_remedy", name: "Remedy", weapon: "Tonic Bell", rarity: "common" },
     { key: "medic_reserve", name: "Reserve", weapon: "Field Pack", rarity: "uncommon" },
     { key: "medic_mender", name: "Mender", weapon: "Clock Needle", rarity: "rare" },
-    { key: "medic_mercy", name: "Mercy", weapon: "Injector", rarity: "rare" },
     { key: "medic_pulse", name: "Pulse", weapon: "Pulse Syringe", rarity: "rare" },
-    { key: "medic_halo", name: "Halo", weapon: "Sun Staff", rarity: "epic" },
     { key: "medic_suture", name: "Suture", weapon: "Pulse Thread", rarity: "epic" },
-    { key: "medic_vial", name: "Vial", weapon: "Tonic Flask", rarity: "epic" },
     { key: "medic_lifeline", name: "Lifeline", weapon: "Rescue Hook", rarity: "legendary" },
     { key: "medic_seraph", name: "Seraph", weapon: "Halo Staff", rarity: "legendary" },
+    { key: "tank_atlas", name: "Atlas", weapon: "World Maul", rarity: "legendary" },
   ],
   tank: [
     { key: "tank_bulwark", name: "Bulwark", weapon: "Tower Shield", rarity: "common" },
-    { key: "tank_drag", name: "Drag", weapon: "Chain Hook", rarity: "common" },
-    { key: "tank_glacier", name: "Glacier", weapon: "Frost Shield", rarity: "uncommon" },
+    { key: "runner_vault", name: "Vault", weapon: "Spring Pole", rarity: "common" },
     { key: "tank_brace", name: "Brace", weapon: "Spike Buckler", rarity: "uncommon" },
-    { key: "tank_plow", name: "Plow", weapon: "Ram Shield", rarity: "uncommon" },
+    { key: "medic_mercy", name: "Mercy", weapon: "Injector", rarity: "rare" },
     { key: "tank_hammer", name: "Hammer", weapon: "War Hammer", rarity: "rare" },
     { key: "tank_anchor", name: "Anchor", weapon: "Ground Hook", rarity: "rare" },
-    { key: "tank_reactor", name: "Reactor", weapon: "Core Maul", rarity: "rare" },
     { key: "tank_bastion", name: "Bastion", weapon: "Fortress Shield", rarity: "epic" },
     { key: "tank_rampart", name: "Rampart", weapon: "Siege Wall", rarity: "epic" },
+    { key: "trickster_jester", name: "Jester", weapon: "Card Fan", rarity: "epic" },
     { key: "tank_sentinel", name: "Sentinel", weapon: "Steel Spear", rarity: "legendary" },
-    { key: "tank_atlas", name: "Atlas", weapon: "World Maul", rarity: "legendary" },
+    { key: "trickster_phantom", name: "Phantom", weapon: "Moon Scythe", rarity: "mythic" },
   ],
   trickster: [
     { key: "trickster_smoke", name: "Smoke", weapon: "Smoke Bombs", rarity: "common" },
+    { key: "runner_drift", name: "Drift", weapon: "Slipstream Shoes", rarity: "uncommon" },
+    { key: "runner_spark", name: "Spark", weapon: "Prism Baton", rarity: "uncommon" },
+    { key: "tank_plow", name: "Plow", weapon: "Ram Shield", rarity: "uncommon" },
     { key: "trickster_rogue", name: "Rogue", weapon: "Daggers", rarity: "uncommon" },
     { key: "trickster_clockwork", name: "Clockwork", weapon: "Time Cards", rarity: "uncommon" },
     { key: "trickster_flicker", name: "Flicker", weapon: "Blink Knives", rarity: "uncommon" },
+    { key: "runner_flare", name: "Flare", weapon: "Signal Spear", rarity: "rare" },
     { key: "trickster_pickpocket", name: "Pickpocket", weapon: "Coin Dagger", rarity: "rare" },
     { key: "trickster_switch", name: "Switch", weapon: "Twin Coins", rarity: "rare" },
     { key: "trickster_gambit", name: "Gambit", weapon: "Loaded Cards", rarity: "rare" },
-    { key: "trickster_jester", name: "Jester", weapon: "Card Fan", rarity: "epic" },
+    { key: "medic_vial", name: "Vial", weapon: "Tonic Flask", rarity: "epic" },
     { key: "trickster_mirage", name: "Mirage", weapon: "Prism Fans", rarity: "epic" },
-    { key: "trickster_wildcard", name: "Wildcard", weapon: "Dice Fans", rarity: "epic" },
+    { key: "runner_comet", name: "Comet", weapon: "Star Spear", rarity: "legendary" },
     { key: "trickster_hex", name: "Hex", weapon: "Void Chakram", rarity: "legendary" },
-    { key: "trickster_phantom", name: "Phantom", weapon: "Moon Scythe", rarity: "mythic" },
+  ],
+  misc: [
+    { key: "runner_scout", name: "Scout", weapon: "Twin Blades", rarity: "common" },
+    { key: "tank_drag", name: "Drag", weapon: "Chain Hook", rarity: "common" },
+    { key: "runner_ranger", name: "Ranger", weapon: "Pixel Bow", rarity: "uncommon" },
+    { key: "runner_fortune", name: "Fortune", weapon: "Lucky Compass", rarity: "rare" },
+    { key: "trickster_wildcard", name: "Wildcard", weapon: "Dice Fans", rarity: "epic" },
   ],
 } as const satisfies Record<
   string,
@@ -369,6 +371,13 @@ const CLASS_CHARACTERS = {
 >;
 type RosterCharacterKey =
   (typeof CLASS_CHARACTERS)[keyof typeof CLASS_CHARACTERS][number]["key"];
+type CharacterClassKey = keyof typeof CLASS_CHARACTERS;
+const getCharacterClassKey = (characterKey: string): CharacterClassKey =>
+  (Object.keys(CLASS_CHARACTERS) as CharacterClassKey[]).find((classKey) =>
+    CLASS_CHARACTERS[classKey].some(
+      (character) => character.key === characterKey,
+    ),
+  ) ?? "runner";
 const CHARACTER_ABILITIES = {
   runner_ace: {
     name: "MOMENTUM",
@@ -386,11 +395,11 @@ const CHARACTER_ABILITIES = {
   },
   runner_ranger: {
     name: "PICKUP MAGNET",
-    description: "Can collect gems from either neighboring lane.",
+    description: "Can collect gems and coins from either neighboring lane.",
   },
   runner_fortune: {
     name: "FORTUNE FINDER",
-    description: "Can make gems appear 40% more often.",
+    description: "Can make gems appear 2× as often.",
   },
   runner_relay: {
     name: "BATON CHAIN",
@@ -404,21 +413,21 @@ const CHARACTER_ABILITIES = {
   runner_pacer: {
     name: "WAVE RUSH",
     description:
-      "Can make hazards move 2.5× faster and add a 2.5× score boost for the first 15 seconds of each wave, producing a 6.25× score rate.",
+      "Can make hazards move 3× faster and add a 5× score boost for the first 15 seconds of each wave, producing a 15× score rate before other bonuses.",
   },
   runner_vault: {
     name: "SPIKE VAULT",
-    description: "Can make spikes move 25% slower.",
+    description: "Can vault over spikes and take no damage from them.",
   },
   runner_spark: {
     name: "CRYSTAL CHARGE",
     description:
-      "Can earn 20% more score for 5 seconds after collecting a gem. Another gem refreshes the boost.",
+      "Can earn 50% more score for 10 seconds after collecting a gem. Another gem refreshes the boost.",
   },
   runner_flare: {
     name: "CLEAN RUN",
     description:
-      "Can earn 15% more score during the next wave after completing a wave without taking damage.",
+      "Can earn 50% more score during the next wave after completing a wave without taking damage.",
   },
   runner_orbit: {
     name: "LANE ORBIT",
@@ -457,7 +466,7 @@ const CHARACTER_ABILITIES = {
   },
   medic_seraph: {
     name: "DIVINE RECOVERY",
-    description: "Can reach 6 HP and heal 2 HP after each wave.",
+    description: "Can reach 5.5 HP and heal 1.5 HP after each wave.",
   },
   medic_remedy: {
     name: "COLD REMEDY",
@@ -476,7 +485,7 @@ const CHARACTER_ABILITIES = {
   },
   medic_halo: {
     name: "RADIANT PACE",
-    description: "Can earn 15% more score while above 3 HP.",
+    description: "Can earn 15% more score while at full HP.",
   },
   tank_bulwark: {
     name: "HEAVY PLATE",
@@ -593,6 +602,22 @@ const CHARACTER_ABILITIES = {
   { name: string; description: string }
 >;
 type CharacterKey = RosterCharacterKey;
+const CHARACTER_ROSTER = Object.values(CLASS_CHARACTERS).flat();
+const WEAPON_SCORE_BONUS_BY_RARITY: Readonly<Record<Rarity, number>> = {
+  common: 0.03,
+  uncommon: 0.04,
+  rare: 0.05,
+  epic: 0.06,
+  legendary: 0.07,
+  mythic: 0.08,
+};
+const getCharacterDefinition = (characterKey: string) =>
+  CHARACTER_ROSTER.find((character) => character.key === characterKey) ??
+  CLASS_CHARACTERS.runner[0];
+const getWeaponScoreBonus = (rarity: Rarity) =>
+  WEAPON_SCORE_BONUS_BY_RARITY[rarity];
+const getWeaponScoreLabel = (rarity: Rarity) =>
+  `+${Math.round(getWeaponScoreBonus(rarity) * 100)}% DISTANCE SCORE`;
 const STARTER_CHARACTER_KEYS: ReadonlySet<CharacterKey> = new Set([
   "runner_ace",
   "medic_patch",
@@ -632,9 +657,7 @@ const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
     isCharacterOwned(owned, requestedCharacter)
       ? requestedCharacter
       : "runner_ace";
-  const inferredClass = characterKey.split("_")[0];
-  const classKey =
-    inferredClass in CLASS_CHARACTERS ? inferredClass : "runner";
+  const classKey = getCharacterClassKey(characterKey);
   return {
     classKey,
     characterKey,
@@ -649,8 +672,6 @@ const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
       : "",
   };
 };
-const BASE_DAMAGE_DESCRIPTION =
-  "DAMAGE BEFORE PASSIVES: barrel 0.5 HP · log/car/spikes 1 HP · rock 2 HP · snowflake 0 HP plus a 3-second freeze that delays every turn by 0.25 seconds.";
 const BASE_ITEM_SPEED = 0.0452;
 const WAVE_SPEED_STEP = 0.25;
 const getWaveSpeedMultiplier = (waveNumber: number) =>
@@ -663,26 +684,27 @@ const INVENTORY_CLASSES: ReadonlyArray<{
   {
     key: "runner",
     label: "RUNNER",
-    description:
-      `NORMAL: 3 starting/max HP · heal 1 HP after each wave · 1.00× class score. ${BASE_DAMAGE_DESCRIPTION} HARDCORE: 1 HP · no healing · same damage values. IMPOSSIBLE: 1 HP · no healing · Ace forced · every damaging obstacle deals 1 HP.`,
+    description: "Movement or score.",
   },
   {
     key: "medic",
     label: "HEALER",
-    description:
-      `NORMAL ONLY: start at 3 HP · max 5 HP, or 6 HP for Seraph · heal 1 HP after each wave before the character's special healing rule. ${BASE_DAMAGE_DESCRIPTION} Healers are unavailable in Hardcore and Impossible.`,
+    description: "Special healing or HP.",
   },
   {
     key: "tank",
     label: "TANK",
-    description:
-      `NORMAL ONLY: start at 4 HP · max 4 HP, 5 HP for Hammer, or 6 HP for Atlas · heal 0.5 HP after each wave before the character's special healing rule. ${BASE_DAMAGE_DESCRIPTION} Tanks are unavailable in Hardcore and Impossible.`,
+    description: "Less damage or more health, but not healing.",
   },
   {
     key: "trickster",
     label: "TRICKSTER",
-    description:
-      `NORMAL: 2 starting/max HP · heal 1 HP after each wave · 1.15× class score, which does not change wave timing. ${BASE_DAMAGE_DESCRIPTION} HARDCORE: 1 HP · no healing · class score bonus disabled · same damage values.`,
+    description: "Special actions trigger invincibility or other rewards.",
+  },
+  {
+    key: "misc",
+    label: "MISC",
+    description: "Everything else.",
   },
 ];
 const EXTRACTION_UNIT_COST = 4;
@@ -693,7 +715,7 @@ const EXTRACTION_BOXES = {
     cost: EXTRACTION_UNIT_COST,
     pullCount: 1,
     icon: "◇",
-    mix: "5% CHARACTER · 95% COSMETIC",
+    mix: "5% CHARACTER + WEAPON · 95% COSMETIC",
     oddsLabel: "NORMAL PULL ODDS",
     note:
       "DUPLICATES AWARD NOTHING · EVERY 10TH ITEM IN ONE MULTI-OPEN USES THE 10× BONUS ODDS",
@@ -712,7 +734,7 @@ const EXTRACTION_BOXES = {
     pullCount: 10,
     icon: "◇×10",
     mix: "9 NORMAL PULLS · 1 LEGENDARY-ODDS PULL",
-    oddsLabel: "10TH: 20% CHARACTER · 80% COSMETIC",
+    oddsLabel: "10TH: 20% CHARACTER + WEAPON · 80% COSMETIC",
     note: "DUPLICATES AWARD NOTHING · THE 10TH PULL IS NOT GUARANTEED NEW",
     odds: [
       ["common", "3%"],
@@ -1067,11 +1089,13 @@ export default function Home() {
   const maxHearts =
     mode === "impossible" || mode === "hardcore"
       ? 1
-      : activeCharacter === "medic_seraph" || activeCharacter === "tank_atlas"
-        ? 6
-        : activeCharacter === "tank_hammer" || activeClass === "medic"
-        ? 5
-        : baseHearts;
+      : activeCharacter === "medic_seraph"
+        ? 5.5
+        : activeCharacter === "tank_atlas"
+          ? 6
+          : activeCharacter === "tank_hammer" || activeClass === "medic"
+            ? 5
+            : baseHearts;
   const modeMultiplier =
     mode === "impossible" ? 3 : mode === "hardcore" ? 1.75 : 1;
   const classScoreMultiplier =
@@ -1079,6 +1103,11 @@ export default function Home() {
   const activeAbility =
     CHARACTER_ABILITIES[activeCharacter as CharacterKey] ??
     CHARACTER_ABILITIES.runner_ace;
+  const activeCharacterDefinition = getCharacterDefinition(activeCharacter);
+  const activeWeaponScoreBonus = getWeaponScoreBonus(
+    activeCharacterDefinition.rarity,
+  );
+  const activeWeaponScoreMultiplier = 1 + activeWeaponScoreBonus;
   useEffect(() => {
     if (mainView === "endless" && !running && !over)
       setHearts(startingHearts);
@@ -1292,7 +1321,7 @@ export default function Home() {
         if (applyCharacterEffects && activeCharacter === "runner_pacer") {
           pacerRushRemainingRef.current = 15000;
           showAbilityNotice(
-            "WAVE RUSH · SPEED ×2.50 + SCORE ×2.50 FOR 15 SECONDS",
+            "WAVE RUSH · SPEED ×3 + SCORE ×5 = ×15 FOR 15 SECONDS",
             1800,
           );
         }
@@ -2152,7 +2181,7 @@ export default function Home() {
       const pacerRushActive =
         activeCharacter === "runner_pacer" &&
         pacerRushRemainingRef.current > 0;
-      const characterSpeedMultiplier = pacerRushActive ? 2.5 : 1;
+      const characterSpeedMultiplier = pacerRushActive ? 3 : 1;
       const obstacleSpeedMultiplier =
         currentSpeedMultiplier * characterSpeedMultiplier;
       if (now - last.current > Math.max(330, 980 - wave * 55)) {
@@ -2162,7 +2191,7 @@ export default function Home() {
           baseGemChance =
             mode === "impossible" ? 0.14 : mode === "hardcore" ? 0.1 : 0.06,
           characterGemMultiplier =
-            (activeCharacter === "runner_fortune" ? 1.4 : 1) *
+            (activeCharacter === "runner_fortune" ? 2 : 1) *
             (activeCharacter === "trickster_wildcard" &&
             wildcardBuffRef.current === "gems"
               ? 1.5
@@ -2224,8 +2253,6 @@ export default function Home() {
                   : item.kind === "rock"
                   ? 0.3
                   : 1;
-          if (activeCharacter === "runner_vault" && item.kind === "spikes")
-            speedFactor *= 0.75;
           if (
             activeCharacter === "tank_drag" &&
             (item.kind === "barrel" || item.kind === "log")
@@ -2287,8 +2314,7 @@ export default function Home() {
           }
           const rangerPickup =
             activeCharacter === "runner_ranger" &&
-            (n.kind === "gem" ||
-              (n.kind === "coin" && !isVersusRun)) &&
+            (n.kind === "gem" || n.kind === "coin") &&
             Math.abs(n.lane - state.current.lane) <= 1;
           const rangerPulled =
             rangerPickup && n.lane !== state.current.lane;
@@ -2308,8 +2334,8 @@ export default function Home() {
               requestAnimationFrame(() => setGemBump(true));
               setTimeout(() => setGemBump(false), 500);
               if (activeCharacter === "runner_spark") {
-                sparkBoostRemainingRef.current = 5000;
-                showAbilityNotice("CRYSTAL CHARGE · SCORE ×1.20", 900);
+                sparkBoostRemainingRef.current = 10000;
+                showAbilityNotice("CRYSTAL CHARGE · SCORE ×1.50", 900);
               }
               if (
                 activeCharacter === "medic_bloom" &&
@@ -2398,6 +2424,15 @@ export default function Home() {
                   );
                 }, 700);
               }
+            } else if (
+              activeCharacter === "runner_vault" &&
+              n.kind === "spikes"
+            ) {
+              void audioEngine.playSfx("shield");
+              setFlash("shield");
+              setTimeout(() => setFlash(""), 150);
+              showAbilityNotice("SPIKE VAULT · SPIKES CLEARED");
+              return [];
             } else if (
               activeCharacter === "tank_hammer" &&
               n.kind === "barrel" &&
@@ -2649,7 +2684,7 @@ export default function Home() {
       let characterScoreMultiplier = 1;
       if (activeCharacter === "runner_ace")
         characterScoreMultiplier = 1.1;
-      else if (pacerRushActive) characterScoreMultiplier = 2.5;
+      else if (pacerRushActive) characterScoreMultiplier = 5;
       else if (
         activeCharacter === "runner_drift" &&
         driftBoostRemainingRef.current > 0
@@ -2659,12 +2694,12 @@ export default function Home() {
         activeCharacter === "runner_spark" &&
         sparkBoostRemainingRef.current > 0
       )
-        characterScoreMultiplier = 1.2;
+        characterScoreMultiplier = 1.5;
       else if (
         activeCharacter === "runner_flare" &&
         flareBoostWaveRef.current === wave
       )
-        characterScoreMultiplier = 1.15;
+        characterScoreMultiplier = 1.5;
       else if (activeCharacter === "runner_relay")
         characterScoreMultiplier =
           1 + Math.min(0.3, Math.max(0, wave - 1) * 0.03);
@@ -2675,7 +2710,7 @@ export default function Home() {
         characterScoreMultiplier = 1.5;
       else if (
         activeCharacter === "medic_halo" &&
-        state.current.hearts > 3
+        state.current.hearts >= maxHearts
       )
         characterScoreMultiplier = 1.15;
       else if (
@@ -2694,7 +2729,9 @@ export default function Home() {
       )
         characterScoreMultiplier = 1.15;
       const totalScoreMultiplier =
-        classScoreMultiplier * characterScoreMultiplier;
+        classScoreMultiplier *
+        characterScoreMultiplier *
+        activeWeaponScoreMultiplier;
       scoreCarryRef.current +=
         rawProgressGain *
         obstacleSpeedMultiplier *
@@ -2807,6 +2844,7 @@ export default function Home() {
     isVersusRun,
     modeMultiplier,
     classScoreMultiplier,
+    activeWeaponScoreMultiplier,
     grantInvincibility,
     applyFreezeEffect,
     clearFreezeEffect,
@@ -2824,7 +2862,7 @@ export default function Home() {
         const cleanWave = flareDamageWaveRef.current !== completedWave;
         flareBoostWaveRef.current = cleanWave ? next : 0;
         if (cleanWave)
-          showAbilityNotice("CLEAN RUN · NEXT WAVE SCORE ×1.15", 1200);
+          showAbilityNotice("CLEAN RUN · NEXT WAVE SCORE ×1.50", 1200);
       }
       if (activeCharacter === "medic_mender") {
         menderChargeRemainingRef.current = 12000;
@@ -2846,7 +2884,7 @@ export default function Home() {
           activeCharacter === "medic_patch"
             ? 1.5
             : activeCharacter === "medic_seraph"
-              ? 2
+              ? 1.5
               : activeCharacter === "tank_atlas"
                 ? 1
                 : activeClass === "tank"
@@ -2866,7 +2904,7 @@ export default function Home() {
           activeCharacter === "medic_seraph" &&
           state.current.hearts < maxHearts
         )
-          showAbilityNotice("DIVINE RECOVERY · +2 HP", 1200);
+          showAbilityNotice("DIVINE RECOVERY · +1.5 HP", 1200);
         if (
           activeCharacter === "tank_atlas" &&
           state.current.hearts < maxHearts
@@ -3764,6 +3802,9 @@ export default function Home() {
   const focusedCharacterAbility = focusedCharacter
     ? CHARACTER_ABILITIES[focusedCharacter.key as CharacterKey]
     : null;
+  const focusedWeaponScoreLabel = focusedCharacter
+    ? getWeaponScoreLabel(focusedCharacter.rarity)
+    : "";
   const newExtractResults = extractResults
     .filter((item) => item.is_new)
     .sort(
@@ -4423,12 +4464,17 @@ export default function Home() {
             )}
             <div
               className="active-ability-chip"
-              title={activeAbility.description}
-              aria-label={`Passive ability: ${activeAbility.name}. ${activeAbility.description}`}
+              title={`${activeAbility.description} ${activeCharacterDefinition.weapon} adds ${Math.round(activeWeaponScoreBonus * 100)}% distance score.`}
+              aria-label={`Passive ability: ${activeAbility.name}. ${activeAbility.description} Weapon: ${activeCharacterDefinition.weapon}. ${getWeaponScoreLabel(activeCharacterDefinition.rarity)}.`}
             >
               <small>PASSIVE</small>
               <b>{activeAbility.name}</b>
               <span>{activeAbility.description}</span>
+              <div className="active-weapon-readout">
+                <small>WEAPON</small>
+                <b>{activeCharacterDefinition.weapon}</b>
+                <em>{getWeaponScoreLabel(activeCharacterDefinition.rarity)}</em>
+              </div>
             </div>
             {abilityNotice && (
               <div className="ability-proc" role="status" aria-live="polite">
@@ -5093,7 +5139,7 @@ export default function Home() {
                             <small>
                               NEW{" "}
                               {item.item_type === "character"
-                                ? "CHARACTER"
+                                ? "CHARACTER + WEAPON"
                                 : `${item.item_type.toUpperCase()} COSMETIC`}
                             </small>
                           </span>
@@ -5145,10 +5191,11 @@ export default function Home() {
               </header>
               <div className="inventory-directory" aria-hidden="true">
                 <span>01 OBSTACLE</span>
-                <span>02 RUNNER</span>
-                <span>03 HEALER</span>
-                <span>04 TANK</span>
-                <span>05 TRICKSTER</span>
+                {INVENTORY_CLASSES.map(({ label }, classIndex) => (
+                  <span key={label}>
+                    0{classIndex + 2} {label}
+                  </span>
+                ))}
               </div>
               <div className="inventory-scroll">
                 <details
@@ -5285,12 +5332,23 @@ export default function Home() {
                           </span>
                         </summary>
                         <p className="inventory-kit-note">
-                          <b>
-                            {includedCharacter?.name ?? roster[0].name} is the
-                            included default kit.
-                          </b>{" "}
-                          Other {label.toLowerCase()} variants stay locked until
-                          they are extracted from a box.
+                          {includedCharacter ? (
+                            <>
+                              <b>
+                                {includedCharacter.name} is the included default
+                                character + weapon kit.
+                              </b>{" "}
+                              Other {label.toLowerCase()} character + weapon
+                              kits stay locked until they are extracted from a
+                              box.
+                            </>
+                          ) : (
+                            <>
+                              <b>{label} has no included default character.</b>{" "}
+                              Every character + weapon kit in this section must
+                              be extracted from a box.
+                            </>
+                          )}
                         </p>
                         <div className="inventory-roster">
                           {roster.map((character) => {
@@ -5424,8 +5482,8 @@ export default function Home() {
                             <details className="inventory-subsection character-weapon-subsection">
                               <summary className="inventory-subsection-heading">
                                 <span>
-                                  <b>WEAPON PREVIEW</b>
-                                  <small>{focusedCharacter.weapon}</small>
+                                  <b>WEAPON EFFECT</b>
+                                  <small>{focusedWeaponScoreLabel}</small>
                                 </span>
                               </summary>
                               <article className="weapon-showcase standalone-weapon-showcase">
@@ -5434,11 +5492,19 @@ export default function Home() {
                                   aria-hidden="true"
                                 />
                                 <div>
-                                  <small>VISUAL ONLY</small>
+                                  <small>
+                                    {focusedCharacterOwned
+                                      ? "WEAPON BONUS ACTIVE"
+                                      : "LOCKED WEAPON BONUS"}
+                                  </small>
                                   <b>{focusedCharacter.weapon}</b>
                                   <p>
-                                    Unlocks with {focusedCharacter.name} and
-                                    adds no separate stats.
+                                    {focusedWeaponScoreLabel}.{" "}
+                                    {isStarterCharacter(focusedCharacter.key)
+                                      ? `Included with starter ${focusedCharacter.name}.`
+                                      : focusedCharacterOwned
+                                        ? `Unlocked together with ${focusedCharacter.name}.`
+                                        : `Extract ${focusedCharacter.name} from a box to unlock both the character and this weapon.`}
                                   </p>
                                 </div>
                               </article>
@@ -5447,7 +5513,7 @@ export default function Home() {
                               <summary className="inventory-subsection-heading">
                                 <span>
                                   <b>
-                                    UNIVERSAL RUNNER COSMETICS
+                                    UNIVERSAL CHARACTER COSMETICS
                                   </b>
                                   <small>
                                     Equip any owned look while previewing
@@ -5462,7 +5528,7 @@ export default function Home() {
                                   <div className="inventory-empty">
                                     {guest
                                       ? "Guest loadouts include all four starter characters. Sign in to build a permanent cosmetic collection."
-                                      : "No runner cosmetics collected yet. Open a box in the Shop."}
+                                      : "No character cosmetics collected yet. Open a box in the Shop."}
                                   </div>
                                 ) : (
                                   ownedPlayerCosmetics.map((item) => (
