@@ -424,8 +424,9 @@
 .inventory-kit-note{margin:0;padding:11px 14px;border-bottom:3px solid var(--ink);background:#fff3c6;font-size:9px;font-weight:800;line-height:1.5}.inventory-kit-note b{color:#a85d00}
 
 /* Signed-in player support stays visible above every main game destination. */
-.report-utility-bar{display:flex;min-height:42px;align-items:stretch;justify-content:flex-end;padding:0 4px}
+.report-utility-bar{position:sticky;z-index:500;top:8px;display:flex;min-height:42px;align-items:stretch;justify-content:center;padding:0 4px;pointer-events:none}
 .top-report-button{display:grid;grid-template-columns:34px minmax(0,1fr);align-items:center;min-width:224px;min-height:42px;padding:4px 12px;border:4px solid var(--ink);background:#ff7a22;color:white;box-shadow:5px 5px 0 var(--ink);font-family:"Courier New",monospace;text-align:left;cursor:pointer}
+.top-report-button{pointer-events:auto}
 .top-report-button:hover:not(:disabled){transform:translate(2px,2px);box-shadow:3px 3px 0 var(--ink)}
 .top-report-button:focus-visible{outline:4px solid #168bad;outline-offset:3px}
 .top-report-button>span:first-child{display:grid;width:25px;height:25px;place-items:center;border:3px solid white;border-radius:50%;font-size:17px;font-weight:1000;line-height:1}
@@ -437,4 +438,4 @@
 .game-layout.has-top-report.view-versus .game-card{height:min(738px,calc(100dvh - 192px))}
 
 @media(max-width:1050px){.game-layout.has-top-report.view-endless .game-card{height:min(628px,calc(100dvh - 270px))}}
-@media(max-width:700px){.report-utility-bar{min-height:40px;padding:0 5px}.top-report-button{width:100%;min-width:0;min-height:40px}.game-layout.has-top-report.view-endless .game-card{height:calc(100dvh - 202px)}.game-layout.has-top-report.view-versus .game-card{height:calc(100dvh - 161px);min-height:0}}
+@media(max-width:700px){.report-utility-bar{top:max(6px,env(safe-area-inset-top));min-height:40px;padding:0 5px}.top-report-button{width:min(244px,calc(100vw - 24px));min-width:0;min-height:40px}.game-layout.has-top-report.view-endless .game-card{height:calc(100dvh - 202px)}.game-layout.has-top-report.view-versus .game-card{height:calc(100dvh - 161px);min-height:0}}

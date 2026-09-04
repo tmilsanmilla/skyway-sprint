@@ -107,6 +107,52 @@ type VersusAttackKind =
   | "spike"
   | "rock";
 type PendingVersusAttack = { id: string; kind: Kind };
+const TRACK_LANES = [0, 1, 2, 3, 4] as const;
+const AMBIENT_HAZARDS: ReadonlyArray<Kind> = [
+  "log",
+  "snowflake",
+  "rock",
+  "barrel",
+  "spikes",
+];
+const MAX_HAZARD_LANES = TRACK_LANES.length - 1;
+const MAX_SAME_HAZARD_STREAK = 4;
+const isHazardKind = (kind: Kind) => kind !== "gem" && kind !== "coin";
+const appendSafeAttackWave = (
+  current: Item[],
+  hazards: readonly Kind[],
+  nextId: () => number,
+  spacing: number,
+) => {
+  if (hazards.length === 0) return current;
+  const occupiedHazardLanes = new Set(
+    current.filter((item) => isHazardKind(item.kind)).map((item) => item.lane),
+  );
+  const alreadySafeLanes = TRACK_LANES.filter(
+    (lane) => !occupiedHazardLanes.has(lane),
+  );
+  const safeLane =
+    alreadySafeLanes[Math.floor(Math.random() * alreadySafeLanes.length)] ??
+    TRACK_LANES[Math.floor(Math.random() * TRACK_LANES.length)];
+  const safeCurrent = current.filter(
+    (item) => !isHazardKind(item.kind) || item.lane !== safeLane,
+  );
+  const attackLanes = TRACK_LANES.filter((lane) => lane !== safeLane).sort(
+    () => Math.random() - 0.5,
+  );
+  return [
+    ...safeCurrent,
+    ...hazards.map((kind, index): Item => ({
+      id: nextId(),
+      lane: attackLanes[index % attackLanes.length],
+      y:
+        -10 -
+        index * spacing -
+        Math.floor(index / MAX_HAZARD_LANES) * spacing,
+      kind,
+    })),
+  ];
+};
 const AUDIO_PREFERENCES_KEY = "skyway.audio.v1";
 const DEVICE_TOKEN_KEY = "skyway.device.v1";
 const getOrCreateDeviceToken = () => {
@@ -839,6 +885,10 @@ export default function Home() {
     clockworkCooldownRemainingRef = useRef(0),
     pickpocketPassedCountRef = useRef(0),
     wildcardBuffRef = useRef<"score" | "gems" | "slow" | null>(null),
+    ambientHazardStreakRef = useRef<{ kind: Kind | null; count: number }>({
+      kind: null,
+      count: 0,
+    }),
     versusMatchRef = useRef<string | null>(null),
     versusSearchingRef = useRef(false),
     versusSearchTokenRef = useRef(0),
@@ -1277,6 +1327,7 @@ export default function Home() {
     [activeAbility.name, activeCharacter, grantInvincibility, showAbilityNotice],
   );
   const reset = useCallback(() => {
+    ambientHazardStreakRef.current = { kind: null, count: 0 };
     setLane(2);
     setItems([]);
     setScore(0);
@@ -1687,6 +1738,7 @@ export default function Home() {
 
     setLane(2);
     setItems([]);
+    ambientHazardStreakRef.current = { kind: null, count: 0 };
     resetCharacterAbilityState(restoredWave);
     setScore(restoredScore);
     setWaveProgress((restoredWave - 1) * 2250);
@@ -1770,15 +1822,14 @@ export default function Home() {
         spawnedAttackIdsRef.current.add(attack.id),
       );
       if (attacks.length > 0)
-        setItems((current) => [
-          ...current,
-          ...attacks.map((attack, index) => ({
-            id: id.current++,
-            lane: Math.floor(Math.random() * 5),
-            y: -10 - index * 9,
-            kind: attack.kind,
-          })),
-        ]);
+        setItems((current) =>
+          appendSafeAttackWave(
+            current,
+            attacks.map((attack) => attack.kind),
+            () => id.current++,
+            9,
+          ),
+        );
       if (acknowledgementIds.length > 0)
         void acknowledgeSpawnedVersusAttacks(
           matchId,
@@ -2122,23 +2173,39 @@ export default function Home() {
           ),
           gemThreshold = 1 - gemChance,
           versusGemThreshold = 1 - 0.025 * characterGemMultiplier;
+        const hazardChoices =
+          ambientHazardStreakRef.current.count >= MAX_SAME_HAZARD_STREAK
+            ? AMBIENT_HAZARDS.filter(
+                (hazard) => hazard !== ambientHazardStreakRef.current.kind,
+              )
+            : AMBIENT_HAZARDS;
+        const randomHazard = () =>
+          hazardChoices[Math.floor(Math.random() * hazardChoices.length)];
         let kind: Kind;
         if (isVersusRun && r < 0.27) kind = "coin";
         else if (isVersusRun && r > versusGemThreshold) kind = "gem";
-        else if (r < danger || isVersusRun)
-          kind = (["log", "snowflake", "rock", "barrel", "spikes"] as Kind[])[
-            Math.floor(Math.random() * 5)
-          ];
+        else if (r < danger || isVersusRun) kind = randomHazard();
         else if (r > gemThreshold) kind = "gem";
-        else
-          kind = (["log", "snowflake", "rock", "barrel", "spikes"] as Kind[])[
-            Math.floor(Math.random() * 5)
-          ];
+        else kind = randomHazard();
         setItems((v) => {
+          const hazardLanes = new Set(
+            v
+              .filter((item) => isHazardKind(item.kind))
+              .map((item) => item.lane),
+          );
+          if (isHazardKind(kind) && hazardLanes.size >= MAX_HAZARD_LANES)
+            return v;
           const blocked = new Set(v.map((x) => x.lane));
-          const lanes = [0, 1, 2, 3, 4].filter((l) => !blocked.has(l));
+          const lanes = TRACK_LANES.filter((l) => !blocked.has(l));
           if (!lanes.length) return v;
           const spawnLane = lanes[Math.floor(Math.random() * lanes.length)];
+          if (isHazardKind(kind)) {
+            const previous = ambientHazardStreakRef.current;
+            ambientHazardStreakRef.current =
+              previous.kind === kind
+                ? { kind, count: previous.count + 1 }
+                : { kind, count: 1 };
+          }
           return [...v, { id: id.current++, lane: spawnLane, y: -10, kind }];
         });
       }
@@ -2892,20 +2959,17 @@ export default function Home() {
           botBudget -= chosen.cost;
         }
         botAttackPointsRef.current = botBudget;
-        if (botAttacks.length > 0) {
-          const shuffledLanes = [0, 1, 2, 3, 4].sort(
-            () => Math.random() - 0.5,
+        if (botAttacks.length > 0)
+          setItems((current) =>
+            appendSafeAttackWave(
+              current,
+              botAttacks.map((attack) =>
+                attack === "spike" ? "spikes" : attack,
+              ),
+              () => id.current++,
+              18,
+            ),
           );
-          setItems((current) => [
-            ...current,
-            ...botAttacks.map((attack, index): Item => ({
-              id: id.current++,
-              lane: shuffledLanes[index % shuffledLanes.length],
-              y: -10 - index * 18,
-              kind: attack === "spike" ? "spikes" : attack,
-            })),
-          ]);
-        }
         setVersusResult(
           botAttacks.length > 0
             ? `TRAINING BOT SENT ${botAttacks.length} HAZARD${botAttacks.length === 1 ? "" : "S"}`
@@ -2957,15 +3021,14 @@ export default function Home() {
                 spawnedAttackIdsRef.current.add(attack.id);
                 acknowledgementIds.add(attack.id);
               });
-              setItems((current) => [
-                ...current,
-                ...attacks.map((attack, index) => ({
-                  id: id.current++,
-                  lane: Math.floor(Math.random() * 5),
-                  y: -10 - index * 9,
-                  kind: attack.kind,
-                })),
-              ]);
+              setItems((current) =>
+                appendSafeAttackWave(
+                  current,
+                  attacks.map((attack) => attack.kind),
+                  () => id.current++,
+                  9,
+                ),
+              );
             }
             if (acknowledgementIds.size > 0) {
               void acknowledgeSpawnedVersusAttacks(
