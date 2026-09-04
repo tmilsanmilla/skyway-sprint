@@ -422,3 +422,19 @@
 
 .versus-practice-divider{display:flex;align-items:center;gap:9px;margin:13px 0 9px;color:#18293b88;font:1000 8px "Courier New",monospace;letter-spacing:2px}.versus-practice-divider:before,.versus-practice-divider:after{content:"";height:2px;flex:1;background:#18293b44}.versus-practice{display:grid;gap:3px;width:100%;padding:12px;border:3px solid var(--ink);background:#ffc52f;color:var(--ink);box-shadow:4px 4px 0 var(--ink);font:inherit;cursor:pointer}.versus-practice b{font-size:11px;letter-spacing:1px}.versus-practice small{font-size:7px;font-weight:900;letter-spacing:1px}.versus-practice:disabled{opacity:.55;cursor:wait}
 .inventory-kit-note{margin:0;padding:11px 14px;border-bottom:3px solid var(--ink);background:#fff3c6;font-size:9px;font-weight:800;line-height:1.5}.inventory-kit-note b{color:#a85d00}
+
+/* Signed-in player support stays visible above every main game destination. */
+.report-utility-bar{display:flex;min-height:42px;align-items:stretch;justify-content:flex-end;padding:0 4px}
+.top-report-button{display:grid;grid-template-columns:34px minmax(0,1fr);align-items:center;min-width:224px;min-height:42px;padding:4px 12px;border:4px solid var(--ink);background:#ff7a22;color:white;box-shadow:5px 5px 0 var(--ink);font-family:"Courier New",monospace;text-align:left;cursor:pointer}
+.top-report-button:hover:not(:disabled){transform:translate(2px,2px);box-shadow:3px 3px 0 var(--ink)}
+.top-report-button:focus-visible{outline:4px solid #168bad;outline-offset:3px}
+.top-report-button>span:first-child{display:grid;width:25px;height:25px;place-items:center;border:3px solid white;border-radius:50%;font-size:17px;font-weight:1000;line-height:1}
+.top-report-button>span:last-child{display:grid;gap:1px}
+.top-report-button b{font-size:13px;font-style:italic;letter-spacing:1.5px}
+.top-report-button small{font-size:7px;font-weight:1000;letter-spacing:1px}
+.top-report-button:disabled{background:#746f67;color:#eee;cursor:not-allowed;opacity:.8;box-shadow:3px 3px 0 var(--ink)}
+.game-layout.has-top-report.view-endless .game-card{height:min(753px,calc(100dvh - 276px))}
+.game-layout.has-top-report.view-versus .game-card{height:min(738px,calc(100dvh - 192px))}
+
+@media(max-width:1050px){.game-layout.has-top-report.view-endless .game-card{height:min(628px,calc(100dvh - 270px))}}
+@media(max-width:700px){.report-utility-bar{min-height:40px;padding:0 5px}.top-report-button{width:100%;min-width:0;min-height:40px}.game-layout.has-top-report.view-endless .game-card{height:calc(100dvh - 202px)}.game-layout.has-top-report.view-versus .game-card{height:calc(100dvh - 161px);min-height:0}}

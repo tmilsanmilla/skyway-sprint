@@ -282,7 +282,7 @@ const CLASS_CHARACTERS = {
     { key: "medic_suture", name: "Suture", weapon: "Pulse Thread", rarity: "epic" },
     { key: "medic_vial", name: "Vial", weapon: "Tonic Flask", rarity: "epic" },
     { key: "medic_lifeline", name: "Lifeline", weapon: "Rescue Hook", rarity: "legendary" },
-    { key: "medic_seraph", name: "Seraph", weapon: "Halo Staff", rarity: "mythic" },
+    { key: "medic_seraph", name: "Seraph", weapon: "Halo Staff", rarity: "legendary" },
   ],
   tank: [
     { key: "tank_bulwark", name: "Bulwark", weapon: "Tower Shield", rarity: "common" },
@@ -296,7 +296,7 @@ const CLASS_CHARACTERS = {
     { key: "tank_bastion", name: "Bastion", weapon: "Fortress Shield", rarity: "epic" },
     { key: "tank_rampart", name: "Rampart", weapon: "Siege Wall", rarity: "epic" },
     { key: "tank_sentinel", name: "Sentinel", weapon: "Steel Spear", rarity: "legendary" },
-    { key: "tank_atlas", name: "Atlas", weapon: "World Maul", rarity: "mythic" },
+    { key: "tank_atlas", name: "Atlas", weapon: "World Maul", rarity: "legendary" },
   ],
   trickster: [
     { key: "trickster_smoke", name: "Smoke", weapon: "Smoke Bombs", rarity: "common" },
@@ -801,6 +801,7 @@ export default function Home() {
     invincibleUntilRef = useRef(0),
     invincibilityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     abilityNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
+    reportPreviousPausedRef = useRef(false),
     waveAnnouncementTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
       null,
     ),
@@ -943,6 +944,7 @@ export default function Home() {
     [authBusy, setAuthBusy] = useState(false),
     [authMessage, setAuthMessage] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false),
+    [reportOpen, setReportOpen] = useState(false),
     [adminOpen, setAdminOpen] = useState(false),
     [isAdmin, setIsAdmin] = useState(false),
     [adminRole, setAdminRole] = useState<string | null>(null),
@@ -3271,6 +3273,7 @@ export default function Home() {
     setScore(0);
     setWaveProgress(0);
     setSettingsOpen(false);
+    setReportOpen(false);
     setAdminOpen(false);
     setShopOpen(false);
     setInventoryOpen(false);
@@ -3339,6 +3342,17 @@ export default function Home() {
       setReportMessage("");
     }
     setReportBusy(false);
+  };
+  const openReportForm = () => {
+    reportPreviousPausedRef.current = state.current.paused;
+    setReportStatus("");
+    setPauseMenuOpen(false);
+    setPaused(true);
+    setReportOpen(true);
+  };
+  const closeReportForm = () => {
+    setReportOpen(false);
+    setPaused(reportPreviousPausedRef.current);
   };
   const saveUsername = async (e: FormEvent) => {
     e.preventDefault();
@@ -3899,7 +3913,33 @@ export default function Home() {
     );
   return (
     <main className={`game-shell mode-${mode} ${flash}`}>
-      <div className={`game-layout view-${mainView}`}>
+      <div
+        className={`game-layout view-${mainView}${!guest ? " has-top-report" : ""}`}
+      >
+        {!guest && (
+          <div className="report-utility-bar">
+            <button
+              className="top-report-button"
+              type="button"
+              aria-label={
+                isVersusRun
+                  ? "Report an issue after the current 1v1 ends"
+                  : "Report an issue"
+              }
+              aria-controls="player-report-dialog"
+              disabled={isVersusRun}
+              onClick={openReportForm}
+            >
+              <span aria-hidden="true">!</span>
+              <span>
+                <b>REPORT</b>
+                <small>
+                  {isVersusRun ? "AFTER THIS 1V1" : "SEND AN ISSUE"}
+                </small>
+              </span>
+            </button>
+          </div>
+        )}
         <section className="mode-actions" aria-label="Game modes">
           <button
             id="mode-endless-button"
@@ -4605,6 +4645,62 @@ export default function Home() {
             </>
           )}
         </section>
+        {reportOpen && !guest && (
+          <div
+            className="report-backdrop"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="player-report-title"
+          >
+            <section className="report-modal" id="player-report-dialog">
+              <button
+                className="report-close"
+                type="button"
+                onClick={closeReportForm}
+                aria-label="Close report form"
+              >
+                ×
+              </button>
+              <p>PLAYER SUPPORT</p>
+              <h2 id="player-report-title">REPORT AN ISSUE</h2>
+              <form onSubmit={submitReport}>
+                <label>
+                  WHAT HAPPENED?
+                  <select
+                    value={reportType}
+                    onChange={(event) => setReportType(event.target.value)}
+                  >
+                    <option>Bug</option>
+                    <option>Gameplay problem</option>
+                    <option>Account problem</option>
+                    <option>Suggestion</option>
+                    <option>Other</option>
+                  </select>
+                </label>
+                <label>
+                  DETAILS
+                  <textarea
+                    value={reportMessage}
+                    onChange={(event) => setReportMessage(event.target.value)}
+                    minLength={10}
+                    maxLength={1500}
+                    placeholder="Tell us what happened and what you expected…"
+                    required
+                  />
+                </label>
+                <small>{reportMessage.length}/1500</small>
+                {reportStatus && (
+                  <div className="report-status" role="status">
+                    {reportStatus}
+                  </div>
+                )}
+                <button disabled={reportBusy}>
+                  {reportBusy ? "SENDING…" : "SEND REPORT →"}
+                </button>
+              </form>
+            </section>
+          </div>
+        )}
         {(settingsOpen || usernameRequired) && !guest && (
           <div className="report-backdrop" role="dialog" aria-modal="true">
             <section className="settings-modal">
