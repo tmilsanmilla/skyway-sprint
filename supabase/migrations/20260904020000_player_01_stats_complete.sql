@@ -183,34 +183,54 @@ create temporary table canonical_character_kits(
 insert into canonical_character_kits values
   -- RUNNER: movement or score.
   ('runner_ace','Ace','common','runner',false,'Baton',.03),
+  ('runner_dash','Dash','common','runner',true,'Jet Baton',.03),
+  ('runner_stride','Stride','common','runner',true,'Pace Blades',.03),
   ('tank_glacier','Glacier','uncommon','runner',true,'Frost Shield',.04),
+  ('runner_courier','Courier','uncommon','runner',true,'Parcel Staff',.04),
+  ('runner_tempo','Tempo','uncommon','runner',true,'Rhythm Rod',.04),
   ('tank_reactor','Reactor','rare','runner',true,'Core Maul',.05),
+  ('runner_vector','Vector','rare','runner',true,'Arrow Lance',.05),
+  ('runner_blitz','Blitz','rare','runner',true,'Volt Cleats',.05),
   ('medic_halo','Halo','epic','runner',true,'Sun Staff',.06),
   ('runner_orbit','Orbit','epic','runner',true,'Ring Blades',.06),
   ('runner_relay','Relay','epic','runner',true,'Circuit Baton',.06),
+  ('runner_horizon','Horizon','epic','runner',true,'Skyline Disc',.06),
+  ('runner_velocity','Velocity','legendary','runner',true,'Turbo Spear',.07),
   ('runner_pacer','Pacer','mythic','runner',true,'Relay Rod',.08),
+  ('runner_zenith','Zenith','mythic','runner',true,'Apex Relay',.08),
   -- HEALER (internal key medic): special healing or HP.
   ('medic_patch','Patch','common','medic',false,'Med Staff',.03),
   ('medic_bloom','Bloom','common','medic',true,'Bloom Wand',.03),
   ('medic_remedy','Remedy','common','medic',true,'Tonic Bell',.03),
+  ('medic_salve','Salve','common','medic',true,'Remedy Brush',.03),
   ('medic_reserve','Reserve','uncommon','medic',true,'Field Pack',.04),
+  ('medic_sprout','Sprout','uncommon','medic',true,'Seed Scepter',.04),
   ('medic_mender','Mender','rare','medic',true,'Clock Needle',.05),
   ('medic_pulse','Pulse','rare','medic',true,'Pulse Syringe',.05),
+  ('medic_tonic','Tonic','rare','medic',true,'Vital Flask',.05),
   ('medic_suture','Suture','epic','medic',true,'Pulse Thread',.06),
+  ('medic_beacon','Beacon','epic','medic',true,'Rescue Lamp',.06),
   ('medic_lifeline','Lifeline','legendary','medic',true,'Rescue Hook',.07),
   ('medic_seraph','Seraph','legendary','medic',true,'Halo Staff',.07),
   ('tank_atlas','Atlas','legendary','medic',true,'World Maul',.07),
+  ('medic_revive','Revive','legendary','medic',true,'Phoenix Needle',.07),
+  ('medic_oracle','Oracle','mythic','medic',true,'Fate Censer',.08),
   -- TANK: less damage or more health without healer-style recovery.
   ('tank_bulwark','Bulwark','common','tank',false,'Tower Shield',.03),
   ('runner_vault','Vault','common','tank',true,'Spring Pole',.03),
+  ('tank_guard','Guard','common','tank',true,'Iron Buckler',.03),
   ('tank_brace','Brace','uncommon','tank',true,'Spike Buckler',.04),
+  ('tank_ironclad','Ironclad','uncommon','tank',true,'Plate Hammer',.04),
   ('medic_mercy','Mercy','rare','tank',true,'Injector',.05),
   ('tank_hammer','Hammer','rare','tank',true,'War Hammer',.05),
   ('tank_anchor','Anchor','rare','tank',true,'Ground Hook',.05),
+  ('tank_warden','Warden','rare','tank',true,'Lock Shield',.05),
   ('tank_bastion','Bastion','epic','tank',true,'Fortress Shield',.06),
   ('tank_rampart','Rampart','epic','tank',true,'Siege Wall',.06),
   ('trickster_jester','Jester','epic','tank',true,'Card Fan',.06),
+  ('tank_citadel','Citadel','epic','tank',true,'Rampart Axe',.06),
   ('tank_sentinel','Sentinel','legendary','tank',true,'Steel Spear',.07),
+  ('tank_colossus','Colossus','legendary','tank',true,'Titan Maul',.07),
   ('trickster_phantom','Phantom','mythic','tank',true,'Moon Scythe',.08),
   -- TRICKSTER: a special action triggers invincibility or another benefit.
   ('trickster_smoke','Smoke','common','trickster',true,'Smoke Bombs',.03),
@@ -228,12 +248,24 @@ insert into canonical_character_kits values
   ('trickster_mirage','Mirage','epic','trickster',true,'Prism Fans',.06),
   ('runner_comet','Comet','legendary','trickster',true,'Star Spear',.07),
   ('trickster_hex','Hex','legendary','trickster',true,'Void Chakram',.07),
+  ('trickster_echo','Echo','mythic','trickster',true,'Repeat Knives',.08),
   -- MISC: everything outside the four defined roles.
   ('runner_scout','Scout','common','misc',true,'Twin Blades',.03),
   ('tank_drag','Drag','common','misc',true,'Chain Hook',.03),
+  ('misc_nomad','Nomad','common','misc',true,'Trail Hook',.03),
+  ('misc_tinker','Tinker','common','misc',true,'Gear Wrench',.03),
   ('runner_ranger','Ranger','uncommon','misc',true,'Pixel Bow',.04),
+  ('misc_broker','Broker','uncommon','misc',true,'Coin Cane',.04),
+  ('misc_prospector','Prospector','uncommon','misc',true,'Gem Pick',.04),
+  ('misc_lantern','Lantern','uncommon','misc',true,'Glow Rod',.04),
   ('runner_fortune','Fortune','rare','misc',true,'Lucky Compass',.05),
-  ('trickster_wildcard','Wildcard','epic','misc',true,'Dice Fans',.06);
+  ('misc_scribe','Scribe','rare','misc',true,'Rune Quill',.05),
+  ('misc_weaver','Weaver','rare','misc',true,'Thread Blades',.05),
+  ('trickster_wildcard','Wildcard','epic','misc',true,'Dice Fans',.06),
+  ('misc_mimic','Mimic','epic','misc',true,'Copy Mask',.06),
+  ('misc_catalyst','Catalyst','epic','misc',true,'Flux Vial',.06),
+  ('misc_harvester','Harvester','legendary','misc',true,'Crescent Sickle',.07),
+  ('misc_muse','Muse','mythic','misc',true,'Dream Harp',.08);
 
 insert into public.extraction_catalog(
   item_key,display_name,item_type,rarity,character_class,extractable,active,
@@ -390,22 +422,18 @@ where catalog.item_key=loadout.character_key
 
 alter table public.player_loadouts
   add constraint player_loadouts_class_key_check
-    check(class_key in ('runner','medic','tank','trickster','misc')) not valid,
-  add constraint player_loadouts_character_key_check check(character_key in (
-    'runner_ace','runner_scout','runner_vault','runner_drift',
-    'runner_spark','runner_ranger','runner_flare','runner_fortune',
-    'runner_orbit','runner_relay','runner_comet','runner_pacer',
-    'medic_patch','medic_remedy','medic_bloom','medic_reserve',
-    'medic_mercy','medic_mender','medic_pulse','medic_suture',
-    'medic_vial','medic_halo','medic_lifeline','medic_seraph',
-    'tank_bulwark','tank_drag','tank_glacier','tank_brace','tank_plow',
-    'tank_hammer','tank_anchor','tank_reactor','tank_rampart',
-    'tank_bastion','tank_sentinel','tank_atlas',
-    'trickster_smoke','trickster_rogue','trickster_flicker',
-    'trickster_clockwork','trickster_switch','trickster_pickpocket',
-    'trickster_gambit','trickster_jester','trickster_mirage',
-    'trickster_wildcard','trickster_hex','trickster_phantom'
-  )) not valid;
+    check(class_key in ('runner','medic','tank','trickster','misc')) not valid;
+do $$
+declare v_character_keys text;
+begin
+  select string_agg(quote_literal(item_key),',' order by item_key)
+  into v_character_keys
+  from canonical_character_kits;
+  execute 'alter table public.player_loadouts ' ||
+    'add constraint player_loadouts_character_key_check ' ||
+    'check(character_key in (' || v_character_keys || ')) not valid';
+end
+$$;
 alter table public.player_loadouts validate constraint player_loadouts_class_key_check;
 alter table public.player_loadouts validate constraint player_loadouts_character_key_check;
 
@@ -570,7 +598,7 @@ comment on column public.extraction_catalog.weapon_score_bonus is
 -- Fail atomically if the canonical install is incomplete.
 do $$
 begin
-  if (select count(*) from canonical_character_kits)<>48
+  if (select count(*) from canonical_character_kits)<>80
      or (select count(*) from canonical_visual_cosmetics)<>39 then
     raise exception 'Canonical Player 01 catalog definition is incomplete';
   end if;
@@ -581,12 +609,39 @@ begin
       and catalog.character_class=kit.character_class
       and catalog.weapon_name=kit.weapon_name
       and catalog.weapon_score_bonus=kit.weapon_score_bonus
-  )<>48 then raise exception 'Not all 48 character kits were installed'; end if;
+  )<>80 then raise exception 'Not all 80 character kits were installed'; end if;
   if (
     select count(*) from canonical_character_kits kit
     join public.extraction_catalog catalog using(item_key)
     where catalog.extractable
-  )<>44 then raise exception 'Expected exactly 44 extractable character kits'; end if;
+  )<>76 then raise exception 'Expected exactly 76 extractable character kits'; end if;
+  if (select count(*) from public.extraction_catalog
+      where item_type='character' and active)<>80
+     or (select count(*) from public.extraction_catalog
+         where item_type='character' and active and extractable)<>76 then
+    raise exception 'Live catalog must contain 80 active and 76 extractable character kits';
+  end if;
+  if exists(
+    select 1
+    from (
+      select character_class,count(*) as kit_count
+      from canonical_character_kits
+      group by character_class
+    ) category_counts
+    where character_class not in ('runner','medic','tank','trickster','misc')
+       or kit_count<>16
+  ) then raise exception 'Expected exactly 16 character kits in every category'; end if;
+  if exists(
+    select 1
+    from (
+      select character_class,count(*) as kit_count
+      from public.extraction_catalog
+      where item_type='character' and active
+      group by character_class
+    ) category_counts
+    where character_class not in ('runner','medic','tank','trickster','misc')
+       or kit_count<>16
+  ) then raise exception 'Live catalog must contain 16 active kits in every category'; end if;
   if exists(
     select 1 from public.player_loadouts loadout
     left join public.extraction_catalog catalog

@@ -107,6 +107,32 @@ type VersusAttackKind =
   | "spike"
   | "rock";
 type PendingVersusAttack = { id: string; kind: Kind };
+type VersusStatePayload = {
+  match?: {
+    status?: string;
+    intermission_ends_at?: string | null;
+    winner_user_id?: string | null;
+  };
+  self?: {
+    obstacle_points?: number;
+    hearts?: number;
+    wave?: number;
+    score?: number;
+    status?: string;
+    character_key?: string | null;
+    character_class?: string | null;
+    max_hearts?: number | null;
+  };
+  opponent?: {
+    username?: string;
+    hearts?: number;
+    status?: string;
+  };
+  pending_attacks?: Array<{
+    id?: string;
+    obstacle_type?: string;
+  }>;
+};
 const TRACK_LANES = [0, 1, 2, 3, 4] as const;
 const AMBIENT_HAZARDS: ReadonlyArray<Kind> = [
   "log",
@@ -232,6 +258,48 @@ const VERSUS_ATTACKS: ReadonlyArray<{
   },
 ];
 const VERSUS_INTERMISSION_SECONDS = 10;
+const VERSUS_MAX_HEARTS = 6;
+const createVersusPickupNonce = () =>
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+const isTransportLikeError = (message: string) => {
+  const normalized = message.toLowerCase();
+  return [
+    "network",
+    "fetch",
+    "timeout",
+    "timed out",
+    "connection",
+    "socket",
+    "load failed",
+  ].some((fragment) => normalized.includes(fragment));
+};
+const isCoinSetupError = (message: string) => {
+  const normalized = message.toLowerCase();
+  return [
+    "schema cache",
+    "could not find the function",
+    "function public.award_1v1_points",
+    "valid coin pickup id",
+    "coins must be awarded",
+    "invalid coin",
+  ].some((fragment) => normalized.includes(fragment));
+};
+const isCoinMatchStateError = (message: string) => {
+  const normalized = message.toLowerCase();
+  return [
+    "match not found",
+    "no longer active",
+    "active 1v1 play",
+    "sign in required",
+  ].some((fragment) => normalized.includes(fragment));
+};
+const normalizeVersusHearts = (value: number) => {
+  const finiteValue = Number.isFinite(value) ? value : 0;
+  return Math.min(
+    VERSUS_MAX_HEARTS,
+    Math.max(0, Math.round(finiteValue * 2) / 2),
+  );
+};
 const normalizeVersusObstacle = (value: unknown): Kind | null => {
   if (value === "spike" || value === "spikes") return "spikes";
   if (
@@ -304,36 +372,56 @@ type VersusPhase =
 const CLASS_CHARACTERS = {
   runner: [
     { key: "runner_ace", name: "Ace", weapon: "Baton", rarity: "common" },
+    { key: "runner_dash", name: "Dash", weapon: "Jet Baton", rarity: "common" },
+    { key: "runner_stride", name: "Stride", weapon: "Pace Blades", rarity: "common" },
     { key: "tank_glacier", name: "Glacier", weapon: "Frost Shield", rarity: "uncommon" },
+    { key: "runner_courier", name: "Courier", weapon: "Parcel Staff", rarity: "uncommon" },
+    { key: "runner_tempo", name: "Tempo", weapon: "Rhythm Rod", rarity: "uncommon" },
     { key: "tank_reactor", name: "Reactor", weapon: "Core Maul", rarity: "rare" },
+    { key: "runner_vector", name: "Vector", weapon: "Arrow Lance", rarity: "rare" },
+    { key: "runner_blitz", name: "Blitz", weapon: "Volt Cleats", rarity: "rare" },
     { key: "medic_halo", name: "Halo", weapon: "Sun Staff", rarity: "epic" },
     { key: "runner_orbit", name: "Orbit", weapon: "Ring Blades", rarity: "epic" },
     { key: "runner_relay", name: "Relay", weapon: "Circuit Baton", rarity: "epic" },
+    { key: "runner_horizon", name: "Horizon", weapon: "Skyline Disc", rarity: "epic" },
+    { key: "runner_velocity", name: "Velocity", weapon: "Turbo Spear", rarity: "legendary" },
     { key: "runner_pacer", name: "Pacer", weapon: "Relay Rod", rarity: "mythic" },
+    { key: "runner_zenith", name: "Zenith", weapon: "Apex Relay", rarity: "mythic" },
   ],
   medic: [
     { key: "medic_patch", name: "Patch", weapon: "Med Staff", rarity: "common" },
     { key: "medic_bloom", name: "Bloom", weapon: "Bloom Wand", rarity: "common" },
     { key: "medic_remedy", name: "Remedy", weapon: "Tonic Bell", rarity: "common" },
+    { key: "medic_salve", name: "Salve", weapon: "Remedy Brush", rarity: "common" },
     { key: "medic_reserve", name: "Reserve", weapon: "Field Pack", rarity: "uncommon" },
+    { key: "medic_sprout", name: "Sprout", weapon: "Seed Scepter", rarity: "uncommon" },
     { key: "medic_mender", name: "Mender", weapon: "Clock Needle", rarity: "rare" },
     { key: "medic_pulse", name: "Pulse", weapon: "Pulse Syringe", rarity: "rare" },
+    { key: "medic_tonic", name: "Tonic", weapon: "Vital Flask", rarity: "rare" },
     { key: "medic_suture", name: "Suture", weapon: "Pulse Thread", rarity: "epic" },
+    { key: "medic_beacon", name: "Beacon", weapon: "Rescue Lamp", rarity: "epic" },
     { key: "medic_lifeline", name: "Lifeline", weapon: "Rescue Hook", rarity: "legendary" },
     { key: "medic_seraph", name: "Seraph", weapon: "Halo Staff", rarity: "legendary" },
     { key: "tank_atlas", name: "Atlas", weapon: "World Maul", rarity: "legendary" },
+    { key: "medic_revive", name: "Revive", weapon: "Phoenix Needle", rarity: "legendary" },
+    { key: "medic_oracle", name: "Oracle", weapon: "Fate Censer", rarity: "mythic" },
   ],
   tank: [
     { key: "tank_bulwark", name: "Bulwark", weapon: "Tower Shield", rarity: "common" },
     { key: "runner_vault", name: "Vault", weapon: "Spring Pole", rarity: "common" },
+    { key: "tank_guard", name: "Guard", weapon: "Iron Buckler", rarity: "common" },
     { key: "tank_brace", name: "Brace", weapon: "Spike Buckler", rarity: "uncommon" },
+    { key: "tank_ironclad", name: "Ironclad", weapon: "Plate Hammer", rarity: "uncommon" },
     { key: "medic_mercy", name: "Mercy", weapon: "Injector", rarity: "rare" },
     { key: "tank_hammer", name: "Hammer", weapon: "War Hammer", rarity: "rare" },
     { key: "tank_anchor", name: "Anchor", weapon: "Ground Hook", rarity: "rare" },
+    { key: "tank_warden", name: "Warden", weapon: "Lock Shield", rarity: "rare" },
     { key: "tank_bastion", name: "Bastion", weapon: "Fortress Shield", rarity: "epic" },
     { key: "tank_rampart", name: "Rampart", weapon: "Siege Wall", rarity: "epic" },
     { key: "trickster_jester", name: "Jester", weapon: "Card Fan", rarity: "epic" },
+    { key: "tank_citadel", name: "Citadel", weapon: "Rampart Axe", rarity: "epic" },
     { key: "tank_sentinel", name: "Sentinel", weapon: "Steel Spear", rarity: "legendary" },
+    { key: "tank_colossus", name: "Colossus", weapon: "Titan Maul", rarity: "legendary" },
     { key: "trickster_phantom", name: "Phantom", weapon: "Moon Scythe", rarity: "mythic" },
   ],
   trickster: [
@@ -352,13 +440,25 @@ const CLASS_CHARACTERS = {
     { key: "trickster_mirage", name: "Mirage", weapon: "Prism Fans", rarity: "epic" },
     { key: "runner_comet", name: "Comet", weapon: "Star Spear", rarity: "legendary" },
     { key: "trickster_hex", name: "Hex", weapon: "Void Chakram", rarity: "legendary" },
+    { key: "trickster_echo", name: "Echo", weapon: "Repeat Knives", rarity: "mythic" },
   ],
   misc: [
     { key: "runner_scout", name: "Scout", weapon: "Twin Blades", rarity: "common" },
     { key: "tank_drag", name: "Drag", weapon: "Chain Hook", rarity: "common" },
+    { key: "misc_nomad", name: "Nomad", weapon: "Trail Hook", rarity: "common" },
+    { key: "misc_tinker", name: "Tinker", weapon: "Gear Wrench", rarity: "common" },
     { key: "runner_ranger", name: "Ranger", weapon: "Pixel Bow", rarity: "uncommon" },
+    { key: "misc_broker", name: "Broker", weapon: "Coin Cane", rarity: "uncommon" },
+    { key: "misc_prospector", name: "Prospector", weapon: "Gem Pick", rarity: "uncommon" },
+    { key: "misc_lantern", name: "Lantern", weapon: "Glow Rod", rarity: "uncommon" },
     { key: "runner_fortune", name: "Fortune", weapon: "Lucky Compass", rarity: "rare" },
+    { key: "misc_scribe", name: "Scribe", weapon: "Rune Quill", rarity: "rare" },
+    { key: "misc_weaver", name: "Weaver", weapon: "Thread Blades", rarity: "rare" },
     { key: "trickster_wildcard", name: "Wildcard", weapon: "Dice Fans", rarity: "epic" },
+    { key: "misc_mimic", name: "Mimic", weapon: "Copy Mask", rarity: "epic" },
+    { key: "misc_catalyst", name: "Catalyst", weapon: "Flux Vial", rarity: "epic" },
+    { key: "misc_harvester", name: "Harvester", weapon: "Crescent Sickle", rarity: "legendary" },
+    { key: "misc_muse", name: "Muse", weapon: "Dream Harp", rarity: "mythic" },
   ],
 } as const satisfies Record<
   string,
@@ -382,6 +482,42 @@ const CHARACTER_ABILITIES = {
   runner_ace: {
     name: "MOMENTUM",
     description: "Can earn 10% more score.",
+  },
+  runner_dash: {
+    name: "JET STEP",
+    description: "Can move 6% faster and earn 6% more distance score.",
+  },
+  runner_stride: {
+    name: "CENTER STRIDE",
+    description: "Can earn 12% more distance score while in the middle three lanes.",
+  },
+  runner_courier: {
+    name: "SPECIAL DELIVERY",
+    description: "Can earn 25% more distance score for 4 seconds after collecting a gem or coin.",
+  },
+  runner_tempo: {
+    name: "EVEN TEMPO",
+    description: "Can earn 18% more distance score during every even-numbered wave.",
+  },
+  runner_vector: {
+    name: "EDGE VECTOR",
+    description: "Can earn 25% more distance score while in either outside lane.",
+  },
+  runner_blitz: {
+    name: "BLITZ PACE",
+    description: "Can move 12% faster and earn 12% more distance score.",
+  },
+  runner_horizon: {
+    name: "FAR HORIZON",
+    description: "Can earn 30% more distance score from wave 10 onward.",
+  },
+  runner_velocity: {
+    name: "FULL VELOCITY",
+    description: "Can move 20% faster and earn 20% more distance score.",
+  },
+  runner_zenith: {
+    name: "ZENITH CLIMB",
+    description: "Can add 2% distance score per completed wave, up to 60%.",
   },
   runner_scout: {
     name: "QUICKSTEP",
@@ -438,6 +574,30 @@ const CHARACTER_ABILITIES = {
     name: "FIELD DRESSING",
     description: "Can heal 1.5 HP after each wave and reach 5 HP.",
   },
+  medic_salve: {
+    name: "DEEP SALVE",
+    description: "Can heal 1.5 HP after a wave when at 2 HP or less.",
+  },
+  medic_sprout: {
+    name: "GROWTH CYCLE",
+    description: "Can heal 0.5 HP with every second gem collected.",
+  },
+  medic_tonic: {
+    name: "FIRST TONIC",
+    description: "Can heal 0.5 HP from the first gem or coin collected each wave.",
+  },
+  medic_beacon: {
+    name: "BEACON HEART",
+    description: "Can reach 5.5 HP.",
+  },
+  medic_revive: {
+    name: "PHOENIX REVIVE",
+    description: "Can survive one lethal hit per run with 0.5 HP.",
+  },
+  medic_oracle: {
+    name: "THIRD OMEN",
+    description: "Can reach 6 HP and heal 2 HP after every third wave instead of 1 HP.",
+  },
   medic_bloom: {
     name: "HEALING BLOOM",
     description: "Can heal 0.5 HP with the first gem collected each wave.",
@@ -492,6 +652,26 @@ const CHARACTER_ABILITIES = {
     description:
       "Can reduce the first hit worth at least 1 HP by 0.5 HP once each wave.",
   },
+  tank_guard: {
+    name: "EXTRA PLATE",
+    description: "Can reach 4.5 HP.",
+  },
+  tank_ironclad: {
+    name: "IRON SHELL",
+    description: "Can reduce log damage to 0.5 HP.",
+  },
+  tank_warden: {
+    name: "SPIKE LOCK",
+    description: "Can ignore the first spike hit each wave.",
+  },
+  tank_citadel: {
+    name: "EVEN WALL",
+    description: "Can ignore the first damaging hit during every even-numbered wave.",
+  },
+  tank_colossus: {
+    name: "COLOSSUS FRAME",
+    description: "Can reach 5.5 HP and reduce rock damage to 1.5 HP.",
+  },
   tank_glacier: {
     name: "FROST ARMOR",
     description:
@@ -545,6 +725,10 @@ const CHARACTER_ABILITIES = {
     description:
       "Can gain 0.45 seconds of invincibility by grazing an adjacent hazard. Cooldown: 1.25 seconds.",
   },
+  trickster_echo: {
+    name: "ECHO GRAZE",
+    description: "Can gain 0.65 seconds of invincibility and 40 score by grazing an adjacent hazard. Cooldown: 2 seconds.",
+  },
   trickster_flicker: {
     name: "FIRST FLICKER",
     description:
@@ -597,12 +781,99 @@ const CHARACTER_ABILITIES = {
     description:
       "Can draw one wave-long bonus: 15% more score, 50% more gem spawns, or 15% slower hazards.",
   },
+  misc_nomad: {
+    name: "OPEN ROAD",
+    description: "Can make every hazard move 7% slower.",
+  },
+  misc_tinker: {
+    name: "SPIKE TIMER",
+    description: "Can make spikes move 25% slower.",
+  },
+  misc_broker: {
+    name: "BETTER MARKET",
+    description: "Can make gems and 1v1 coins appear 25% more often.",
+  },
+  misc_prospector: {
+    name: "GEM SURVEY",
+    description: "Can make gems appear 60% more often.",
+  },
+  misc_lantern: {
+    name: "DANGER LIGHT",
+    description: "Can make rocks and spikes move 15% slower.",
+  },
+  misc_scribe: {
+    name: "THREE-RUNE RULE",
+    description: "Can limit consecutive spawns of the same hazard to 3 instead of 4.",
+  },
+  misc_weaver: {
+    name: "THAWING THREAD",
+    description: "Can make snowflakes move 35% slower.",
+  },
+  misc_mimic: {
+    name: "COPIED CYCLE",
+    description: "Can cycle each wave between hazards 10% slower, gems 50% more often, and pickups 25% slower.",
+  },
+  misc_catalyst: {
+    name: "FLUX FIELD",
+    description: "Can make gems and coins move 25% slower.",
+  },
+  misc_harvester: {
+    name: "CAREFUL HARVEST",
+    description: "Can make gems and coins move 35% slower.",
+  },
+  misc_muse: {
+    name: "DREAM CONTROL",
+    description: "Can make every hazard move 12% slower and limit consecutive matching hazards to 2.",
+  },
 } as const satisfies Record<
   RosterCharacterKey,
   { name: string; description: string }
 >;
 type CharacterKey = RosterCharacterKey;
 const CHARACTER_ROSTER = Object.values(CLASS_CHARACTERS).flat();
+const getValidatedVersusCharacter = (
+  characterValue: unknown,
+  classValue: unknown,
+) => {
+  const characterKey =
+    typeof characterValue === "string" &&
+    Object.prototype.hasOwnProperty.call(CHARACTER_ABILITIES, characterValue)
+      ? (characterValue as CharacterKey)
+      : "runner_ace";
+  const catalogClass = getCharacterClassKey(characterKey);
+  const requestedClass =
+    typeof classValue === "string" &&
+    Object.prototype.hasOwnProperty.call(CLASS_CHARACTERS, classValue)
+      ? (classValue as CharacterClassKey)
+      : null;
+  const characterClass =
+    requestedClass &&
+    CLASS_CHARACTERS[requestedClass].some(
+      (character) => character.key === characterKey,
+    )
+      ? requestedClass
+      : catalogClass;
+  return { characterKey, characterClass };
+};
+const getCharacterMaxHearts = (
+  characterKey: string,
+  characterClass: string,
+) =>
+  characterKey === "medic_oracle" || characterKey === "tank_atlas"
+    ? 6
+    : characterKey === "medic_seraph" ||
+        characterKey === "medic_beacon" ||
+        characterKey === "tank_colossus"
+      ? 5.5
+      : characterKey === "tank_guard"
+        ? 4.5
+        : characterKey === "tank_hammer" || characterClass === "medic"
+          ? 5
+          : characterClass === "tank"
+            ? 4
+            : characterClass === "trickster"
+              ? 2
+              : 3;
 const WEAPON_SCORE_BONUS_BY_RARITY: Readonly<Record<Rarity, number>> = {
   common: 0.03,
   uncommon: 0.04,
@@ -858,6 +1129,7 @@ export default function Home() {
     highScoreRef = useRef(0),
     scoreCarryRef = useRef(0),
     pacerRushRemainingRef = useRef(0),
+    courierBoostRemainingRef = useRef(0),
     driftBoostRemainingRef = useRef(0),
     sparkBoostRemainingRef = useRef(0),
     flareDamageWaveRef = useRef(0),
@@ -877,17 +1149,21 @@ export default function Home() {
     rogueGrazedItemIdsRef = useRef<Set<number>>(new Set()),
     bloomGemWaveRef = useRef(0),
     pulseGemCountRef = useRef(0),
+    sproutGemCountRef = useRef(0),
+    tonicCollectibleWaveRef = useRef(0),
     remedySnowflakeWaveRef = useRef(0),
     reserveHealStoredRef = useRef(false),
     menderChargeRemainingRef = useRef(12000),
     menderHealedWaveRef = useRef(0),
     lifelineUsedRef = useRef(false),
+    reviveUsedRef = useRef(false),
     rampartCollisionCountRef = useRef(0),
     flickerShieldWaveRef = useRef(0),
     switchLastDirectionRef = useRef(0),
     switchShieldCooldownUntilRef = useRef(0),
     gambitBoostRemainingRef = useRef(0),
     gambitCooldownUntilRef = useRef(0),
+    echoGrazeCooldownUntilRef = useRef(0),
     mirageShieldCooldownUntilRef = useRef(0),
     hexMoveCountRef = useRef(0),
     turnLockedRef = useRef(false),
@@ -897,6 +1173,8 @@ export default function Home() {
     frozenUntilRef = useRef(0),
     firstGuardWaveRef = useRef(0),
     hammerBreakWaveRef = useRef(0),
+    wardenBlockWaveRef = useRef(0),
+    citadelBlockWaveRef = useRef(0),
     bastionChargeRemainingRef = useRef(6000),
     bastionArmorChargedRef = useRef(false),
     sentinelLastStandUsedRef = useRef(false),
@@ -919,8 +1197,23 @@ export default function Home() {
     realtimeRef = useRef<ReturnType<typeof supabase.channel> | null>(null),
     incomingAttacksRef = useRef<PendingVersusAttack[]>([]),
     spawnedAttackIdsRef = useRef<Set<string>>(new Set()),
+    processedPickupIdsRef = useRef<Set<number>>(new Set()),
+    versusPickupNonceRef = useRef(createVersusPickupNonce()),
     versusFinishedRef = useRef(false),
     versusPointsRef = useRef(0),
+    versusCoinAwardQueueRef = useRef<Promise<void>>(Promise.resolve()),
+    versusStateSyncQueueRef = useRef<Promise<void>>(Promise.resolve()),
+    versusScoreSyncPendingRef = useRef(false),
+    versusTransitionBusyRef = useRef(false),
+    versusStateSyncIntentRef = useRef(0),
+    versusHydrationIntentRef = useRef(0),
+    versusRunHydratedRef = useRef(false),
+    hydrateVersusStateRef = useRef<
+      ((matchId: string, preserveRunState?: boolean) => Promise<boolean>) | null
+    >(null),
+    versusSyncRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+      null,
+    ),
     extractBusyRef = useRef(false),
     extractFeedbackRef = useRef<HTMLDivElement | null>(null),
     botAttackPointsRef = useRef(0),
@@ -1056,8 +1349,133 @@ export default function Home() {
     [versusLeaving, setVersusLeaving] = useState(false),
     [versusLeaders, setVersusLeaders] = useState<VersusLeader[]>([]),
     [versusLeadersLoading, setVersusLeadersLoading] = useState(false),
-    [versusLeadersError, setVersusLeadersError] = useState("");
+    [versusLeadersError, setVersusLeadersError] = useState(""),
+    [versusServerMaxHearts, setVersusServerMaxHearts] = useState<number | null>(
+      null,
+    ),
+    [versusSyncRetry, setVersusSyncRetry] = useState(0);
   versusPointsRef.current = versusPoints;
+  const applyAuthoritativeVersusPoints = useCallback((value: unknown) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return;
+    const points = Math.max(0, Math.floor(parsed));
+    versusPointsRef.current = points;
+    setVersusPoints(points);
+  }, []);
+  const enqueueVersusStateSync = useCallback(
+    (task: () => Promise<void>) => {
+      const queued = versusStateSyncQueueRef.current.then(task, task);
+      versusStateSyncQueueRef.current = queued.catch(() => undefined);
+      return queued;
+    },
+    [],
+  );
+  const resetVersusClientSync = useCallback(() => {
+    processedPickupIdsRef.current.clear();
+    versusPickupNonceRef.current = createVersusPickupNonce();
+    versusCoinAwardQueueRef.current = Promise.resolve();
+    versusStateSyncQueueRef.current = Promise.resolve();
+    versusScoreSyncPendingRef.current = false;
+    versusTransitionBusyRef.current = false;
+    versusStateSyncIntentRef.current += 1;
+    versusHydrationIntentRef.current += 1;
+    versusRunHydratedRef.current = false;
+    setVersusServerMaxHearts(null);
+    if (versusSyncRetryTimerRef.current) {
+      clearTimeout(versusSyncRetryTimerRef.current);
+      versusSyncRetryTimerRef.current = null;
+    }
+  }, []);
+  const reconcileVersusPoints = useCallback(
+    async (matchId: string) => {
+      try {
+        const { data, error } = await supabase.rpc("get_1v1_state", {
+          p_match_id: matchId,
+        });
+        if (error || versusMatchRef.current !== matchId) return false;
+        applyAuthoritativeVersusPoints(data?.self?.obstacle_points);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [applyAuthoritativeVersusPoints],
+  );
+  const queueOnlineCoinAward = useCallback(
+    (matchId: string, pickupId: number) => {
+      const pickupClaimId = `coin:${versusPickupNonceRef.current}:${pickupId}`;
+      const awardCoin = async () => {
+        let attempt = 0;
+        while (
+          versusMatchRef.current === matchId &&
+          !versusFinishedRef.current
+        ) {
+          let lastError = "";
+          try {
+            const { data, error } = await supabase.rpc("award_1v1_points", {
+              p_match_id: matchId,
+              p_source: "coin",
+              p_amount: 1,
+              p_pickup_id: pickupClaimId,
+            });
+            if (versusMatchRef.current !== matchId) return;
+            if (!error) {
+              applyAuthoritativeVersusPoints(data?.obstacle_points);
+              return;
+            }
+            lastError = error.message;
+          } catch {
+            lastError = "connection interrupted";
+          }
+          if (!isTransportLikeError(lastError)) {
+            if (
+              isCoinSetupError(lastError) ||
+              !isCoinMatchStateError(lastError)
+            ) {
+              setVersusResult("1V1 COIN DATABASE SETUP IS MISSING");
+              return;
+            }
+            const restored = await hydrateVersusStateRef.current?.(
+              matchId,
+              true,
+            );
+            if (!restored && versusMatchRef.current === matchId) {
+              versusFinishedRef.current = true;
+              setVersusPhase("finished");
+              setVersusIntermissionReady(false);
+              setRunning(false);
+              setPaused(false);
+              setOver(true);
+              setVersusResult(
+                lastError.toLowerCase().includes("sign in")
+                  ? "SIGN IN AGAIN TO CONTINUE 1V1"
+                  : "THIS 1V1 MATCH IS NO LONGER ACTIVE",
+              );
+            }
+            return;
+          }
+          attempt += 1;
+          if (attempt % 3 === 0) {
+            await reconcileVersusPoints(matchId);
+            if (versusMatchRef.current !== matchId) return;
+            setVersusResult(
+              `COIN SAVE DELAYED · RETRYING · ${lastError.toUpperCase()}`,
+            );
+          }
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.min(2000, 200 * 2 ** attempt)),
+          );
+        }
+      };
+      const queued = enqueueVersusStateSync(awardCoin);
+      versusCoinAwardQueueRef.current = queued.catch(() => undefined);
+    },
+    [
+      applyAuthoritativeVersusPoints,
+      enqueueVersusStateSync,
+      reconcileVersusPoints,
+    ],
+  );
   const isOnlineVersus = playScope === "versus";
   const isBotPractice = playScope === "practice";
   const isVersusRun = playScope !== "single";
@@ -1086,16 +1504,14 @@ export default function Home() {
     activeClass === "tank" ? 4 : activeClass === "trickster" ? 2 : 3;
   const startingHearts =
     mode === "impossible" || mode === "hardcore" ? 1 : baseHearts;
-  const maxHearts =
+  const localMaxHearts =
     mode === "impossible" || mode === "hardcore"
       ? 1
-      : activeCharacter === "medic_seraph"
-        ? 5.5
-        : activeCharacter === "tank_atlas"
-          ? 6
-          : activeCharacter === "tank_hammer" || activeClass === "medic"
-            ? 5
-            : baseHearts;
+      : getCharacterMaxHearts(activeCharacter, activeClass);
+  const maxHearts =
+    isOnlineVersus && versusServerMaxHearts !== null
+      ? versusServerMaxHearts
+      : localMaxHearts;
   const modeMultiplier =
     mode === "impossible" ? 3 : mode === "hardcore" ? 1.75 : 1;
   const classScoreMultiplier =
@@ -1268,6 +1684,7 @@ export default function Home() {
       phantomPhaseWaveRef.current = restoring ? restoredWave : 0;
       scoreCarryRef.current = 0;
       pacerRushRemainingRef.current = 0;
+      courierBoostRemainingRef.current = 0;
       driftBoostRemainingRef.current = 0;
       sparkBoostRemainingRef.current = 0;
       flareDamageWaveRef.current = restoring ? restoredWave : 0;
@@ -1280,19 +1697,25 @@ export default function Home() {
       rogueGrazedItemIdsRef.current.clear();
       bloomGemWaveRef.current = restoring ? restoredWave : 0;
       pulseGemCountRef.current = 0;
+      sproutGemCountRef.current = 0;
+      tonicCollectibleWaveRef.current = restoring ? restoredWave : 0;
       remedySnowflakeWaveRef.current = restoring ? restoredWave : 0;
       reserveHealStoredRef.current = false;
       menderChargeRemainingRef.current = 12000;
       menderHealedWaveRef.current = restoring ? restoredWave : 0;
       lifelineUsedRef.current = restoring;
+      reviveUsedRef.current = restoring;
       rampartCollisionCountRef.current = 0;
       flickerShieldWaveRef.current = restoring ? restoredWave : 0;
       switchLastDirectionRef.current = 0;
       switchShieldCooldownUntilRef.current = restoring ? now + 2000 : 0;
       gambitBoostRemainingRef.current = 0;
       gambitCooldownUntilRef.current = restoring ? now + 2500 : 0;
+      echoGrazeCooldownUntilRef.current = restoring ? now + 2000 : 0;
       mirageShieldCooldownUntilRef.current = restoring ? now + 2500 : 0;
       hexMoveCountRef.current = 0;
+      wardenBlockWaveRef.current = restoring ? restoredWave : 0;
+      citadelBlockWaveRef.current = restoring ? restoredWave : 0;
       bastionChargeRemainingRef.current = 6000;
       bastionArmorChargedRef.current = false;
       smokeSlowRemainingRef.current = 0;
@@ -1305,7 +1728,15 @@ export default function Home() {
     [],
   );
   const announceWave = useCallback(
-    (number: number, applyCharacterEffects = true) => {
+    (
+      number: number,
+      applyCharacterEffects = true,
+      characterOverride?: string,
+    ) => {
+      const announcedCharacter = characterOverride ?? activeCharacter;
+      const announcedAbility =
+        CHARACTER_ABILITIES[announcedCharacter as CharacterKey] ??
+        CHARACTER_ABILITIES.runner_ace;
       void audioEngine.playSfx("wave");
       setWaveMessage(`WAVE ${number}`);
       setWavePause(true);
@@ -1315,21 +1746,24 @@ export default function Home() {
         setWaveMessage("");
         setWavePause(false);
         if (applyCharacterEffects && number === 1)
-          showAbilityNotice(`${activeAbility.name} · ACTIVE`, 1400);
-        if (applyCharacterEffects && activeCharacter === "runner_ace")
+          showAbilityNotice(`${announcedAbility.name} · ACTIVE`, 1400);
+        if (applyCharacterEffects && announcedCharacter === "runner_ace")
           showAbilityNotice("MOMENTUM · SCORE ×1.10", 1400);
-        if (applyCharacterEffects && activeCharacter === "runner_pacer") {
+        if (applyCharacterEffects && announcedCharacter === "runner_pacer") {
           pacerRushRemainingRef.current = 15000;
           showAbilityNotice(
             "WAVE RUSH · SPEED ×3 + SCORE ×5 = ×15 FOR 15 SECONDS",
             1800,
           );
         }
-        if (applyCharacterEffects && activeCharacter === "trickster_jester") {
+        if (
+          applyCharacterEffects &&
+          announcedCharacter === "trickster_jester"
+        ) {
           grantInvincibility(2500);
           showAbilityNotice("ENCORE · 2.5 SECOND SHIELD", 1400);
         }
-        if (activeCharacter === "trickster_wildcard") {
+        if (announcedCharacter === "trickster_wildcard") {
           const matchId = versusMatchRef.current;
           const seed = `${matchId ?? "solo"}:${userIdRef.current ?? "guest"}:${number}`;
           let hash = 0;
@@ -1353,15 +1787,24 @@ export default function Home() {
         waveAnnouncementTimerRef.current = null;
       }, 1250);
     },
-    [activeAbility.name, activeCharacter, grantInvincibility, showAbilityNotice],
+    [activeCharacter, grantInvincibility, showAbilityNotice],
   );
-  const reset = useCallback(() => {
+  const reset = useCallback((forceNormalMode = false) => {
+    const runStartingHearts = forceNormalMode
+      ? playerClass === "tank"
+        ? 4
+        : playerClass === "trickster"
+          ? 2
+          : 3
+      : startingHearts;
+    const runCharacter = forceNormalMode ? selectedCharacter : activeCharacter;
+    resetVersusClientSync();
     ambientHazardStreakRef.current = { kind: null, count: 0 };
     setLane(2);
     setItems([]);
     setScore(0);
     setWaveProgress(0);
-    setHearts(startingHearts);
+    setHearts(runStartingHearts);
     setWave(1);
     setOver(false);
     setPaused(false);
@@ -1394,15 +1837,20 @@ export default function Home() {
     setRunning(true);
     last.current = 0;
     void audioEngine.start(soundtrack);
-    announceWave(1);
+    announceWave(1, true, runCharacter);
   }, [
+    activeCharacter,
     announceWave,
     clearFreezeEffect,
+    playerClass,
     resetCharacterAbilityState,
+    resetVersusClientSync,
+    selectedCharacter,
     soundtrack,
     startingHearts,
   ]);
   const resetGameToMenu = () => {
+    resetVersusClientSync();
     setRunning(false);
     setPaused(false);
     setPauseMenuOpen(false);
@@ -1653,6 +2101,7 @@ export default function Home() {
           filter: `match_id=eq.${matchId}`,
         },
         (payload) => {
+          if (versusMatchRef.current !== matchId) return;
           const attack = payload.new as {
             id: string;
             target_user_id: string;
@@ -1679,6 +2128,7 @@ export default function Home() {
           filter: `match_id=eq.${matchId}`,
         },
         (payload) => {
+          if (versusMatchRef.current !== matchId) return;
           const player = payload.new as {
             user_id: string;
             hearts: number;
@@ -1686,14 +2136,11 @@ export default function Home() {
             obstacle_points?: number;
             username?: string;
           };
-          if (player.user_id === userIdRef.current) {
-            if (typeof player.obstacle_points === "number")
-              setVersusPoints(player.obstacle_points);
-            return;
-          }
+          if (player.user_id === userIdRef.current) return;
           setVersusOpponentHearts(Number(player.hearts));
           if (player.username) setVersusOpponent(player.username);
           if (player.status === "eliminated") {
+            versusFinishedRef.current = true;
             setVersusResult("VICTORY");
             setVersusPhase("finished");
             setVersusIntermissionReady(false);
@@ -1711,11 +2158,18 @@ export default function Home() {
           filter: `id=eq.${matchId}`,
         },
         (payload) => {
+          if (versusMatchRef.current !== matchId) return;
+          const previousMatch = payload.old as {
+            status?: string;
+            intermission_ends_at?: string | null;
+          };
           const match = payload.new as {
             status: string;
             winner_user_id: string | null;
+            intermission_ends_at?: string | null;
           };
           if (match.status === "finished") {
+            versusFinishedRef.current = true;
             setVersusResult(
               match.winner_user_id === userIdRef.current ? "VICTORY" : "DEFEAT",
             );
@@ -1723,59 +2177,128 @@ export default function Home() {
             setVersusIntermissionReady(false);
             setRunning(false);
             setOver(true);
+            return;
+          }
+          if (match.status === "intermission") {
+            const enteredIntermission = previousMatch.status !== "intermission";
+            const deadlineChanged =
+              previousMatch.intermission_ends_at !== match.intermission_ends_at;
+            if (!enteredIntermission && !deadlineChanged) return;
+            const remaining = secondsUntil(
+              match.intermission_ends_at,
+              VERSUS_INTERMISSION_SECONDS,
+            );
+            setVersusCountdown(remaining);
+            setVersusPhase("intermission");
+            setVersusIntermissionReady(true);
+            setPaused(true);
+            setVersusResult(remaining > 0 ? "INTERMISSION" : "SYNCING NEXT WAVE");
+            void enqueueVersusStateSync(async () => {
+              await hydrateVersusState(
+                matchId,
+                versusRunHydratedRef.current,
+              );
+            });
+            return;
+          }
+          if (
+            match.status === "playing" &&
+            (previousMatch.status === "intermission" ||
+              previousMatch.status === "countdown")
+          ) {
+            if (versusTransitionBusyRef.current) {
+              versusHydrationIntentRef.current += 1;
+              return;
+            }
+            const preserveRunState = versusRunHydratedRef.current;
+            void hydrateVersusState(
+              matchId,
+              preserveRunState,
+              !preserveRunState && previousMatch.status === "countdown",
+            );
           }
         },
       )
       .subscribe();
     realtimeRef.current = channel;
   };
-  const hydrateVersusState = async (matchId: string) => {
+  const hydrateVersusState = async (
+    matchId: string,
+    preserveRunState = false,
+    freshMatch = false,
+  ) => {
+    const hydrationIntent = ++versusHydrationIntentRef.current;
     const { data, error } = await supabase.rpc("get_1v1_state", {
       p_match_id: matchId,
     });
     if (versusMatchRef.current !== matchId) return false;
+    if (versusHydrationIntentRef.current !== hydrationIntent) return true;
     if (error || !data) {
       setVersusResult(error?.message ?? "COULD NOT RESTORE THIS MATCH");
       return false;
     }
-    const snapshot = data as {
-      match?: {
-        status?: string;
-        intermission_ends_at?: string | null;
-        winner_user_id?: string | null;
-      };
-      self?: {
-        hearts?: number;
-        wave?: number;
-        score?: number;
-        obstacle_points?: number;
-        status?: string;
-      };
-      opponent?: {
-        username?: string;
-        hearts?: number;
-        status?: string;
-      };
-      pending_attacks?: Array<{ id?: string; obstacle_type?: string }>;
-    };
+    versusRunHydratedRef.current = true;
+    const snapshot = data as VersusStatePayload;
+    const { characterKey, characterClass } = getValidatedVersusCharacter(
+      snapshot.self?.character_key,
+      snapshot.self?.character_class,
+    );
+    const rawMaxHearts = Number(snapshot.self?.max_hearts);
+    const restoredMaxHearts =
+      Number.isFinite(rawMaxHearts) &&
+      rawMaxHearts >= 1 &&
+      rawMaxHearts <= VERSUS_MAX_HEARTS
+        ? normalizeVersusHearts(rawMaxHearts)
+        : getCharacterMaxHearts(characterKey, characterClass);
     const restoredWave = Math.max(1, Number(snapshot.self?.wave) || 1);
     const restoredScore = Math.max(0, Number(snapshot.self?.score) || 0);
-    const restoredHearts = Math.max(0, Number(snapshot.self?.hearts) || 0);
+    const restoredHearts = Math.min(
+      restoredMaxHearts,
+      normalizeVersusHearts(Number(snapshot.self?.hearts) || 0),
+    );
     const matchStatus = snapshot.match?.status ?? "playing";
     const eliminated =
       snapshot.self?.status === "eliminated" || matchStatus === "finished";
 
-    setLane(2);
-    setItems([]);
-    ambientHazardStreakRef.current = { kind: null, count: 0 };
-    resetCharacterAbilityState(restoredWave);
+    setSelectedCharacter(characterKey);
+    setPlayerClass(characterClass);
+    setVersusServerMaxHearts(restoredMaxHearts);
+    if (!preserveRunState) {
+      setLane(2);
+      setItems([]);
+      processedPickupIdsRef.current.clear();
+      ambientHazardStreakRef.current = { kind: null, count: 0 };
+      resetCharacterAbilityState(freshMatch ? undefined : restoredWave);
+      setWaveProgress((restoredWave - 1) * 2250);
+      setPauseMenuOpen(false);
+      setInvincible(false);
+      invincibleUntilRef.current = 0;
+      if (invincibilityTimerRef.current) {
+        clearTimeout(invincibilityTimerRef.current);
+        invincibilityTimerRef.current = null;
+      }
+      clearFreezeEffect();
+      if (delayedMoveTimerRef.current) {
+        clearTimeout(delayedMoveTimerRef.current);
+        delayedMoveTimerRef.current = null;
+      }
+      turnLockedRef.current = false;
+      damageLockedRef.current = false;
+      setAbilityNotice("");
+      if (abilityNoticeTimerRef.current) {
+        clearTimeout(abilityNoticeTimerRef.current);
+        abilityNoticeTimerRef.current = null;
+      }
+      if (waveAnnouncementTimerRef.current) {
+        clearTimeout(waveAnnouncementTimerRef.current);
+        waveAnnouncementTimerRef.current = null;
+      }
+      last.current = 0;
+    }
     setScore(restoredScore);
-    setWaveProgress((restoredWave - 1) * 2250);
     setWave(restoredWave);
     setHearts(restoredHearts);
-    setVersusPoints(
-      Math.max(0, Number(snapshot.self?.obstacle_points) || 0),
-    );
+    applyAuthoritativeVersusPoints(snapshot.self?.obstacle_points ?? 0);
     setVersusOpponent(snapshot.opponent?.username || "RIVAL");
     setVersusOpponentHearts(
       Math.max(0, Number(snapshot.opponent?.hearts) || 0),
@@ -1783,30 +2306,6 @@ export default function Home() {
     setPlayScope("versus");
     setOver(eliminated);
     setRunning(!eliminated);
-    setPauseMenuOpen(false);
-    setInvincible(false);
-    invincibleUntilRef.current = 0;
-    if (invincibilityTimerRef.current) {
-      clearTimeout(invincibilityTimerRef.current);
-      invincibilityTimerRef.current = null;
-    }
-    clearFreezeEffect();
-    if (delayedMoveTimerRef.current) {
-      clearTimeout(delayedMoveTimerRef.current);
-      delayedMoveTimerRef.current = null;
-    }
-    turnLockedRef.current = false;
-    damageLockedRef.current = false;
-    setAbilityNotice("");
-    if (abilityNoticeTimerRef.current) {
-      clearTimeout(abilityNoticeTimerRef.current);
-      abilityNoticeTimerRef.current = null;
-    }
-    if (waveAnnouncementTimerRef.current) {
-      clearTimeout(waveAnnouncementTimerRef.current);
-      waveAnnouncementTimerRef.current = null;
-    }
-    last.current = 0;
 
     const pending = (snapshot.pending_attacks ?? [])
       .map((attack) => ({
@@ -1839,13 +2338,18 @@ export default function Home() {
       );
       setVersusCountdown(remaining);
       setVersusPhase("intermission");
-      setVersusIntermissionReady(remaining > 0);
+      setVersusIntermissionReady(true);
+      setPaused(true);
+    } else if (snapshot.self?.status === "intermission") {
+      setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
+      setVersusPhase("intermission");
+      setVersusIntermissionReady(false);
+      setVersusResult("WAITING FOR RIVAL");
       setPaused(true);
     } else {
       const attacks = Array.from(mergedPending.values()).filter(
         (attack) => !spawnedAttackIdsRef.current.has(attack.id),
       );
-      const acknowledgementIds = Array.from(mergedPending.keys());
       incomingAttacksRef.current = [];
       attacks.forEach((attack) =>
         spawnedAttackIdsRef.current.add(attack.id),
@@ -1859,24 +2363,24 @@ export default function Home() {
             9,
           ),
         );
-      if (acknowledgementIds.length > 0)
-        void acknowledgeSpawnedVersusAttacks(
-          matchId,
-          acknowledgementIds,
-        );
       setVersusPhase("playing");
       setVersusIntermissionReady(false);
       setPaused(false);
       void audioEngine.start(soundtrack);
-      announceWave(restoredWave, false);
+      if (!preserveRunState)
+        announceWave(restoredWave, freshMatch, characterKey);
+      else if (!versusTransitionBusyRef.current)
+        announceWave(restoredWave, true, characterKey);
     }
     return true;
   };
+  hydrateVersusStateRef.current = hydrateVersusState;
   const beginVersusMatch = async (
     matchId: string,
     opponent: string,
     serverStatus?: string,
   ) => {
+    resetVersusClientSync();
     versusMatchRef.current = matchId;
     versusFinishedRef.current = false;
     setMainView("versus");
@@ -1889,19 +2393,27 @@ export default function Home() {
     incomingAttacksRef.current = [];
     spawnedAttackIdsRef.current.clear();
     subscribeToMatch(matchId);
-    if (serverStatus && serverStatus !== "countdown") {
-      const restored = await hydrateVersusState(matchId);
-      if (!restored && versusMatchRef.current === matchId) {
-        closeVersusChannel();
-        versusMatchRef.current = null;
-        setPlayScope("single");
-        setVersusPhase("idle");
-      }
-      return;
-    }
-    setVersusPhase("playing");
     setPlayScope("versus");
-    reset();
+    setVersusPhase("ready");
+    setRunning(false);
+    const freshMatch = serverStatus === "countdown";
+    const restored = await hydrateVersusState(matchId, false, freshMatch);
+    if (!restored && versusMatchRef.current === matchId) {
+      setVersusResult("MATCH CONNECTION INTERRUPTED · RETRYING");
+      const retryHydration = () => {
+        setTimeout(async () => {
+          if (versusMatchRef.current !== matchId) return;
+          const recovered = await hydrateVersusState(
+            matchId,
+            false,
+            freshMatch,
+          );
+          if (!recovered && versusMatchRef.current === matchId)
+            retryHydration();
+        }, 1200);
+      };
+      retryHydration();
+    }
   };
   const invalidateVersusSearch = () => {
     versusSearchingRef.current = false;
@@ -1980,9 +2492,10 @@ export default function Home() {
     setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
     setVersusResult("");
     setVersusIntermissionReady(false);
-    reset();
+    reset(true);
   };
   const clearVersusLocalSession = () => {
+    resetVersusClientSync();
     versusMatchRef.current = null;
     closeVersusChannel();
     incomingAttacksRef.current = [];
@@ -2098,34 +2611,51 @@ export default function Home() {
     if (!versusMatchRef.current) return;
     const matchId = versusMatchRef.current;
     const refreshAttackCoins = async () => {
-      const { data } = await supabase.rpc("get_1v1_state", {
-        p_match_id: matchId,
+      const refreshResult: { data: VersusStatePayload | null } = { data: null };
+      await enqueueVersusStateSync(async () => {
+        const { data } = await supabase.rpc("get_1v1_state", {
+          p_match_id: matchId,
+        });
+        refreshResult.data = data as VersusStatePayload | null;
       });
       if (versusMatchRef.current !== matchId) return;
-      const authoritativePoints = Number(data?.self?.obstacle_points);
+      const snapshot = refreshResult.data;
+      const authoritativePoints = Number(snapshot?.self?.obstacle_points);
       if (Number.isFinite(authoritativePoints))
-        setVersusPoints(Math.max(0, authoritativePoints));
-      const remaining = secondsUntil(data?.match?.intermission_ends_at, 0);
+        applyAuthoritativeVersusPoints(authoritativePoints);
+      const remaining = secondsUntil(
+        snapshot?.match?.intermission_ends_at,
+        0,
+      );
       setVersusCountdown(remaining);
       setVersusIntermissionReady(
-        data?.match?.status === "intermission" && remaining > 0,
+        snapshot?.match?.status === "intermission",
       );
     };
     versusAttackBusyRef.current = true;
     setVersusAttackBusy(true);
     try {
-      const { data, error } = await supabase.rpc("send_1v1_attack", {
-        p_match_id: matchId,
-        p_obstacle_type: kind,
+      const attackResult: {
+        data: { remaining_points?: number } | null;
+        error: string;
+      } = { data: null, error: "" };
+      await enqueueVersusStateSync(async () => {
+        if (versusMatchRef.current !== matchId) return;
+        const { data, error } = await supabase.rpc("send_1v1_attack", {
+          p_match_id: matchId,
+          p_obstacle_type: kind,
+        });
+        attackResult.data = data as { remaining_points?: number } | null;
+        attackResult.error = error?.message ?? "";
       });
       if (versusMatchRef.current !== matchId) return;
-      if (error) {
-        setVersusResult(error.message);
+      if (attackResult.error) {
+        setVersusResult(attackResult.error);
         await refreshAttackCoins();
         return;
       }
-      if (typeof data?.remaining_points === "number")
-        setVersusPoints(data.remaining_points);
+      if (typeof attackResult.data?.remaining_points === "number")
+        applyAuthoritativeVersusPoints(attackResult.data.remaining_points);
       setVersusResult("");
     } catch {
       if (versusMatchRef.current === matchId) {
@@ -2181,7 +2711,16 @@ export default function Home() {
       const pacerRushActive =
         activeCharacter === "runner_pacer" &&
         pacerRushRemainingRef.current > 0;
-      const characterSpeedMultiplier = pacerRushActive ? 3 : 1;
+      const mimicPhase = (wave - 1) % 3;
+      const characterSpeedMultiplier = pacerRushActive
+        ? 3
+        : activeCharacter === "runner_dash"
+          ? 1.06
+          : activeCharacter === "runner_blitz"
+            ? 1.12
+            : activeCharacter === "runner_velocity"
+              ? 1.2
+              : 1;
       const obstacleSpeedMultiplier =
         currentSpeedMultiplier * characterSpeedMultiplier;
       if (now - last.current > Math.max(330, 980 - wave * 55)) {
@@ -2192,6 +2731,11 @@ export default function Home() {
             mode === "impossible" ? 0.14 : mode === "hardcore" ? 0.1 : 0.06,
           characterGemMultiplier =
             (activeCharacter === "runner_fortune" ? 2 : 1) *
+            (activeCharacter === "misc_broker" ? 1.25 : 1) *
+            (activeCharacter === "misc_prospector" ? 1.6 : 1) *
+            (activeCharacter === "misc_mimic" && mimicPhase === 1
+              ? 1.5
+              : 1) *
             (activeCharacter === "trickster_wildcard" &&
             wildcardBuffRef.current === "gems"
               ? 1.5
@@ -2201,9 +2745,17 @@ export default function Home() {
             baseGemChance * characterGemMultiplier,
           ),
           gemThreshold = 1 - gemChance,
-          versusGemThreshold = 1 - 0.025 * characterGemMultiplier;
+          versusGemThreshold = 1 - 0.025 * characterGemMultiplier,
+          versusCoinChance =
+            activeCharacter === "misc_broker" ? 0.27 * 1.25 : 0.27,
+          sameHazardLimit =
+            activeCharacter === "misc_muse"
+              ? 2
+              : activeCharacter === "misc_scribe"
+                ? 3
+                : MAX_SAME_HAZARD_STREAK;
         const hazardChoices =
-          ambientHazardStreakRef.current.count >= MAX_SAME_HAZARD_STREAK
+          ambientHazardStreakRef.current.count >= sameHazardLimit
             ? AMBIENT_HAZARDS.filter(
                 (hazard) => hazard !== ambientHazardStreakRef.current.kind,
               )
@@ -2211,7 +2763,7 @@ export default function Home() {
         const randomHazard = () =>
           hazardChoices[Math.floor(Math.random() * hazardChoices.length)];
         let kind: Kind;
-        if (isVersusRun && r < 0.27) kind = "coin";
+        if (isVersusRun && r < versusCoinChance) kind = "coin";
         else if (isVersusRun && r > versusGemThreshold) kind = "gem";
         else if (r < danger || isVersusRun) kind = randomHazard();
         else if (r > gemThreshold) kind = "gem";
@@ -2258,6 +2810,44 @@ export default function Home() {
             (item.kind === "barrel" || item.kind === "log")
           )
             speedFactor *= 0.85;
+          if (isHazard && activeCharacter === "misc_nomad")
+            speedFactor *= 0.93;
+          if (item.kind === "spikes" && activeCharacter === "misc_tinker")
+            speedFactor *= 0.75;
+          if (
+            (item.kind === "rock" || item.kind === "spikes") &&
+            activeCharacter === "misc_lantern"
+          )
+            speedFactor *= 0.85;
+          if (
+            item.kind === "snowflake" &&
+            activeCharacter === "misc_weaver"
+          )
+            speedFactor *= 0.65;
+          if (
+            isHazard &&
+            activeCharacter === "misc_mimic" &&
+            mimicPhase === 0
+          )
+            speedFactor *= 0.9;
+          if (
+            (item.kind === "gem" || item.kind === "coin") &&
+            activeCharacter === "misc_mimic" &&
+            mimicPhase === 2
+          )
+            speedFactor *= 0.75;
+          if (
+            (item.kind === "gem" || item.kind === "coin") &&
+            activeCharacter === "misc_catalyst"
+          )
+            speedFactor *= 0.75;
+          if (
+            (item.kind === "gem" || item.kind === "coin") &&
+            activeCharacter === "misc_harvester"
+          )
+            speedFactor *= 0.65;
+          if (isHazard && activeCharacter === "misc_muse")
+            speedFactor *= 0.88;
           if (
             isHazard &&
             activeCharacter === "trickster_smoke" &&
@@ -2288,7 +2878,8 @@ export default function Home() {
           const crossedRunnerBand = item.y < 91 && n.y >= 65;
           const abilityGraze =
             (activeCharacter === "trickster_rogue" ||
-              activeCharacter === "trickster_gambit") &&
+              activeCharacter === "trickster_gambit" ||
+              activeCharacter === "trickster_echo") &&
             isHazard &&
             Math.abs(n.lane - state.current.lane) === 1 &&
             crossedRunnerBand &&
@@ -2311,6 +2902,15 @@ export default function Home() {
               gambitBoostRemainingRef.current = 2000;
               showAbilityNotice("HIGH STAKES · SCORE ×1.75", 950);
             }
+            if (
+              activeCharacter === "trickster_echo" &&
+              echoGrazeCooldownUntilRef.current <= Date.now()
+            ) {
+              echoGrazeCooldownUntilRef.current = Date.now() + 2000;
+              grantInvincibility(650);
+              setScore((value) => value + 40);
+              showAbilityNotice("ECHO GRAZE · SHIELD +40 SCORE", 1000);
+            }
           }
           const rangerPickup =
             activeCharacter === "runner_ranger" &&
@@ -2325,6 +2925,22 @@ export default function Home() {
           ) {
             if (rangerPulled)
               showAbilityNotice("PICKUP MAGNET · ADJACENT PICKUP");
+            if (n.kind === "gem" || n.kind === "coin") {
+              if (processedPickupIdsRef.current.has(n.id)) return [];
+              processedPickupIdsRef.current.add(n.id);
+              if (activeCharacter === "runner_courier") {
+                courierBoostRemainingRef.current = 4000;
+                showAbilityNotice("SPECIAL DELIVERY · SCORE ×1.25", 900);
+              }
+              if (
+                activeCharacter === "medic_tonic" &&
+                tonicCollectibleWaveRef.current !== wave
+              ) {
+                tonicCollectibleWaveRef.current = wave;
+                setHearts((value) => Math.min(maxHearts, value + 0.5));
+                showAbilityNotice("FIRST TONIC · +0.5 HP", 850);
+              }
+            }
             if (n.kind === "gem") {
               void audioEngine.playSfx("gem");
               const total = gemsRef.current + 1;
@@ -2352,6 +2968,13 @@ export default function Home() {
                   showAbilityNotice("VITAL PULSE · +1 HP", 850);
                 }
               }
+              if (activeCharacter === "medic_sprout") {
+                sproutGemCountRef.current += 1;
+                if (sproutGemCountRef.current % 2 === 0) {
+                  setHearts((value) => Math.min(maxHearts, value + 0.5));
+                  showAbilityNotice("GROWTH CYCLE · +0.5 HP", 850);
+                }
+              }
               if (activeCharacter === "medic_vial") {
                 grantInvincibility(2000);
                 showAbilityNotice("CRYSTAL TONIC · 2 SECOND SHIELD", 1200);
@@ -2375,21 +2998,7 @@ export default function Home() {
                 versusPointsRef.current += 2;
                 setVersusPoints(versusPointsRef.current);
               } else if (isOnlineVersus && versusMatchRef.current) {
-                setVersusPoints((v) => v + 2);
-                void supabase
-                  .rpc("award_1v1_points", {
-                    p_match_id: versusMatchRef.current,
-                    p_source: "coin",
-                    p_amount: 1,
-                  })
-                  .then(({ data, error }) => {
-                    if (error) {
-                      setVersusResult(error.message);
-                      return;
-                    }
-                    if (typeof data?.obstacle_points === "number")
-                      setVersusPoints(data.obstacle_points);
-                  });
+                queueOnlineCoinAward(versusMatchRef.current, n.id);
               }
             } else if (n.kind === "snowflake") {
               if (
@@ -2452,6 +3061,28 @@ export default function Home() {
               showAbilityNotice(`${activeAbility.name} · HIT BLOCKED`);
               return [];
             } else if (
+              activeCharacter === "tank_warden" &&
+              n.kind === "spikes" &&
+              wardenBlockWaveRef.current !== wave
+            ) {
+              wardenBlockWaveRef.current = wave;
+              void audioEngine.playSfx("shield");
+              setFlash("shield");
+              setTimeout(() => setFlash(""), 150);
+              showAbilityNotice("SPIKE LOCK · FIRST SPIKE BLOCKED");
+              return [];
+            } else if (
+              activeCharacter === "tank_citadel" &&
+              wave % 2 === 0 &&
+              citadelBlockWaveRef.current !== wave
+            ) {
+              citadelBlockWaveRef.current = wave;
+              void audioEngine.playSfx("shield");
+              setFlash("shield");
+              setTimeout(() => setFlash(""), 150);
+              showAbilityNotice("EVEN WALL · FIRST HIT BLOCKED");
+              return [];
+            } else if (
               activeCharacter === "trickster_phantom" &&
               phantomPhaseWaveRef.current !== wave
             ) {
@@ -2494,6 +3125,9 @@ export default function Home() {
                       ? 0.5
                       : activeCharacter === "tank_hammer" && n.kind === "log"
                         ? 0.5
+                        : activeCharacter === "tank_ironclad" &&
+                            n.kind === "log"
+                          ? 0.5
                         : activeCharacter === "tank_brace" &&
                             n.kind === "spikes"
                           ? 0.5
@@ -2501,6 +3135,8 @@ export default function Home() {
               let abilityAdjustedDamage =
                 activeCharacter === "tank_anchor" && n.kind === "rock"
                   ? 1
+                  : activeCharacter === "tank_colossus" && n.kind === "rock"
+                    ? 1.5
                   : rawDamage;
               if (
                 activeCharacter === "tank_anchor" &&
@@ -2508,6 +3144,17 @@ export default function Home() {
                 rawDamage > abilityAdjustedDamage
               )
                 showAbilityNotice("STONEGUARD · ROCK DAMAGE 1 HP");
+              if (
+                activeCharacter === "tank_colossus" &&
+                n.kind === "rock" &&
+                rawDamage > abilityAdjustedDamage
+              )
+                showAbilityNotice("COLOSSUS FRAME · ROCK DAMAGE 1.5 HP");
+              if (
+                activeCharacter === "tank_ironclad" &&
+                n.kind === "log"
+              )
+                showAbilityNotice("IRON SHELL · LOG DAMAGE 0.5 HP");
               if (
                 activeCharacter === "tank_brace" &&
                 n.kind === "spikes"
@@ -2564,6 +3211,15 @@ export default function Home() {
                 sentinelLastStandUsedRef.current = true;
                 nextHearts = 0.5;
                 showAbilityNotice("LAST STAND · SURVIVED AT 0.5 HP", 1400);
+              }
+              if (
+                nextHearts <= 0 &&
+                activeCharacter === "medic_revive" &&
+                !reviveUsedRef.current
+              ) {
+                reviveUsedRef.current = true;
+                nextHearts = 0.5;
+                showAbilityNotice("PHOENIX REVIVE · SURVIVED AT 0.5 HP", 1400);
               }
               const triggerLifelineHeal =
                 nextHearts > 0 &&
@@ -2684,6 +3340,35 @@ export default function Home() {
       let characterScoreMultiplier = 1;
       if (activeCharacter === "runner_ace")
         characterScoreMultiplier = 1.1;
+      else if (activeCharacter === "runner_dash")
+        characterScoreMultiplier = 1.06;
+      else if (
+        activeCharacter === "runner_stride" &&
+        state.current.lane >= 1 &&
+        state.current.lane <= 3
+      )
+        characterScoreMultiplier = 1.12;
+      else if (
+        activeCharacter === "runner_courier" &&
+        courierBoostRemainingRef.current > 0
+      )
+        characterScoreMultiplier = 1.25;
+      else if (activeCharacter === "runner_tempo" && wave % 2 === 0)
+        characterScoreMultiplier = 1.18;
+      else if (
+        activeCharacter === "runner_vector" &&
+        (state.current.lane === 0 || state.current.lane === 4)
+      )
+        characterScoreMultiplier = 1.25;
+      else if (activeCharacter === "runner_blitz")
+        characterScoreMultiplier = 1.12;
+      else if (activeCharacter === "runner_horizon" && wave >= 10)
+        characterScoreMultiplier = 1.3;
+      else if (activeCharacter === "runner_velocity")
+        characterScoreMultiplier = 1.2;
+      else if (activeCharacter === "runner_zenith")
+        characterScoreMultiplier =
+          1 + Math.min(0.6, Math.max(0, wave - 1) * 0.02);
       else if (pacerRushActive) characterScoreMultiplier = 5;
       else if (
         activeCharacter === "runner_drift" &&
@@ -2743,6 +3428,11 @@ export default function Home() {
         pacerRushRemainingRef.current = Math.max(
           0,
           pacerRushRemainingRef.current - dt,
+        );
+      if (courierBoostRemainingRef.current > 0)
+        courierBoostRemainingRef.current = Math.max(
+          0,
+          courierBoostRemainingRef.current - dt,
         );
       if (driftBoostRemainingRef.current > 0)
         driftBoostRemainingRef.current = Math.max(
@@ -2849,6 +3539,7 @@ export default function Home() {
     applyFreezeEffect,
     clearFreezeEffect,
     showAbilityNotice,
+    queueOnlineCoinAward,
     activeAbility.name,
   ]);
   useEffect(() => {
@@ -2883,6 +3574,12 @@ export default function Home() {
         const healAmount =
           activeCharacter === "medic_patch"
             ? 1.5
+            : activeCharacter === "medic_salve" &&
+                state.current.hearts <= 2
+              ? 1.5
+              : activeCharacter === "medic_oracle" &&
+                  completedWave % 3 === 0
+                ? 2
             : activeCharacter === "medic_seraph"
               ? 1.5
               : activeCharacter === "tank_atlas"
@@ -2895,6 +3592,18 @@ export default function Home() {
           state.current.hearts < maxHearts
         )
           showAbilityNotice("FIELD DRESSING · +1.5 HP", 1200);
+        if (
+          activeCharacter === "medic_salve" &&
+          state.current.hearts <= 2 &&
+          state.current.hearts < maxHearts
+        )
+          showAbilityNotice("DEEP SALVE · +1.5 HP", 1200);
+        if (
+          activeCharacter === "medic_oracle" &&
+          completedWave % 3 === 0 &&
+          state.current.hearts < maxHearts
+        )
+          showAbilityNotice("THIRD OMEN · +2 HP", 1200);
         if (
           sutureFullRestore &&
           state.current.hearts < maxHearts
@@ -2948,21 +3657,17 @@ export default function Home() {
         );
         setPaused(true);
       } else if (isOnlineVersus && versusMatchRef.current) {
-        setVersusPoints((v) => v + 3);
+        const completedAttackIds = Array.from(spawnedAttackIdsRef.current);
+        if (completedAttackIds.length > 0)
+          void acknowledgeSpawnedVersusAttacks(
+            versusMatchRef.current,
+            completedAttackIds,
+          );
         setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
         setVersusPhase("intermission");
         setVersusIntermissionReady(false);
+        setVersusResult("WAITING FOR RIVAL");
         setPaused(true);
-        void supabase
-          .rpc("award_1v1_points", {
-            p_match_id: versusMatchRef.current,
-            p_source: "wave",
-            p_amount: next - 1,
-          })
-          .then(({ data }) => {
-            if (typeof data?.obstacle_points === "number")
-              setVersusPoints(data.obstacle_points);
-          });
       } else announceWave(next);
     }
   }, [
@@ -2979,6 +3684,7 @@ export default function Home() {
     isOnlineVersus,
     versusOpponentHearts,
     showAbilityNotice,
+    acknowledgeSpawnedVersusAttacks,
   ]);
   useEffect(() => {
     if (versusPhase !== "intermission") return;
@@ -3019,115 +3725,238 @@ export default function Home() {
         announceWave(wave);
         return;
       }
+      if (!isOnlineVersus || !versusIntermissionReady) return;
+      if (versusAttackBusyRef.current) {
+        setVersusCountdown(1);
+        return;
+      }
       const matchId = versusMatchRef.current;
-      if (matchId)
-        void supabase
-          .rpc("update_1v1_state", {
+      if (!matchId || versusTransitionBusyRef.current) return;
+      versusTransitionBusyRef.current = true;
+      versusHydrationIntentRef.current += 1;
+      const resumeMatch = async () => {
+        await versusCoinAwardQueueRef.current.catch(() => undefined);
+        if (versusMatchRef.current !== matchId) return;
+        await enqueueVersusStateSync(async () => {
+          if (versusMatchRef.current !== matchId) return;
+          const { data, error } = await supabase.rpc("update_1v1_state", {
             p_match_id: matchId,
-            p_hearts: hearts,
+            p_hearts: normalizeVersusHearts(state.current.hearts),
             p_wave: wave,
             p_score: scoreRef.current,
             p_status: "playing",
-          })
-          .then(({ data, error }) => {
-            if (versusMatchRef.current !== matchId) return;
-            if (error) {
-              setVersusCountdown(1);
-              return;
-            }
-            const pending = new Map(
-              incomingAttacksRef.current.map((attack) => [attack.id, attack]),
-            );
-            const serverPending = (data?.pending_attacks ?? []) as Array<{
-              id?: string;
-              obstacle_type?: string;
-            }>;
-            const acknowledgementIds = new Set<string>();
-            serverPending.forEach((attack) => {
-              const kind = normalizeVersusObstacle(attack.obstacle_type);
-              if (attack.id && spawnedAttackIdsRef.current.has(attack.id)) {
-                acknowledgementIds.add(attack.id);
-                return;
-              }
-              if (attack.id && kind)
-                pending.set(attack.id, { id: attack.id, kind });
-            });
-            const attacks = Array.from(pending.values());
-            incomingAttacksRef.current = [];
-            if (attacks.length > 0) {
-              attacks.forEach((attack) => {
-                spawnedAttackIdsRef.current.add(attack.id);
-                acknowledgementIds.add(attack.id);
-              });
-              setItems((current) =>
-                appendSafeAttackWave(
-                  current,
-                  attacks.map((attack) => attack.kind),
-                  () => id.current++,
-                  9,
-                ),
-              );
-            }
-            if (acknowledgementIds.size > 0) {
-              void acknowledgeSpawnedVersusAttacks(
-                matchId,
-                Array.from(acknowledgementIds),
-              );
-            }
-            setVersusPhase("playing");
-            setPaused(false);
-            announceWave(wave);
           });
+          if (versusMatchRef.current !== matchId) return;
+          if (error) {
+            setVersusResult("MATCH SYNC INTERRUPTED · RETRYING");
+            setVersusCountdown(1);
+            setVersusIntermissionReady(true);
+            return;
+          }
+          applyAuthoritativeVersusPoints(data?.self?.obstacle_points);
+          const serverStatus = String(data?.match?.status ?? "playing");
+          if (serverStatus !== "playing") {
+            const remaining = secondsUntil(data?.match?.intermission_ends_at, 1);
+            setVersusCountdown(Math.max(1, remaining));
+            setVersusIntermissionReady(serverStatus === "intermission");
+            setVersusResult(
+              serverStatus === "intermission"
+                ? "INTERMISSION"
+                : "WAITING FOR RIVAL",
+            );
+            setPaused(true);
+            return;
+          }
+          const pending = new Map(
+            incomingAttacksRef.current.map((attack) => [attack.id, attack]),
+          );
+          const serverPending = (data?.pending_attacks ?? []) as Array<{
+            id?: string;
+            obstacle_type?: string;
+          }>;
+          serverPending.forEach((attack) => {
+            const kind = normalizeVersusObstacle(attack.obstacle_type);
+            if (attack.id && spawnedAttackIdsRef.current.has(attack.id)) return;
+            if (attack.id && kind)
+              pending.set(attack.id, { id: attack.id, kind });
+          });
+          const attacks = Array.from(pending.values());
+          incomingAttacksRef.current = [];
+          if (attacks.length > 0) {
+            attacks.forEach((attack) => {
+              spawnedAttackIdsRef.current.add(attack.id);
+            });
+            setItems((current) =>
+              appendSafeAttackWave(
+                current,
+                attacks.map((attack) => attack.kind),
+                () => id.current++,
+                9,
+              ),
+            );
+          }
+          setVersusResult("");
+          setVersusPhase("playing");
+          setVersusIntermissionReady(false);
+          setPaused(false);
+          announceWave(wave);
+        });
+      };
+      void resumeMatch().finally(() => {
+        if (versusMatchRef.current === matchId)
+          versusTransitionBusyRef.current = false;
+      });
       return;
     }
+    if (isOnlineVersus && !versusIntermissionReady) return;
     const timer = setTimeout(() => setVersusCountdown((v) => v - 1), 1000);
     return () => clearTimeout(timer);
   }, [
     versusPhase,
     versusCountdown,
     announceWave,
-    acknowledgeSpawnedVersusAttacks,
     wave,
-    hearts,
     isBotPractice,
+    isOnlineVersus,
+    versusIntermissionReady,
+    enqueueVersusStateSync,
+    applyAuthoritativeVersusPoints,
   ]);
   useEffect(() => {
-    if (playScope !== "versus" || !versusMatchRef.current) return;
+    if (
+      playScope !== "versus" ||
+      versusPhase !== "intermission" ||
+      versusIntermissionReady
+    )
+      return;
     const matchId = versusMatchRef.current;
-    const nextStatus = over
+    if (!matchId) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const pollBarrier = async () => {
+      await hydrateVersusStateRef.current?.(matchId, true);
+      if (stopped || versusMatchRef.current !== matchId) return;
+      timer = setTimeout(() => void pollBarrier(), 2000);
+    };
+    timer = setTimeout(() => void pollBarrier(), 2000);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [playScope, versusPhase, versusIntermissionReady]);
+  useEffect(() => {
+    if (
+      playScope !== "versus" ||
+      !versusMatchRef.current ||
+      !versusRunHydratedRef.current ||
+      (versusPhase !== "playing" &&
+        versusPhase !== "intermission" &&
+        versusPhase !== "finished")
+    )
+      return;
+    const matchId = versusMatchRef.current;
+    const locallyEliminated = hearts <= 0;
+    if (versusPhase === "finished" && !locallyEliminated) return;
+    const nextStatus = locallyEliminated
       ? "eliminated"
       : versusPhase === "intermission"
         ? "intermission"
         : "playing";
-    void supabase.rpc("update_1v1_state", {
-      p_match_id: matchId,
-      p_hearts: hearts,
-      p_wave: wave,
-      p_score: scoreRef.current,
-      p_status: nextStatus,
-    }).then(({ data, error }) => {
-      if (versusMatchRef.current !== matchId) return;
-      if (error) {
-        setVersusResult(error.message);
+    const syncIntent = ++versusStateSyncIntentRef.current;
+    const syncState = async () => {
+      if (nextStatus === "intermission")
+        await versusCoinAwardQueueRef.current.catch(() => undefined);
+      if (
+        versusMatchRef.current !== matchId ||
+        versusStateSyncIntentRef.current !== syncIntent
+      )
         return;
-      }
-      const authoritativePoints = Number(data?.self?.obstacle_points);
-      if (Number.isFinite(authoritativePoints))
-        setVersusPoints(Math.max(0, authoritativePoints));
-      if (nextStatus === "intermission") {
-        const remaining = secondsUntil(
-          data?.match?.intermission_ends_at,
-          VERSUS_INTERMISSION_SECONDS,
-        );
-        setVersusCountdown(remaining);
-        setVersusIntermissionReady(remaining > 0);
-      }
-    });
-    if (over && !versusFinishedRef.current) {
-      versusFinishedRef.current = true;
-      void supabase.rpc("finish_1v1", { p_match_id: versusMatchRef.current });
-    }
-  }, [hearts, wave, over, playScope, versusPhase]);
+      await enqueueVersusStateSync(async () => {
+        if (
+          versusMatchRef.current !== matchId ||
+          versusStateSyncIntentRef.current !== syncIntent
+        )
+          return;
+        let data: VersusStatePayload | null = null;
+        let syncError = "";
+        try {
+          const response = await supabase.rpc("update_1v1_state", {
+            p_match_id: matchId,
+            p_hearts: normalizeVersusHearts(hearts),
+            p_wave: wave,
+            p_score: scoreRef.current,
+            p_status: nextStatus,
+          });
+          data = response.data as VersusStatePayload | null;
+          syncError = response.error?.message ?? "";
+        } catch {
+          syncError = "connection interrupted";
+        }
+        if (
+          versusMatchRef.current !== matchId ||
+          versusStateSyncIntentRef.current !== syncIntent
+        )
+          return;
+        if (syncError) {
+          setVersusResult("MATCH SYNC INTERRUPTED · RETRYING");
+          if (!versusSyncRetryTimerRef.current)
+            versusSyncRetryTimerRef.current = setTimeout(() => {
+              versusSyncRetryTimerRef.current = null;
+              if (versusMatchRef.current === matchId)
+                setVersusSyncRetry((value) => value + 1);
+            }, 1000);
+          return;
+        }
+        if (versusSyncRetryTimerRef.current) {
+          clearTimeout(versusSyncRetryTimerRef.current);
+          versusSyncRetryTimerRef.current = null;
+        }
+        applyAuthoritativeVersusPoints(data?.self?.obstacle_points);
+        const serverStatus = String(data?.match?.status ?? "");
+        if (serverStatus === "finished") {
+          versusFinishedRef.current = true;
+          setVersusResult(
+            data?.match?.winner_user_id === userIdRef.current
+              ? "VICTORY"
+              : "DEFEAT",
+          );
+          setVersusPhase("finished");
+          setVersusIntermissionReady(false);
+          setRunning(false);
+          setOver(true);
+          return;
+        }
+        if (serverStatus === "intermission") {
+          const remaining = secondsUntil(
+            data?.match?.intermission_ends_at,
+            VERSUS_INTERMISSION_SECONDS,
+          );
+          setVersusCountdown(remaining);
+          setVersusPhase("intermission");
+          setVersusIntermissionReady(true);
+          setPaused(true);
+          setVersusResult("INTERMISSION");
+          return;
+        }
+        if (nextStatus === "intermission") {
+          setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
+          setVersusIntermissionReady(false);
+          setVersusResult("WAITING FOR RIVAL");
+          setPaused(true);
+        }
+      });
+    };
+    void syncState();
+  }, [
+    hearts,
+    wave,
+    over,
+    playScope,
+    versusPhase,
+    versusSyncRetry,
+    enqueueVersusStateSync,
+    applyAuthoritativeVersusPoints,
+  ]);
   useEffect(() => {
     if (
       playScope !== "versus" ||
@@ -3138,16 +3967,26 @@ export default function Home() {
       return;
     const syncScore = () => {
       const matchId = versusMatchRef.current;
-      if (!matchId) return;
-      void supabase.rpc("sync_1v1_score", {
-        p_match_id: matchId,
-        p_score: scoreRef.current,
+      if (!matchId || versusScoreSyncPendingRef.current) return;
+      versusScoreSyncPendingRef.current = true;
+      void enqueueVersusStateSync(async () => {
+        try {
+          if (versusMatchRef.current !== matchId) return;
+          const { error } = await supabase.rpc("sync_1v1_score", {
+            p_match_id: matchId,
+            p_score: scoreRef.current,
+          });
+          if (error && versusMatchRef.current === matchId)
+            await hydrateVersusStateRef.current?.(matchId, true);
+        } finally {
+          versusScoreSyncPendingRef.current = false;
+        }
       });
     };
     syncScore();
     const timer = window.setInterval(syncScore, 1000);
     return () => window.clearInterval(timer);
-  }, [over, playScope, running, versusPhase]);
+  }, [over, playScope, running, versusPhase, enqueueVersusStateSync]);
   useEffect(() => {
     const applySession = async (
       session: Awaited<
@@ -3324,6 +4163,7 @@ export default function Home() {
         (versusSearchingRef.current || versusMatchRef.current),
     );
     invalidateVersusSearch();
+    resetVersusClientSync();
     closeVersusChannel();
     versusMatchRef.current = null;
     incomingAttacksRef.current = [];
@@ -4566,7 +5406,7 @@ export default function Home() {
                   onClick={
                     isVersusRun
                       ? backToMenu
-                      : reset
+                      : () => reset()
                   }
                 >
                   {isVersusRun

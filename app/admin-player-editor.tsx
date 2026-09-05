@@ -51,7 +51,6 @@ type PlayerDetail = {
   bans?: Array<Record<string, unknown>>;
   reports?: Array<Record<string, unknown>>;
   multiplayer?: Record<string, unknown> | null;
-  extractions?: Array<Record<string, unknown>>;
   record?: {
     bans?: Array<Record<string, unknown>>;
     commands?: Array<Record<string, unknown>>;
@@ -191,6 +190,104 @@ const humanize = (value: unknown) =>
   String(value ?? "—")
     .replaceAll("_", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const parseJsonValue = (value: unknown): unknown => {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+};
+
+const unwrapRpcRecord = (
+  value: unknown,
+  expectedKeys: string[],
+  rpcKey: string,
+): Record<string, unknown> | null => {
+  let current = parseJsonValue(value);
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (Array.isArray(current)) {
+      if (current.length !== 1) return null;
+      current = parseJsonValue(current[0]);
+      continue;
+    }
+    if (!isRecord(current)) return null;
+    const record = current;
+    if (expectedKeys.some((key) => key in record)) return record;
+    const wrappedKey = [rpcKey, "result", "data", "payload"].find(
+      (key) => key in record,
+    );
+    if (!wrappedKey) return null;
+    current = parseJsonValue(record[wrappedKey]);
+  }
+  return null;
+};
+
+const asRecord = (value: unknown): Record<string, unknown> | null => {
+  const parsed = parseJsonValue(value);
+  return isRecord(parsed) ? parsed : null;
+};
+
+const asRecordArray = (value: unknown): Array<Record<string, unknown>> | null => {
+  const parsed = parseJsonValue(value);
+  if (!Array.isArray(parsed)) return null;
+  const rows = parsed.filter(isRecord);
+  return rows.length === parsed.length ? rows : null;
+};
+
+const normalizePlayerDetail = (value: unknown): PlayerDetail => {
+  const raw = unwrapRpcRecord(
+    value,
+    ["account", "profile", "unlocks", "devices"],
+    "admin_get_player",
+  );
+  if (!raw)
+    throw new Error(
+      "Player details returned in an unsupported format. Update the Admin 03 database setup.",
+    );
+
+  const account = asRecord(raw.account ?? raw.account_info ?? raw.user);
+  const profile = asRecord(raw.profile ?? raw.player_profile) ?? {};
+  const unlocks = asRecordArray(raw.unlocks ?? raw.inventory ?? raw.items);
+  const devices = asRecordArray(raw.devices ?? raw.linked_devices);
+  if (!account || !unlocks || !devices)
+    throw new Error(
+      "Player details are incomplete. Update the Admin 03 database setup and try again.",
+    );
+
+  return {
+    account,
+    profile,
+    stats: asRecord(raw.stats),
+    loadout: asRecord(raw.loadout),
+    unlocks,
+    devices,
+    bans: asRecordArray(raw.bans) ?? [],
+    reports: asRecordArray(raw.reports) ?? [],
+    multiplayer: asRecord(raw.multiplayer),
+  };
+};
+
+const normalizePlayerRecord = (
+  value: unknown,
+): NonNullable<PlayerDetail["record"]> => {
+  const raw = unwrapRpcRecord(
+    value,
+    ["bans", "commands"],
+    "admin_get_player_record",
+  );
+  const bans = raw ? asRecordArray(raw.bans) : null;
+  const commands = raw ? asRecordArray(raw.commands) : null;
+  if (!raw || !bans || !commands)
+    throw new Error(
+      "Moderation history returned in an unsupported format. Update the Admin 03 database setup.",
+    );
+  return { bans, commands };
+};
 
 const formatDate = (value: unknown) => {
   if (!value) return "—";
@@ -387,6 +484,8 @@ export function AdminPlayerEditor({
   const [selected, setSelected] = useState<PlayerSummary | null>(null);
   const [detail, setDetail] = useState<PlayerDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [recordError, setRecordError] = useState("");
   const [command, setCommand] = useState("");
   const [commandBusy, setCommandBusy] = useState(false);
   const [commandFeedback, setCommandFeedback] =
@@ -414,6 +513,8 @@ export function AdminPlayerEditor({
     setSelected(null);
     setDetail(null);
     setLoadingDetail(false);
+    setDetailError("");
+    setRecordError("");
     setCommand("");
     setCommandBusy(false);
     setCommandFeedback(null);
@@ -477,6 +578,8 @@ export function AdminPlayerEditor({
     setPlayers([]);
     setSelected(null);
     setDetail(null);
+    setDetailError("");
+    setRecordError("");
     setSelectedDeviceId("");
     setCommand("");
     setCommandFeedback(null);
@@ -501,6 +604,8 @@ export function AdminPlayerEditor({
     const requestId = ++detailRequestRef.current;
     setSelected(player);
     setDetail(null);
+    setDetailError("");
+    setRecordError("");
     setSelectedDeviceId("");
     setCommand("");
     setCommandFeedback(null);
@@ -512,19 +617,38 @@ export function AdminPlayerEditor({
     ]);
     if (requestId !== detailRequestRef.current) return;
     setLoadingDetail(false);
-    if (playerResult.error || recordResult.error) {
-      setStatus(
-        playerResult.error?.message ||
-          recordResult.error?.message ||
-          "Could not load that player.",
+    if (playerResult.error) {
+      setDetailError(playerResult.error.message || "Could not load that player.");
+      return;
+    }
+    let playerDetail: PlayerDetail;
+    try {
+      playerDetail = normalizePlayerDetail(playerResult.data);
+    } catch (error) {
+      setDetailError(
+        error instanceof Error ? error.message : "Could not read that player.",
       );
       return;
     }
-    const moderationRecord = (recordResult.data ?? {}) as NonNullable<
-      PlayerDetail["record"]
-    >;
+    let moderationRecord: NonNullable<PlayerDetail["record"]> = {
+      bans: [],
+      commands: [],
+    };
+    if (recordResult.error) {
+      setRecordError(recordResult.error.message);
+    } else {
+      try {
+        moderationRecord = normalizePlayerRecord(recordResult.data);
+      } catch (error) {
+        setRecordError(
+          error instanceof Error
+            ? error.message
+            : "Could not read moderation history.",
+        );
+      }
+    }
     const nextDetail = {
-      ...((playerResult.data ?? {}) as PlayerDetail),
+      ...playerDetail,
       record: moderationRecord,
       bans: moderationRecord.bans ?? [],
     };
@@ -789,7 +913,6 @@ export function AdminPlayerEditor({
   const displayName =
     String(detail?.profile?.username ?? selected?.username ?? "NO USERNAME");
   const devices = detail?.devices ?? [];
-  const receipts = detail?.extractions ?? [];
   const inventory = useMemo(() => detail?.unlocks ?? [], [detail?.unlocks]);
   const inventoryGroups = useMemo(() => {
     const grouped = new Map<
@@ -972,6 +1095,16 @@ export function AdminPlayerEditor({
       {selected && (
         loadingDetail ? (
           <div className="player-editor-empty">Loading player information…</div>
+        ) : detailError ? (
+          <div className="player-editor-error" role="alert">
+            <strong>PLAYER DATA COULD NOT LOAD</strong>
+            <span>{detailError}</span>
+          </div>
+        ) : !detail ? (
+          <div className="player-editor-error" role="alert">
+            <strong>PLAYER DATA COULD NOT LOAD</strong>
+            <span>No player details were returned. Try the lookup again.</span>
+          </div>
         ) : (
           <div className="player-detail-sections">
             <section className="player-detail-section account-info-section">
@@ -1098,7 +1231,12 @@ export function AdminPlayerEditor({
                   <h3>RECORD <em>{recordEntries.length}</em></h3>
                 </div>
               </summary>
-              {recordEntries.length === 0 ? (
+              {recordError ? (
+                <div className="player-editor-error compact" role="alert">
+                  <strong>RECORD COULD NOT LOAD</strong>
+                  <span>{recordError}</span>
+                </div>
+              ) : recordEntries.length === 0 ? (
                 <div className="player-editor-empty">No bans or commands on record.</div>
               ) : (
                 <div className="player-record-list">
@@ -1162,36 +1300,6 @@ export function AdminPlayerEditor({
                 </div>
               )}
             </details>
-
-            <section className="player-detail-section receipt-info-section">
-              <header className="player-detail-title">
-                <span>04</span>
-                <div>
-                  <small>SHOP ACTIVITY</small>
-                  <h3>RECEIPTS <em>{receipts.length}</em></h3>
-                </div>
-              </header>
-              {receipts.length === 0 ? (
-                <div className="player-editor-empty">No recorded shop receipts.</div>
-              ) : (
-                <div className="account-record-list receipt-list player-receipt-list">
-                  {receipts.map((receipt, index) => (
-                    <article key={String(receipt.id ?? index)}>
-                      <header>
-                        <strong>{humanize(receipt.item_key ?? "Unknown item")}</strong>
-                        <span>{String(receipt.gem_cost ?? 0)} GEMS</span>
-                      </header>
-                      <p>
-                        {humanize(receipt.box_type ?? "box")} ·{" "}
-                        {humanize(receipt.rarity ?? "unknown rarity")} ·{" "}
-                        {receipt.was_new ? "NEW ITEM" : "DUPLICATE"}
-                      </p>
-                      <small>{formatDate(receipt.created_at)}</small>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
           </div>
         )
       )}
