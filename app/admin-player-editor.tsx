@@ -86,7 +86,6 @@ const BASE_COMMANDS = [
   "/revoke character [",
   "/set gems 100",
   "/set high score 25000",
-  "/set coins 10",
   "/bann [account + device + score] for INFINITE",
   "/unban username/email",
 ];
@@ -323,7 +322,7 @@ const getPlayerSuggestionFragment = (raw: string) => {
   if (unbanTarget) return unbanTarget[1]?.trim() ?? "";
 
   const setTarget = raw.match(
-    /^\/set\s+(?:high[_ ]score|gems|coins)\s+\d+\s+(.+)$/i,
+    /^\/set\s+(?:high[_ ]score|gems)\s+\d+\s+(.+)$/i,
   );
   if (setTarget)
     return setTarget[1].replace(/^(?:from|to)\s+/i, "").trim();
@@ -394,8 +393,20 @@ const parseCommand = (raw: string): ParsedCommand => {
       targetText: match[4]?.trim(),
     };
 
+  if (
+    /^\/set\s+(?:(?:attack|obstacle|track|match)[_ ]*)?coins?\b/i.test(
+      command,
+    ) ||
+    /^\/set\s+(?:obstacle[_ ]*points?|versus[_ ]*points?|melons?(?:[_ ]*collected)?)\b/i.test(
+      command,
+    )
+  )
+    throw new Error(
+      "Coin balances are gameplay-only and cannot be changed by admin commands.",
+    );
+
   match = command.match(
-    /^\/set\s+(high[_ ]score|gems|coins)\s+(\d+)(?:\s+(.+))?$/i,
+    /^\/set\s+(high[_ ]score|gems)\s+(\d+)(?:\s+(.+))?$/i,
   );
   if (match)
     return {
@@ -487,6 +498,7 @@ export function AdminPlayerEditor({
   const [detailError, setDetailError] = useState("");
   const [recordError, setRecordError] = useState("");
   const [command, setCommand] = useState("");
+  const [banNote, setBanNote] = useState("");
   const [commandBusy, setCommandBusy] = useState(false);
   const [commandFeedback, setCommandFeedback] =
     useState<CommandFeedback | null>(null);
@@ -516,6 +528,7 @@ export function AdminPlayerEditor({
     setDetailError("");
     setRecordError("");
     setCommand("");
+    setBanNote("");
     setCommandBusy(false);
     setCommandFeedback(null);
     setCatalog({});
@@ -582,6 +595,7 @@ export function AdminPlayerEditor({
     setRecordError("");
     setSelectedDeviceId("");
     setCommand("");
+    setBanNote("");
     setCommandFeedback(null);
     setLoadingDetail(false);
     const { data, error } = await supabase.rpc("admin_player_search", {
@@ -608,6 +622,7 @@ export function AdminPlayerEditor({
     setRecordError("");
     setSelectedDeviceId("");
     setCommand("");
+    setBanNote("");
     setCommandFeedback(null);
     setLoadingDetail(true);
     setStatus("");
@@ -693,7 +708,6 @@ export function AdminPlayerEditor({
             "/revoke character [",
             "/set gems 100 username/email",
             "/set high score 25000 username/email",
-            "/set coins 10 username/email",
             "/bann [username/email account + device + score] for INFINITE",
             "/unban username/email",
           ];
@@ -732,7 +746,7 @@ export function AdminPlayerEditor({
     }
     if (input.startsWith("/set")) {
       const targetMatch = command.match(
-        /^(\/set\s+(?:high[_ ]score|gems|coins)\s+\d+\s+)(.+)$/i,
+        /^(\/set\s+(?:high[_ ]score|gems)\s+\d+\s+)(.+)$/i,
       );
       if (targetMatch && (catalog.players?.length ?? 0) > 0)
         return catalog.players!.slice(0, 8).map(
@@ -741,7 +755,6 @@ export function AdminPlayerEditor({
       return [
         `/set gems 100${selected ? "" : " username/email"}`,
         `/set high score 25000${selected ? "" : " username/email"}`,
-        `/set coins 10${selected ? "" : " username/email"}`,
       ];
     }
     if (input.startsWith("/ban")) {
@@ -771,6 +784,12 @@ export function AdminPlayerEditor({
       ];
     }
     return (catalog.commands ?? BASE_COMMANDS)
+      .filter(
+        (suggestion) =>
+          !/^\/(?:set|grant|revoke)\b.*\b(?:coins?|obstacle[_ ]*points?|versus[_ ]*points?|melons?)\b/i.test(
+            suggestion,
+          ),
+      )
       .map((suggestion) =>
         suggestion.toLowerCase().startsWith("/unban")
           ? `/unban ${selected?.username || selected?.email || "username/email"}`
@@ -877,7 +896,10 @@ export function AdminPlayerEditor({
               p_duration_seconds: parsed.durationSeconds ?? null,
               p_permanent: parsed.permanent ?? false,
               p_ban_id: null,
-              p_reason: "Issued from Admin Player Editor",
+              p_reason:
+                parsed.action === "bann" && banNote.trim()
+                  ? banNote.trim()
+                  : "Issued from Admin Player Editor",
               p_command_text: command,
             });
       if (lookupGeneration !== lookupGenerationRef.current) return;
@@ -894,6 +916,7 @@ export function AdminPlayerEditor({
           ? `UNBAN completed for ${target.username || target.email}. ${result.revoked_count ?? 0} active ban${result.revoked_count === 1 ? "" : "s"} removed.`
           : `${parsed.action.toUpperCase()} completed for ${target.username || target.email}.`;
       setCommand("");
+      setBanNote("");
       await choosePlayer(target);
       if (lookupGeneration !== lookupGenerationRef.current) return;
       setCommandFeedback({ tone: "success", message: completedMessage });
@@ -1073,6 +1096,18 @@ export function AdminPlayerEditor({
               {commandBusy ? "RUNNING…" : "RUN"}
             </button>
           </form>
+          {/^\/bann?\b/i.test(command.trim()) && (
+            <label className="command-ban-note">
+              BAN NOTE <span>OPTIONAL · SHOWN TO THE PLAYER</span>
+              <textarea
+                value={banNote}
+                onChange={(event) => setBanNote(event.target.value)}
+                maxLength={500}
+                placeholder="Why is this player being banned?"
+              />
+              <small>{banNote.length}/500</small>
+            </label>
+          )}
           {commandFeedback && (
             <div
               id="admin-player-command-feedback"
@@ -1087,7 +1122,8 @@ export function AdminPlayerEditor({
             include an exact username or email. Ban durations must go from largest
             to smallest; use INFINITE for a permanent ban. Use /unban username/email
             to remove all of that player&apos;s active bans. Commands are validated
-            actions, never SQL.
+            actions, never SQL. Coin and attack-coin balances are gameplay-only
+            and cannot be changed by admin commands.
           </p>
         </section>
       )}

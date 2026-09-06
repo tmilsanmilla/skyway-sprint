@@ -463,6 +463,20 @@
 .top-report-button{display:grid;grid-template-columns:34px minmax(0,1fr);align-items:center;min-width:224px;min-height:42px;padding:4px 12px;border:4px solid var(--ink);background:#ff7a22;color:white;box-shadow:5px 5px 0 var(--ink);font-family:"Courier New",monospace;text-align:left;cursor:pointer}
 .top-report-button{pointer-events:auto}
 .top-report-button:hover:not(:disabled){transform:translate(2px,2px);box-shadow:3px 3px 0 var(--ink)}
+.report-utility-bar{gap:12px}
+.player-level-card{display:grid;grid-template-columns:auto;align-content:center;min-width:210px;padding:5px 11px;border:4px solid var(--ink);background:#fffaf0;box-shadow:5px 5px 0 var(--ink);font-family:"Courier New",monospace;pointer-events:auto}
+.player-level-card>span{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.player-level-card b{font-size:13px;font-style:italic;letter-spacing:1px}
+.player-level-card small{font-size:8px;font-weight:1000;letter-spacing:.5px}
+.player-level-card>i{display:block;height:7px;margin-top:3px;border:2px solid var(--ink);background:#d8d1bd;overflow:hidden}
+.player-level-card>i>u{display:block;height:100%;background:linear-gradient(90deg,#3167c7,#58d6ef);text-decoration:none;transition:width .25s ease}
+.versus-mode-picker{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 15px 0}
+.versus-mode-picker>button{display:grid;gap:4px;min-height:54px;padding:9px;border:3px solid var(--ink);background:white;color:var(--ink);box-shadow:3px 3px 0 var(--ink);font-family:"Courier New",monospace;cursor:pointer}
+.versus-mode-picker>button.selected{background:#3167c7;color:white}
+.versus-mode-picker>button:disabled{opacity:.48;cursor:not-allowed}
+.versus-mode-picker b{font-size:12px;font-style:italic;letter-spacing:1px}
+.versus-mode-picker small{font-size:7px;font-weight:1000;line-height:1.35;letter-spacing:.5px}
+@media(max-width:600px){.report-utility-bar{gap:6px}.player-level-card{min-width:142px;padding:4px 7px}.player-level-card b{font-size:11px}.player-level-card small{font-size:6px}.top-report-button{min-width:145px}.versus-mode-picker{padding:9px 10px 0}.versus-mode-picker>button{padding:7px}}
 .top-report-button:focus-visible{outline:4px solid #168bad;outline-offset:3px}
 .top-report-button>span:first-child{display:grid;width:25px;height:25px;place-items:center;border:3px solid white;border-radius:50%;font-size:17px;font-weight:1000;line-height:1}
 .top-report-button>span:last-child{display:grid;gap:1px}
@@ -474,3 +488,46 @@
 
 @media(max-width:1050px){.game-layout.has-top-report.view-endless .game-card{height:min(628px,calc(100dvh - 270px))}}
 @media(max-width:700px){.report-utility-bar{top:max(6px,env(safe-area-inset-top));min-height:40px;padding:0 5px}.top-report-button{width:min(244px,calc(100vw - 24px));min-width:0;min-height:40px}.game-layout.has-top-report.view-endless .game-card{height:calc(100dvh - 202px)}.game-layout.has-top-report.view-versus .game-card{height:calc(100dvh - 161px);min-height:0}}
+
+/* Admin 04: secure ban notes and appeal workflow. */
+.ban-appeal-panel{margin-top:18px;padding:15px;border:4px solid var(--ink);background:#fffaf0;color:var(--ink);text-align:left;box-shadow:4px 4px 0 var(--ink)}
+.ban-appeal-panel h2,.settings-appeal h3{margin:0 0 10px;font-size:17px;font-style:italic;letter-spacing:.5px}
+.ban-appeal-panel label,.settings-appeal label{display:block;font-size:9px;font-weight:1000;letter-spacing:1px}
+.ban-appeal-panel textarea,.settings-appeal textarea{display:block;width:100%;min-height:96px;margin-top:7px;padding:10px;border:3px solid var(--ink);background:white;color:var(--ink);font:900 11px/1.4 "Courier New",monospace;resize:vertical}
+.ban-appeal-panel form>small,.settings-appeal form>small{display:block;margin-top:4px;font-size:8px;text-align:right;opacity:.6}
+.ban-appeal-panel form>button{width:100%;margin-top:10px;padding:11px;border:3px solid var(--ink);background:var(--orange);color:white;box-shadow:3px 3px 0 var(--ink);font-weight:1000;cursor:pointer}
+.appeal-pending,.appeal-denied{padding:11px;border:3px solid var(--ink);background:#f5e7bc}
+.appeal-pending b,.appeal-pending span,.appeal-denied b{display:block}
+.appeal-pending span{margin-top:3px;font-size:8px;font-weight:1000;opacity:.65}
+.appeal-pending p,.appeal-denied p{margin:8px 0 0;font-size:10px;line-height:1.45;white-space:pre-wrap}
+.appeal-denied{margin-bottom:10px;background:#ffe0d7}
+.settings-appeal{margin-top:17px;padding:15px;border:3px solid var(--ink);background:#e8f1ff}
+.settings-appeal form{padding:0;border:0}
+.settings-appeal form>button{width:100%;margin-top:10px;padding:11px;border:3px solid var(--ink);background:var(--orange);color:white;box-shadow:3px 3px 0 var(--ink);font-weight:1000;cursor:pointer}
+.admin-inbox.appeals-shell{width:min(900px,100%)}
+.appeal-read-only,.appeal-card-read-only{padding:10px;border:3px solid var(--ink);background:#f5e7bc;font-size:9px;font-weight:1000;letter-spacing:.6px;line-height:1.45}
+.appeal-read-only{margin-bottom:12px}.appeal-card-read-only{margin-top:11px;text-align:center}
+.appeal-filter{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:13px}
+.appeal-filter button{padding:8px 11px;border:3px solid var(--ink);background:white;font:1000 9px "Courier New",monospace;cursor:pointer}
+.appeal-filter button.active{background:var(--ink);color:white}
+.appeal-list{display:grid;gap:13px;margin-top:14px}
+.appeal-list>article{padding:15px;border:4px solid var(--ink);background:white;box-shadow:4px 4px 0 var(--ink)}
+.appeal-list article>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.appeal-list header b,.appeal-list header small{display:block}
+.appeal-list header b{font-size:15px;font-style:italic}
+.appeal-list header small{margin-top:3px;font-size:9px;opacity:.65}
+.appeal-state{padding:6px 8px;border:2px solid var(--ink);background:#f5e7bc;font-size:8px;font-weight:1000}
+.appeal-state.approved{background:#ccebd5}.appeal-state.denied{background:#ffd5ca}
+.appeal-list dl{display:grid;grid-template-columns:1fr 1fr;margin:11px 0;border:2px solid var(--ink);background:#f7f1df}
+.appeal-list dl>div{padding:8px}.appeal-list dl>div+div{border-left:2px solid var(--ink)}
+.appeal-list dt{font-size:7px;font-weight:1000;letter-spacing:1px;opacity:.6}.appeal-list dd{margin:3px 0 0;font-size:9px;font-weight:1000}
+.appeal-note{margin-top:9px;padding:10px;border:2px solid var(--ink);background:#f5e7bc}
+.appeal-note.player-note{background:#e8f1ff}.appeal-note b{font-size:8px;letter-spacing:1px}.appeal-note p{margin:6px 0 0;font-size:11px;line-height:1.5;white-space:pre-wrap}
+.appeal-review{margin-top:11px;padding-top:11px;border-top:3px solid var(--ink)}
+.appeal-review label{display:block;font-size:8px;font-weight:1000;letter-spacing:1px}.appeal-review label span{opacity:.55}
+.appeal-review textarea{display:block;width:100%;min-height:70px;margin-top:6px;padding:9px;border:3px solid var(--ink);font:900 10px/1.4 "Courier New",monospace;resize:vertical}
+.appeal-review>div{display:flex;gap:8px;margin-top:8px}.appeal-review button{padding:9px 11px;border:3px solid var(--ink);background:#2f8f52;color:white;font-size:9px;font-weight:1000;box-shadow:3px 3px 0 var(--ink);cursor:pointer}.appeal-review button:last-child{background:#a92e2e}.appeal-review button:disabled{opacity:.55;cursor:wait}
+.appeal-list article>footer{margin-top:10px;padding-top:8px;border-top:2px solid #18293b33;font-size:8px;font-weight:900;line-height:1.5}
+.command-ban-note{display:block;margin:0 10px 10px;padding:10px;border:2px solid #cce8d3;background:#17242f;color:#bce7c7;font:1000 8px "Courier New",monospace;letter-spacing:.7px}
+.command-ban-note>span{opacity:.65}.command-ban-note textarea{display:block;width:100%;min-height:64px;margin-top:6px;padding:8px;border:2px solid #cce8d3;background:#0e1822;color:white;font:900 10px/1.4 "Courier New",monospace;resize:vertical}.command-ban-note small{display:block;margin-top:4px;text-align:right;opacity:.65}
+@media(max-width:600px){.appeal-list dl{grid-template-columns:1fr}.appeal-list dl>div+div{border-top:2px solid var(--ink);border-left:0}.appeal-review>div{flex-direction:column}.appeal-review button{width:100%}}

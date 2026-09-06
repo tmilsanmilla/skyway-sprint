@@ -15,6 +15,7 @@ type GameMode = "normal" | "hardcore" | "impossible";
 type PlayerReport = {
   id: number;
   user_id: string;
+  username: string | null;
   report_type: string;
   message: string;
   status: string;
@@ -25,6 +26,38 @@ type AdminUser = {
   email: string;
   username: string | null;
   role: "main" | "co_admin";
+};
+type BanAppeal = {
+  id: number;
+  user_id: string;
+  username: string | null;
+  email: string;
+  ban_id: number | null;
+  ban_scope: string | null;
+  ban_note: string | null;
+  player_note: string;
+  status: "pending" | "approved" | "denied";
+  created_at: string;
+  reviewed_at: string | null;
+  reviewed_by_username: string | null;
+  reviewed_by_email: string | null;
+  admin_note: string | null;
+  appealed_ban_count: number;
+  snapshot_active_ban_count: number;
+  active_ban_count: number;
+};
+type MyBanAppeal = {
+  has_active_ban: boolean;
+  can_appeal: boolean;
+  appeal: {
+    id: number;
+    ban_id: number | null;
+    player_note: string;
+    status: "pending" | "approved" | "denied";
+    created_at: string;
+    reviewed_at: string | null;
+    admin_note: string | null;
+  } | null;
 };
 type PlayerAccess = {
   device_id?: string;
@@ -99,6 +132,16 @@ type ExtractionOption = "regular" | "ten";
 type ExtractionAnimation = "idle" | "shaking" | "opening";
 type PlayScope = "single" | "versus" | "practice";
 type MainView = "endless" | "versus";
+type VersusMode = "casual" | "ranked";
+type PlayerProgression = {
+  level: number;
+  xp: number;
+  xp_required: number;
+  lifetime_xp: number;
+  completed_runs: number;
+  ranked_unlocked: boolean;
+  xp_awarded?: number;
+};
 type VersusAttackKind =
   | "barrel"
   | "log"
@@ -110,6 +153,7 @@ type PendingVersusAttack = { id: string; kind: Kind };
 type VersusStatePayload = {
   match?: {
     status?: string;
+    mode?: VersusMode;
     intermission_ends_at?: string | null;
     winner_user_id?: string | null;
   };
@@ -485,7 +529,7 @@ const CHARACTER_ABILITIES = {
   },
   runner_dash: {
     name: "JET STEP",
-    description: "Can move 6% faster and earn 6% more distance score.",
+    description: "Can move 6% faster, which earns 6% more distance score.",
   },
   runner_stride: {
     name: "CENTER STRIDE",
@@ -505,7 +549,7 @@ const CHARACTER_ABILITIES = {
   },
   runner_blitz: {
     name: "BLITZ PACE",
-    description: "Can move 12% faster and earn 12% more distance score.",
+    description: "Can move 12% faster, which earns 12% more distance score.",
   },
   runner_horizon: {
     name: "FAR HORIZON",
@@ -513,7 +557,7 @@ const CHARACTER_ABILITIES = {
   },
   runner_velocity: {
     name: "FULL VELOCITY",
-    description: "Can move 20% faster and earn 20% more distance score.",
+    description: "Can move 20% faster, which earns 20% more distance score.",
   },
   runner_zenith: {
     name: "ZENITH CLIMB",
@@ -522,7 +566,7 @@ const CHARACTER_ABILITIES = {
   runner_scout: {
     name: "QUICKSTEP",
     description:
-      "Can ignore snowflake freeze. Can gain 1 second of invincibility from a snowflake every 4 seconds.",
+      "Can cut snowflake freeze to 1.5 seconds and frozen lane-change delay to 0.125 seconds.",
   },
   runner_drift: {
     name: "SLIPSTREAM",
@@ -539,7 +583,7 @@ const CHARACTER_ABILITIES = {
   },
   runner_relay: {
     name: "BATON CHAIN",
-    description: "Can add 3% more score per completed wave, up to 30%.",
+    description: "Can add 2% more score per completed wave, up to 20%.",
   },
   runner_comet: {
     name: "STAR DRIVE",
@@ -549,11 +593,11 @@ const CHARACTER_ABILITIES = {
   runner_pacer: {
     name: "WAVE RUSH",
     description:
-      "Can make hazards move 3× faster and add a 5× score boost for the first 15 seconds of each wave, producing a 15× score rate before other bonuses.",
+      "Can make hazards move 1.5× faster and add a 2× score boost for the first 6 seconds of each wave, producing a 3× score rate before other bonuses.",
   },
   runner_vault: {
     name: "SPIKE VAULT",
-    description: "Can vault over spikes and take no damage from them.",
+    description: "Can vault over the first spike hit each wave.",
   },
   runner_spark: {
     name: "CRYSTAL CHARGE",
@@ -576,7 +620,7 @@ const CHARACTER_ABILITIES = {
   },
   medic_salve: {
     name: "DEEP SALVE",
-    description: "Can heal 1.5 HP after a wave when at 2 HP or less.",
+    description: "Can heal 2 HP after a wave when at 2 HP or less.",
   },
   medic_sprout: {
     name: "GROWTH CYCLE",
@@ -584,7 +628,7 @@ const CHARACTER_ABILITIES = {
   },
   medic_tonic: {
     name: "FIRST TONIC",
-    description: "Can heal 0.5 HP from the first gem or coin collected each wave.",
+    description: "Can heal 1 HP from the first gem or coin collected each wave.",
   },
   medic_beacon: {
     name: "BEACON HEART",
@@ -605,7 +649,7 @@ const CHARACTER_ABILITIES = {
   medic_mercy: {
     name: "GRACE GUARD",
     description:
-      "Can reduce the first hit worth at least 1 HP by 0.5 HP once each wave.",
+      "Can reduce the first hit worth at least 1 HP by 1 HP once each wave, with a minimum of 0.5 HP damage.",
   },
   medic_pulse: {
     name: "VITAL PULSE",
@@ -662,7 +706,7 @@ const CHARACTER_ABILITIES = {
   },
   tank_warden: {
     name: "SPIKE LOCK",
-    description: "Can ignore the first spike hit each wave.",
+    description: "Can ignore every spike hit.",
   },
   tank_citadel: {
     name: "EVEN WALL",
@@ -674,8 +718,7 @@ const CHARACTER_ABILITIES = {
   },
   tank_glacier: {
     name: "FROST ARMOR",
-    description:
-      "Can cut snowflake freeze to 1.5 seconds and frozen lane-change delay to 0.125 seconds.",
+    description: "Can ignore snowflake freeze.",
   },
   tank_brace: {
     name: "SPIKE BRACE",
@@ -727,7 +770,7 @@ const CHARACTER_ABILITIES = {
   },
   trickster_echo: {
     name: "ECHO GRAZE",
-    description: "Can gain 0.65 seconds of invincibility and 40 score by grazing an adjacent hazard. Cooldown: 2 seconds.",
+    description: "Can gain 0.65 seconds of invincibility and 40 + 10× wave score by grazing an adjacent hazard. Cooldown: 2 seconds.",
   },
   trickster_flicker: {
     name: "FIRST FLICKER",
@@ -746,7 +789,7 @@ const CHARACTER_ABILITIES = {
   },
   trickster_jester: {
     name: "ENCORE",
-    description: "Can start every wave with 2.5 seconds of invincibility.",
+    description: "Can start every wave with 1.25 seconds of invincibility.",
   },
   trickster_mirage: {
     name: "AFTERIMAGE",
@@ -774,7 +817,7 @@ const CHARACTER_ABILITIES = {
   },
   trickster_pickpocket: {
     name: "CLOSE COUNT",
-    description: "Can gain 75 score after every seventh hazard safely passed.",
+    description: "Can gain 50 + 10× wave score after every seventh hazard safely passed.",
   },
   trickster_wildcard: {
     name: "LUCKY DRAW",
@@ -811,7 +854,7 @@ const CHARACTER_ABILITIES = {
   },
   misc_mimic: {
     name: "COPIED CYCLE",
-    description: "Can cycle each wave between hazards 10% slower, gems 50% more often, and pickups 25% slower.",
+    description: "Can cycle each wave between hazards 18% slower, gems 75% more often, and pickups 35% slower.",
   },
   misc_catalyst: {
     name: "FLUX FIELD",
@@ -819,11 +862,11 @@ const CHARACTER_ABILITIES = {
   },
   misc_harvester: {
     name: "CAREFUL HARVEST",
-    description: "Can make gems and coins move 35% slower.",
+    description: "Can make gems and coins move 45% slower.",
   },
   misc_muse: {
     name: "DREAM CONTROL",
-    description: "Can make every hazard move 12% slower and limit consecutive matching hazards to 2.",
+    description: "Can make every hazard move 18% slower and limit consecutive matching hazards to 2.",
   },
 } as const satisfies Record<
   RosterCharacterKey,
@@ -906,12 +949,11 @@ const isCharacterOwned = (
 ) =>
   Boolean(
     characterKey &&
-      (isStarterCharacter(characterKey) ||
-        owned.some(
-          (item) =>
-            item.item_type === "character" &&
-            item.item_key === characterKey,
-        )),
+      owned.some(
+        (item) =>
+          item.item_type === "character" &&
+          item.item_key === characterKey,
+      ),
   );
 const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
   const owns = (itemType: Unlock["item_type"], itemKey?: string | null) =>
@@ -947,6 +989,14 @@ const BASE_ITEM_SPEED = 0.0452;
 const WAVE_SPEED_STEP = 0.25;
 const getWaveSpeedMultiplier = (waveNumber: number) =>
   1 + Math.max(0, waveNumber - 1) * WAVE_SPEED_STEP;
+const GAME_MODE_RULES = {
+  normal: { scoreMultiplier: 1, hazardLaneLimit: MAX_HAZARD_LANES },
+  hardcore: { scoreMultiplier: 1.75, hazardLaneLimit: 3 },
+  impossible: { scoreMultiplier: 3, hazardLaneLimit: MAX_HAZARD_LANES },
+} as const satisfies Record<
+  GameMode,
+  { scoreMultiplier: number; hazardLaneLimit: number }
+>;
 const INVENTORY_CLASSES: ReadonlyArray<{
   key: keyof typeof CLASS_CHARACTERS;
   label: string;
@@ -1137,7 +1187,6 @@ export default function Home() {
     orbitCooldownRemainingRef = useRef(0),
     cometChargeRemainingRef = useRef(8000),
     cometChargedRef = useRef(false),
-    scoutShieldCooldownUntilRef = useRef(0),
     invincibleUntilRef = useRef(0),
     invincibilityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     abilityNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
@@ -1214,6 +1263,10 @@ export default function Home() {
     versusSyncRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
       null,
     ),
+    progressionRunIdRef = useRef<string | null>(null),
+    progressionAwardedRunIdRef = useRef<string | null>(null),
+    progressionStartIntentRef = useRef(0),
+    progressionAwardPromiseRef = useRef<Promise<void> | null>(null),
     extractBusyRef = useRef(false),
     extractFeedbackRef = useRef<HTMLDivElement | null>(null),
     botAttackPointsRef = useRef(0),
@@ -1313,9 +1366,9 @@ export default function Home() {
     [adminOpen, setAdminOpen] = useState(false),
     [isAdmin, setIsAdmin] = useState(false),
     [adminRole, setAdminRole] = useState<string | null>(null),
-    [adminTab, setAdminTab] = useState<"reports" | "admins" | "players">(
-      "reports",
-    ),
+    [adminTab, setAdminTab] = useState<
+      "reports" | "admins" | "players" | "appeals"
+    >("reports"),
     [admins, setAdmins] = useState<AdminUser[]>([]),
     [adminTarget, setAdminTarget] = useState(""),
     [adminStatus, setAdminStatus] = useState(""),
@@ -1325,6 +1378,19 @@ export default function Home() {
     [reportMessage, setReportMessage] = useState(""),
     [reportStatus, setReportStatus] = useState(""),
     [reportBusy, setReportBusy] = useState(false);
+  const [myBanAppeal, setMyBanAppeal] = useState<MyBanAppeal | null>(null),
+    [appealNote, setAppealNote] = useState(""),
+    [appealStatus, setAppealStatus] = useState(""),
+    [appealBusy, setAppealBusy] = useState(false),
+    [adminAppeals, setAdminAppeals] = useState<BanAppeal[]>([]),
+    [appealFilter, setAppealFilter] = useState<
+      "pending" | "approved" | "denied" | "all"
+    >("pending"),
+    [adminAppealStatus, setAdminAppealStatus] = useState(""),
+    [adminAppealBusyId, setAdminAppealBusyId] = useState<number | null>(null),
+    [adminAppealNotes, setAdminAppealNotes] = useState<Record<number, string>>(
+      {},
+    );
   const [username, setUsername] = useState(""),
     [usernameInput, setUsernameInput] = useState(""),
     [usernameRequired, setUsernameRequired] = useState(false),
@@ -1333,9 +1399,19 @@ export default function Home() {
     [passwordStatus, setPasswordStatus] = useState("");
   const [editUsername, setEditUsername] = useState(false),
     [editPassword, setEditPassword] = useState(false);
+  const [playerProgression, setPlayerProgression] = useState<PlayerProgression>({
+    level: 1,
+    xp: 0,
+    xp_required: 100,
+    lifetime_xp: 0,
+    completed_runs: 0,
+    ranked_unlocked: false,
+  }),
+    [progressionRunVersion, setProgressionRunVersion] = useState(0);
   const [endlessMode, setEndlessMode] = useState<GameMode>("normal");
   const [mainView, setMainView] = useState<MainView>("endless"),
     [playScope, setPlayScope] = useState<PlayScope>("single"),
+    [versusMode, setVersusMode] = useState<VersusMode>("casual"),
     [versusPhase, setVersusPhase] = useState<VersusPhase>("idle"),
     [versusOpponent, setVersusOpponent] = useState("WAITING…"),
     [versusPoints, setVersusPoints] = useState(0),
@@ -1355,6 +1431,63 @@ export default function Home() {
     ),
     [versusSyncRetry, setVersusSyncRetry] = useState(0);
   versusPointsRef.current = versusPoints;
+  const applyProgressionPayload = useCallback((value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    const payload = value as Partial<PlayerProgression>;
+    const level = Math.max(1, Math.floor(Number(payload.level) || 1));
+    const xp = Math.max(0, Math.floor(Number(payload.xp) || 0));
+    const xpRequired = Math.max(
+      1,
+      Math.floor(Number(payload.xp_required) || 100),
+    );
+    setPlayerProgression({
+      level,
+      xp: Math.min(xp, xpRequired - 1),
+      xp_required: xpRequired,
+      lifetime_xp: Math.max(
+        0,
+        Math.floor(Number(payload.lifetime_xp) || 0),
+      ),
+      completed_runs: Math.max(
+        0,
+        Math.floor(Number(payload.completed_runs) || 0),
+      ),
+      ranked_unlocked:
+        payload.ranked_unlocked === true || level >= 25,
+      xp_awarded:
+        payload.xp_awarded === undefined
+          ? undefined
+          : Math.max(0, Math.floor(Number(payload.xp_awarded) || 0)),
+    });
+  }, []);
+  const refreshProgression = useCallback(async () => {
+    if (!userIdRef.current) return;
+    const { data, error } = await supabase.rpc("get_player_progression");
+    if (error) {
+      console.error("Could not load player progression:", error.message);
+      return;
+    }
+    applyProgressionPayload(data);
+  }, [applyProgressionPayload]);
+  const startProgressionRun = useCallback(async () => {
+    const intent = progressionStartIntentRef.current + 1;
+    progressionStartIntentRef.current = intent;
+    progressionRunIdRef.current = null;
+    progressionAwardedRunIdRef.current = null;
+    if (!userIdRef.current) return null;
+    const { data, error } = await supabase.rpc("start_progression_run");
+    if (intent !== progressionStartIntentRef.current) return null;
+    if (error || typeof data !== "string") {
+      console.error(
+        "Could not start account XP run:",
+        error?.message ?? "invalid run receipt",
+      );
+      return null;
+    }
+    progressionRunIdRef.current = data;
+    setProgressionRunVersion((value) => value + 1);
+    return data;
+  }, []);
   const applyAuthoritativeVersusPoints = useCallback((value: unknown) => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return;
@@ -1421,6 +1554,7 @@ export default function Home() {
             if (versusMatchRef.current !== matchId) return;
             if (!error) {
               applyAuthoritativeVersusPoints(data?.obstacle_points);
+              void refreshProgression();
               return;
             }
             lastError = error.message;
@@ -1474,12 +1608,14 @@ export default function Home() {
       applyAuthoritativeVersusPoints,
       enqueueVersusStateSync,
       reconcileVersusPoints,
+      refreshProgression,
     ],
   );
   const isOnlineVersus = playScope === "versus";
   const isBotPractice = playScope === "practice";
   const isVersusRun = playScope !== "single";
   const mode: GameMode = mainView === "versus" ? "normal" : endlessMode;
+  const modeRules = GAME_MODE_RULES[mode];
   const [playerClass, setPlayerClass] = useState("runner"),
     [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
     [inventoryCharacter, setInventoryCharacter] = useState<{
@@ -1512,8 +1648,7 @@ export default function Home() {
     isOnlineVersus && versusServerMaxHearts !== null
       ? versusServerMaxHearts
       : localMaxHearts;
-  const modeMultiplier =
-    mode === "impossible" ? 3 : mode === "hardcore" ? 1.75 : 1;
+  const modeMultiplier = modeRules.scoreMultiplier;
   const classScoreMultiplier =
     activeClass === "trickster" && mode === "normal" ? 1.15 : 1;
   const activeAbility =
@@ -1524,6 +1659,62 @@ export default function Home() {
     activeCharacterDefinition.rarity,
   );
   const activeWeaponScoreMultiplier = 1 + activeWeaponScoreBonus;
+  useEffect(() => {
+    if (
+      !over ||
+      guest ||
+      !userIdRef.current ||
+      playScope === "practice" ||
+      !progressionRunIdRef.current ||
+      progressionAwardedRunIdRef.current === progressionRunIdRef.current
+    )
+      return;
+
+    const runId = progressionRunIdRef.current;
+    progressionAwardedRunIdRef.current = runId;
+    const awardRun = async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const { data, error } = await supabase.rpc("award_completed_run", {
+          p_run_id: runId,
+          p_score: Math.max(0, Math.floor(scoreRef.current)),
+          p_scope:
+            playScope === "versus"
+              ? `${versusMode}_1v1`
+              : "endless",
+        });
+        if (!error) {
+          applyProgressionPayload(data);
+          const savedHighScore = Number(
+            (data as { high_score?: unknown } | null)?.high_score,
+          );
+          if (Number.isFinite(savedHighScore) && savedHighScore >= 0) {
+            highScoreRef.current = Math.floor(savedHighScore);
+            setHighScore(Math.floor(savedHighScore));
+          }
+          return;
+        }
+        if (attempt === 2) {
+          console.error("Could not save run XP:", error.message);
+          progressionAwardedRunIdRef.current = null;
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+      }
+    };
+    const pendingAward = awardRun();
+    progressionAwardPromiseRef.current = pendingAward;
+    void pendingAward.finally(() => {
+      if (progressionAwardPromiseRef.current === pendingAward)
+        progressionAwardPromiseRef.current = null;
+    });
+  }, [
+    applyProgressionPayload,
+    guest,
+    over,
+    playScope,
+    progressionRunVersion,
+    versusMode,
+  ]);
   useEffect(() => {
     if (mainView === "endless" && !running && !over)
       setHearts(startingHearts);
@@ -1692,7 +1883,6 @@ export default function Home() {
       orbitCooldownRemainingRef.current = restoring ? 5000 : 0;
       cometChargeRemainingRef.current = 8000;
       cometChargedRef.current = false;
-      scoutShieldCooldownUntilRef.current = restoring ? now + 4000 : 0;
       rogueGrazeCooldownUntilRef.current = restoring ? now + 1250 : 0;
       rogueGrazedItemIdsRef.current.clear();
       bloomGemWaveRef.current = restoring ? restoredWave : 0;
@@ -1750,9 +1940,9 @@ export default function Home() {
         if (applyCharacterEffects && announcedCharacter === "runner_ace")
           showAbilityNotice("MOMENTUM · SCORE ×1.10", 1400);
         if (applyCharacterEffects && announcedCharacter === "runner_pacer") {
-          pacerRushRemainingRef.current = 15000;
+          pacerRushRemainingRef.current = 6000;
           showAbilityNotice(
-            "WAVE RUSH · SPEED ×3 + SCORE ×5 = ×15 FOR 15 SECONDS",
+            "WAVE RUSH · SPEED ×1.5 + SCORE ×2 = ×3 FOR 6 SECONDS",
             1800,
           );
         }
@@ -1760,8 +1950,8 @@ export default function Home() {
           applyCharacterEffects &&
           announcedCharacter === "trickster_jester"
         ) {
-          grantInvincibility(2500);
-          showAbilityNotice("ENCORE · 2.5 SECOND SHIELD", 1400);
+          grantInvincibility(1250);
+          showAbilityNotice("ENCORE · 1.25 SECOND SHIELD", 1400);
         }
         if (announcedCharacter === "trickster_wildcard") {
           const matchId = versusMatchRef.current;
@@ -1789,7 +1979,23 @@ export default function Home() {
     },
     [activeCharacter, grantInvincibility, showAbilityNotice],
   );
-  const reset = useCallback((forceNormalMode = false) => {
+  const reset = useCallback(async (
+    forceNormalMode = false,
+    trackProgression = true,
+  ) => {
+    if (trackProgression && progressionAwardPromiseRef.current)
+      await progressionAwardPromiseRef.current;
+    if (trackProgression && userIdRef.current) {
+      const runId = await startProgressionRun();
+      if (!runId) {
+        showAbilityNotice("ACCOUNT XP CONNECTION ERROR · TRY AGAIN", 1800);
+        return;
+      }
+    } else {
+      progressionStartIntentRef.current += 1;
+      progressionRunIdRef.current = null;
+      progressionAwardedRunIdRef.current = null;
+    }
     const runStartingHearts = forceNormalMode
       ? playerClass === "tank"
         ? 4
@@ -1846,7 +2052,9 @@ export default function Home() {
     resetCharacterAbilityState,
     resetVersusClientSync,
     selectedCharacter,
+    showAbilityNotice,
     soundtrack,
+    startProgressionRun,
     startingHearts,
   ]);
   const resetGameToMenu = () => {
@@ -2014,7 +2222,7 @@ export default function Home() {
             turnLockedRef.current = false;
             delayedMoveTimerRef.current = null;
           },
-          activeCharacter === "tank_glacier" ? 125 : 250,
+          activeCharacter === "runner_scout" ? 125 : 250,
         );
         return;
       }
@@ -2257,6 +2465,8 @@ export default function Home() {
       normalizeVersusHearts(Number(snapshot.self?.hearts) || 0),
     );
     const matchStatus = snapshot.match?.status ?? "playing";
+    if (snapshot.match?.mode === "casual" || snapshot.match?.mode === "ranked")
+      setVersusMode(snapshot.match.mode);
     const eliminated =
       snapshot.self?.status === "eliminated" || matchStatus === "finished";
 
@@ -2381,6 +2591,10 @@ export default function Home() {
     serverStatus?: string,
   ) => {
     resetVersusClientSync();
+    progressionStartIntentRef.current += 1;
+    progressionRunIdRef.current = matchId;
+    progressionAwardedRunIdRef.current = null;
+    setProgressionRunVersion((value) => value + 1);
     versusMatchRef.current = matchId;
     versusFinishedRef.current = false;
     setMainView("versus");
@@ -2428,6 +2642,10 @@ export default function Home() {
       setVersusResult("SIGN IN TO PLAY 1V1");
       return;
     }
+    if (versusMode === "ranked" && !playerProgression.ranked_unlocked) {
+      setVersusResult("RANKED 1V1 UNLOCKS AT LEVEL 25");
+      return;
+    }
     if (versusSearchingRef.current || versusLeaving) return;
     invalidateVersusSearch();
     const searchToken = versusSearchTokenRef.current;
@@ -2435,7 +2653,9 @@ export default function Home() {
     setVersusPhase("searching");
     versusSearchingRef.current = true;
     const poll = async () => {
-      const { data, error } = await supabase.rpc("join_1v1_queue");
+      const { data, error } = await supabase.rpc("join_1v1_queue", {
+        p_mode: versusMode,
+      });
       if (searchToken !== versusSearchTokenRef.current) {
         if (
           data?.match_id &&
@@ -2452,6 +2672,8 @@ export default function Home() {
         return;
       }
       if (data?.match_id) {
+        if (data.mode === "casual" || data.mode === "ranked")
+          setVersusMode(data.mode);
         versusSearchingRef.current = false;
         if (versusPollTimerRef.current) {
           clearTimeout(versusPollTimerRef.current);
@@ -2482,6 +2704,8 @@ export default function Home() {
     spawnedAttackIdsRef.current.clear();
     botAttackPointsRef.current = 0;
     playerAttacksAgainstBotRef.current = [];
+    progressionRunIdRef.current = null;
+    progressionAwardedRunIdRef.current = null;
     setMainView("versus");
     setPlayScope("practice");
     setVersusPhase("playing");
@@ -2492,7 +2716,7 @@ export default function Home() {
     setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
     setVersusResult("");
     setVersusIntermissionReady(false);
-    reset(true);
+    reset(true, false);
   };
   const clearVersusLocalSession = () => {
     resetVersusClientSync();
@@ -2563,7 +2787,7 @@ export default function Home() {
       if (running && playScope === "single") resetGameToMenu();
       setPaused(false);
       setMainView("versus");
-      void loadVersusLeaderboard();
+      if (versusMode === "ranked") void loadVersusLeaderboard();
       return;
     }
     const left = await leaveVersusSession();
@@ -2579,7 +2803,7 @@ export default function Home() {
         if (!left) return;
         resetGameToMenu();
         setMainView("versus");
-        void loadVersusLeaderboard();
+        if (versusMode === "ranked") void loadVersusLeaderboard();
       });
     } else {
       resetGameToMenu();
@@ -2713,7 +2937,7 @@ export default function Home() {
         pacerRushRemainingRef.current > 0;
       const mimicPhase = (wave - 1) % 3;
       const characterSpeedMultiplier = pacerRushActive
-        ? 3
+        ? 1.5
         : activeCharacter === "runner_dash"
           ? 1.06
           : activeCharacter === "runner_blitz"
@@ -2734,7 +2958,7 @@ export default function Home() {
             (activeCharacter === "misc_broker" ? 1.25 : 1) *
             (activeCharacter === "misc_prospector" ? 1.6 : 1) *
             (activeCharacter === "misc_mimic" && mimicPhase === 1
-              ? 1.5
+              ? 1.75
               : 1) *
             (activeCharacter === "trickster_wildcard" &&
             wildcardBuffRef.current === "gems"
@@ -2774,7 +2998,10 @@ export default function Home() {
               .filter((item) => isHazardKind(item.kind))
               .map((item) => item.lane),
           );
-          if (isHazardKind(kind) && hazardLanes.size >= MAX_HAZARD_LANES)
+          if (
+            isHazardKind(kind) &&
+            hazardLanes.size >= modeRules.hazardLaneLimit
+          )
             return v;
           const blocked = new Set(v.map((x) => x.lane));
           const lanes = TRACK_LANES.filter((l) => !blocked.has(l));
@@ -2829,13 +3056,13 @@ export default function Home() {
             activeCharacter === "misc_mimic" &&
             mimicPhase === 0
           )
-            speedFactor *= 0.9;
+            speedFactor *= 0.82;
           if (
             (item.kind === "gem" || item.kind === "coin") &&
             activeCharacter === "misc_mimic" &&
             mimicPhase === 2
           )
-            speedFactor *= 0.75;
+            speedFactor *= 0.65;
           if (
             (item.kind === "gem" || item.kind === "coin") &&
             activeCharacter === "misc_catalyst"
@@ -2845,9 +3072,9 @@ export default function Home() {
             (item.kind === "gem" || item.kind === "coin") &&
             activeCharacter === "misc_harvester"
           )
-            speedFactor *= 0.65;
+            speedFactor *= 0.55;
           if (isHazard && activeCharacter === "misc_muse")
-            speedFactor *= 0.88;
+            speedFactor *= 0.82;
           if (
             isHazard &&
             activeCharacter === "trickster_smoke" &&
@@ -2908,8 +3135,12 @@ export default function Home() {
             ) {
               echoGrazeCooldownUntilRef.current = Date.now() + 2000;
               grantInvincibility(650);
-              setScore((value) => value + 40);
-              showAbilityNotice("ECHO GRAZE · SHIELD +40 SCORE", 1000);
+              const echoScore = 40 + 10 * wave;
+              setScore((value) => value + echoScore);
+              showAbilityNotice(
+                `ECHO GRAZE · SHIELD +${echoScore} SCORE`,
+                1000,
+              );
             }
           }
           const rangerPickup =
@@ -2937,18 +3168,20 @@ export default function Home() {
                 tonicCollectibleWaveRef.current !== wave
               ) {
                 tonicCollectibleWaveRef.current = wave;
-                setHearts((value) => Math.min(maxHearts, value + 0.5));
-                showAbilityNotice("FIRST TONIC · +0.5 HP", 850);
+                setHearts((value) => Math.min(maxHearts, value + 1));
+                showAbilityNotice("FIRST TONIC · +1 HP", 850);
               }
             }
             if (n.kind === "gem") {
               void audioEngine.playSfx("gem");
-              const total = gemsRef.current + 1;
-              gemsRef.current = total;
-              setGems(total);
-              setGemBump(false);
-              requestAnimationFrame(() => setGemBump(true));
-              setTimeout(() => setGemBump(false), 500);
+              if (!isBotPractice) {
+                const total = gemsRef.current + 1;
+                gemsRef.current = total;
+                setGems(total);
+                setGemBump(false);
+                requestAnimationFrame(() => setGemBump(true));
+                setTimeout(() => setGemBump(false), 500);
+              }
               if (activeCharacter === "runner_spark") {
                 sparkBoostRemainingRef.current = 10000;
                 showAbilityNotice("CRYSTAL CHARGE · SCORE ×1.50", 900);
@@ -2979,18 +3212,35 @@ export default function Home() {
                 grantInvincibility(2000);
                 showAbilityNotice("CRYSTAL TONIC · 2 SECOND SHIELD", 1200);
               }
-              if (userIdRef.current)
+              const gemContextId = progressionRunIdRef.current;
+              if (!isBotPractice && userIdRef.current && gemContextId)
                 void supabase
-                  .rpc("increment_player_gems")
+                  .rpc("claim_player_gem", {
+                    p_context_id: gemContextId,
+                    p_pickup_id: String(n.id),
+                  })
                   .then(({ data, error }) => {
                     if (error) {
                       console.error("Could not save gem:", error.message);
+                      void supabase
+                        .from("player_stats")
+                        .select("total_gems")
+                        .eq("user_id", userIdRef.current)
+                        .maybeSingle()
+                        .then(({ data: stats }) => {
+                          const savedGems = Number(stats?.total_gems);
+                          if (!Number.isFinite(savedGems)) return;
+                          gemsRef.current = Math.max(0, savedGems);
+                          setGems(Math.max(0, savedGems));
+                        });
                       return;
                     }
-                    if (typeof data === "number") {
-                      gemsRef.current = data;
-                      setGems(data);
+                    const totalGems = Number(data?.total_gems);
+                    if (Number.isFinite(totalGems)) {
+                      gemsRef.current = totalGems;
+                      setGems(totalGems);
                     }
+                    applyProgressionPayload(data?.progression);
                   });
             } else if (n.kind === "coin") {
               void audioEngine.playSfx("gem");
@@ -3009,22 +3259,14 @@ export default function Home() {
                 setHearts((value) => Math.min(maxHearts, value + 0.5));
                 showAbilityNotice("COLD REMEDY · +0.5 HP", 900);
               }
-              if (activeCharacter === "runner_scout") {
+              if (activeCharacter === "tank_glacier") {
                 void audioEngine.playSfx("shield");
                 clearFreezeEffect();
-                if (scoutShieldCooldownUntilRef.current <= Date.now()) {
-                  scoutShieldCooldownUntilRef.current = Date.now() + 4000;
-                  grantInvincibility(1000);
-                  showAbilityNotice(
-                    "QUICKSTEP · FREEZE BLOCKED + 1 SECOND SHIELD",
-                  );
-                } else {
-                  showAbilityNotice("QUICKSTEP · FREEZE BLOCKED");
-                }
+                showAbilityNotice("FROST ARMOR · FREEZE BLOCKED");
               } else {
                 void audioEngine.playSfx("freeze");
                 applyFreezeEffect(
-                  activeCharacter === "tank_glacier" ? 1500 : 3000,
+                  activeCharacter === "runner_scout" ? 1500 : 3000,
                 );
                 setFlash("freeze-hit");
                 setTimeout(() => {
@@ -3035,12 +3277,14 @@ export default function Home() {
               }
             } else if (
               activeCharacter === "runner_vault" &&
-              n.kind === "spikes"
+              n.kind === "spikes" &&
+              wardenBlockWaveRef.current !== wave
             ) {
+              wardenBlockWaveRef.current = wave;
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
-              showAbilityNotice("SPIKE VAULT · SPIKES CLEARED");
+              showAbilityNotice("SPIKE VAULT · FIRST SPIKE BLOCKED");
               return [];
             } else if (
               activeCharacter === "tank_hammer" &&
@@ -3062,14 +3306,12 @@ export default function Home() {
               return [];
             } else if (
               activeCharacter === "tank_warden" &&
-              n.kind === "spikes" &&
-              wardenBlockWaveRef.current !== wave
+              n.kind === "spikes"
             ) {
-              wardenBlockWaveRef.current = wave;
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
-              showAbilityNotice("SPIKE LOCK · FIRST SPIKE BLOCKED");
+              showAbilityNotice("SPIKE LOCK · SPIKE BLOCKED");
               return [];
             } else if (
               activeCharacter === "tank_citadel" &&
@@ -3167,16 +3409,18 @@ export default function Home() {
                 firstGuardWaveRef.current !== wave
               ) {
                 firstGuardWaveRef.current = wave;
+                const guardReduction =
+                  activeCharacter === "medic_mercy" ? 1 : 0.5;
                 abilityAdjustedDamage = Math.max(
                   0.5,
-                  abilityAdjustedDamage - 0.5,
+                  abilityAdjustedDamage - guardReduction,
                 );
                 showAbilityNotice(
                   `${
                     activeCharacter === "tank_bulwark"
                       ? "HEAVY PLATE"
                       : "GRACE GUARD"
-                  } · BLOCKED 0.5 HP`,
+                  } · BLOCKED ${guardReduction} HP`,
                 );
               }
               if (
@@ -3259,22 +3503,6 @@ export default function Home() {
                   );
                   highScoreRef.current = best;
                   setHighScore(best);
-                  if (userIdRef.current)
-                    void supabase
-                      .rpc("save_player_high_score", { new_score: best })
-                      .then(({ data, error }) => {
-                        if (error) {
-                          console.error(
-                            "Could not save high score:",
-                            error.message,
-                          );
-                          return;
-                        }
-                        if (typeof data === "number") {
-                          highScoreRef.current = data;
-                          setHighScore(data);
-                        }
-                      });
                 }
               }
               setPaused(true);
@@ -3309,8 +3537,12 @@ export default function Home() {
           ) {
             pickpocketPassedCountRef.current += 1;
             if (pickpocketPassedCountRef.current % 7 === 0) {
-              setScore((value) => value + 75);
-              showAbilityNotice("CLOSE COUNT · +75 SCORE", 950);
+              const pickpocketScore = 50 + 10 * wave;
+              setScore((value) => value + pickpocketScore);
+              showAbilityNotice(
+                `CLOSE COUNT · +${pickpocketScore} SCORE`,
+                950,
+              );
             }
           }
           rogueGrazedItemIdsRef.current.delete(n.id);
@@ -3340,8 +3572,6 @@ export default function Home() {
       let characterScoreMultiplier = 1;
       if (activeCharacter === "runner_ace")
         characterScoreMultiplier = 1.1;
-      else if (activeCharacter === "runner_dash")
-        characterScoreMultiplier = 1.06;
       else if (
         activeCharacter === "runner_stride" &&
         state.current.lane >= 1 &&
@@ -3360,16 +3590,12 @@ export default function Home() {
         (state.current.lane === 0 || state.current.lane === 4)
       )
         characterScoreMultiplier = 1.25;
-      else if (activeCharacter === "runner_blitz")
-        characterScoreMultiplier = 1.12;
       else if (activeCharacter === "runner_horizon" && wave >= 10)
         characterScoreMultiplier = 1.3;
-      else if (activeCharacter === "runner_velocity")
-        characterScoreMultiplier = 1.2;
       else if (activeCharacter === "runner_zenith")
         characterScoreMultiplier =
           1 + Math.min(0.6, Math.max(0, wave - 1) * 0.02);
-      else if (pacerRushActive) characterScoreMultiplier = 5;
+      else if (pacerRushActive) characterScoreMultiplier = 2;
       else if (
         activeCharacter === "runner_drift" &&
         driftBoostRemainingRef.current > 0
@@ -3387,7 +3613,7 @@ export default function Home() {
         characterScoreMultiplier = 1.5;
       else if (activeCharacter === "runner_relay")
         characterScoreMultiplier =
-          1 + Math.min(0.3, Math.max(0, wave - 1) * 0.03);
+          1 + Math.min(0.2, Math.max(0, wave - 1) * 0.02);
       else if (
         activeCharacter === "runner_comet" &&
         cometChargedRef.current
@@ -3533,6 +3759,7 @@ export default function Home() {
     isOnlineVersus,
     isVersusRun,
     modeMultiplier,
+    modeRules.hazardLaneLimit,
     classScoreMultiplier,
     activeWeaponScoreMultiplier,
     grantInvincibility,
@@ -3540,6 +3767,7 @@ export default function Home() {
     clearFreezeEffect,
     showAbilityNotice,
     queueOnlineCoinAward,
+    applyProgressionPayload,
     activeAbility.name,
   ]);
   useEffect(() => {
@@ -3576,7 +3804,7 @@ export default function Home() {
             ? 1.5
             : activeCharacter === "medic_salve" &&
                 state.current.hearts <= 2
-              ? 1.5
+              ? 2
               : activeCharacter === "medic_oracle" &&
                   completedWave % 3 === 0
                 ? 2
@@ -3597,7 +3825,7 @@ export default function Home() {
           state.current.hearts <= 2 &&
           state.current.hearts < maxHearts
         )
-          showAbilityNotice("DEEP SALVE · +1.5 HP", 1200);
+          showAbilityNotice("DEEP SALVE · +2 HP", 1200);
         if (
           activeCharacter === "medic_oracle" &&
           completedWave % 3 === 0 &&
@@ -4002,6 +4230,7 @@ export default function Home() {
       }
       setUserEmail(user?.email ?? null);
       if (user) {
+        const sessionUserId = user.id;
         await refreshPlayerAccess();
         const [
           { data: stats, error: statsError },
@@ -4010,6 +4239,7 @@ export default function Home() {
           { data: role },
           { data: owned },
           { data: loadout },
+          { data: progression },
         ] = await Promise.all([
           supabase
             .from("player_stats")
@@ -4034,7 +4264,9 @@ export default function Home() {
             )
             .eq("user_id", user.id)
             .maybeSingle(),
+          supabase.rpc("get_player_progression"),
         ]);
+        if (userIdRef.current !== sessionUserId) return;
         if (statsError)
           console.error("Could not load account stats:", statsError.message);
         if (stats) {
@@ -4064,6 +4296,7 @@ export default function Home() {
         setPlayerCosmetic(safeLoadout.playerCosmetic);
         setObstacleCosmetic(safeLoadout.obstacleCosmetic);
         setEnvironmentCosmetic(safeLoadout.environmentCosmetic);
+        applyProgressionPayload(progression);
       } else {
         setPlayerAccess(null);
         setPlayerAccessError("");
@@ -4082,6 +4315,14 @@ export default function Home() {
         setPlayerCosmetic("");
         setObstacleCosmetic("");
         setEnvironmentCosmetic("");
+        setPlayerProgression({
+          level: 1,
+          xp: 0,
+          xp_required: 100,
+          lifetime_xp: 0,
+          completed_runs: 0,
+          ranked_unlocked: false,
+        });
       }
       setAuthReady(true);
     };
@@ -4096,7 +4337,7 @@ export default function Home() {
       void applySession(session);
     });
     return () => data.subscription.unsubscribe();
-  }, [refreshPlayerAccess]);
+  }, [applyProgressionPayload, refreshPlayerAccess]);
   useEffect(() => {
     if (!userEmail && !guest) return;
     const verify = () => {
@@ -4223,6 +4464,12 @@ export default function Home() {
     setPlayerAccess(null);
     setPlayerAccessError("");
     setPlayerAccessChecking(false);
+    setMyBanAppeal(null);
+    setAppealNote("");
+    setAppealStatus("");
+    setAdminAppeals([]);
+    setAdminAppealStatus("");
+    setAdminAppealNotes({});
     setUnlocks([]);
     setPlayerClass("runner");
     setSelectedCharacter("runner_ace");
@@ -4284,6 +4531,44 @@ export default function Home() {
     }
     setReportBusy(false);
   };
+  const loadMyBanAppeal = useCallback(async () => {
+    if (!userIdRef.current) {
+      setMyBanAppeal(null);
+      return;
+    }
+    const { data, error } = await supabase.rpc("get_my_ban_appeal");
+    if (error) {
+      setAppealStatus(error.message);
+      return;
+    }
+    setAppealStatus("");
+    setMyBanAppeal((data ?? null) as MyBanAppeal | null);
+  }, []);
+  useEffect(() => {
+    if (!userEmail || !(playerAccess?.active_bans?.length ?? 0)) {
+      setMyBanAppeal(null);
+      setAppealNote("");
+      setAppealStatus("");
+      return;
+    }
+    void loadMyBanAppeal();
+  }, [loadMyBanAppeal, playerAccess?.active_bans, userEmail]);
+  const submitBanAppeal = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!userIdRef.current) return;
+    setAppealBusy(true);
+    setAppealStatus("");
+    const { error } = await supabase.rpc("submit_ban_appeal", {
+      p_note: appealNote.trim(),
+    });
+    if (error) setAppealStatus(error.message);
+    else {
+      setAppealNote("");
+      await loadMyBanAppeal();
+      setAppealStatus("Appeal submitted. An admin will review your note.");
+    }
+    setAppealBusy(false);
+  };
   const openReportForm = () => {
     reportPreviousPausedRef.current = state.current.paused;
     setReportStatus("");
@@ -4322,16 +4607,67 @@ export default function Home() {
     }
   };
   const loadReports = async () => {
-    const { data } = await supabase
-      .from("player_reports")
-      .select("*")
-      .neq("status", "resolved")
-      .order("created_at", { ascending: false });
-    setReports((data ?? []) as PlayerReport[]);
+    const { data, error } = await supabase.rpc("get_admin_reports");
+    if (error) {
+      setReports([]);
+      setCopyStatus(error.message);
+    } else {
+      setReports((data ?? []) as PlayerReport[]);
+      setCopyStatus("");
+    }
     setAdminTab("reports");
     setPauseMenuOpen(false);
     setPaused(true);
     setAdminOpen(true);
+  };
+  const loadAppeals = async (
+    status: "pending" | "approved" | "denied" | "all" = appealFilter,
+  ) => {
+    setAdminAppealStatus("");
+    const { data, error } = await supabase.rpc("get_admin_ban_appeals", {
+      p_status: status,
+    });
+    if (error) {
+      setAdminAppeals([]);
+      setAdminAppealStatus(error.message);
+    } else setAdminAppeals((data ?? []) as BanAppeal[]);
+    setAppealFilter(status);
+    setAdminTab("appeals");
+    setPauseMenuOpen(false);
+    setPaused(true);
+  };
+  const resolveBanAppeal = async (
+    appealId: number,
+    action: "approve" | "deny",
+  ) => {
+    setAdminAppealBusyId(appealId);
+    setAdminAppealStatus("");
+    const { data, error } = await supabase.rpc("resolve_ban_appeal", {
+      p_appeal_id: appealId,
+      p_action: action,
+      p_admin_note: adminAppealNotes[appealId]?.trim() || null,
+    });
+    if (error) setAdminAppealStatus(error.message);
+    else {
+      const result = data as { revoked_count?: number } | null;
+      setAdminAppealStatus(
+        action === "approve"
+          ? `Appeal approved. ${result?.revoked_count ?? 0} active ban${result?.revoked_count === 1 ? "" : "s"} removed.`
+          : "Appeal denied. The ban remains active.",
+      );
+      setAdminAppealNotes((current) => {
+        const next = { ...current };
+        delete next[appealId];
+        return next;
+      });
+      const { data: refreshed, error: refreshError } = await supabase.rpc(
+        "get_admin_ban_appeals",
+        { p_status: appealFilter },
+      );
+      if (refreshError) setAdminAppealStatus(refreshError.message);
+      else setAdminAppeals((refreshed ?? []) as BanAppeal[]);
+    }
+    setAdminAppealBusyId(null);
   };
   const loadAdmins = async () => {
     const { data, error } = await supabase.rpc("list_admins");
@@ -4383,7 +4719,7 @@ export default function Home() {
     const text = open
       .map(
         (r, index) =>
-          `REPORT ${index + 1}\nType: ${r.report_type}\nDate: ${new Date(r.created_at).toLocaleString()}\nPlayer: ${r.user_id}\nStatus: ${r.status}\n\n${r.message}`,
+          `REPORT ${index + 1}\nType: ${r.report_type}\nDate: ${new Date(r.created_at).toLocaleString()}\nPlayer: ${r.username ? `${r.username} (${r.user_id})` : r.user_id}\nStatus: ${r.status}\n\n${r.message}`,
       )
       .join("\n\n--------------------\n\n");
     await navigator.clipboard.writeText(text);
@@ -4394,15 +4730,22 @@ export default function Home() {
   };
   const loadCollection = async () => {
     if (guest) return;
+    const sessionUserId = userIdRef.current;
+    if (!sessionUserId) return;
     const [{ data: owned }, { data: loadout }] = await Promise.all([
-      supabase.from("player_unlocks").select("item_key,item_type,rarity"),
+      supabase
+        .from("player_unlocks")
+        .select("item_key,item_type,rarity")
+        .eq("user_id", sessionUserId),
       supabase
         .from("player_loadouts")
         .select(
           "class_key,character_key,player_cosmetic,obstacle_cosmetic,environment_cosmetic",
         )
+        .eq("user_id", sessionUserId)
         .maybeSingle(),
     ]);
+    if (userIdRef.current !== sessionUserId) return;
     const ownedItems = (owned ?? []) as Unlock[];
     const safeLoadout = normalizeOwnedLoadout(ownedItems, loadout);
     setUnlocks(ownedItems);
@@ -4540,7 +4883,9 @@ export default function Home() {
       setInventoryStatus("Healer and Tank cannot be used in Hardcore mode.");
       return;
     }
-    const owned = isCharacterOwned(unlocks, characterKey);
+    const owned = guest
+      ? isStarterCharacter(characterKey)
+      : isCharacterOwned(unlocks, characterKey);
     if (!owned) {
       setInventoryStatus("That character is locked. Extract it in the Shop first.");
       return;
@@ -4637,7 +4982,10 @@ export default function Home() {
     inventoryCharacter.classKey
   ].find((character) => character.key === inventoryCharacter.characterKey);
   const focusedCharacterOwned = Boolean(
-    focusedCharacter && isCharacterOwned(unlocks, focusedCharacter.key),
+    focusedCharacter &&
+      (guest
+        ? isStarterCharacter(focusedCharacter.key)
+        : isCharacterOwned(unlocks, focusedCharacter.key)),
   );
   const focusedCharacterAbility = focusedCharacter
     ? CHARACTER_ABILITIES[focusedCharacter.key as CharacterKey]
@@ -4742,6 +5090,54 @@ export default function Home() {
               {ban.reason && <p>{ban.reason}</p>}
             </article>
           ))}
+          {userEmail && (
+            <section className="ban-appeal-panel">
+              <h2>APPEAL THIS BAN</h2>
+              {myBanAppeal?.appeal?.status === "pending" ? (
+                <div className="appeal-pending" role="status">
+                  <b>APPEAL PENDING</b>
+                  <span>
+                    Sent {new Date(
+                      myBanAppeal.appeal.created_at,
+                    ).toLocaleString()}
+                  </span>
+                  <p>{myBanAppeal.appeal.player_note}</p>
+                </div>
+              ) : myBanAppeal && !myBanAppeal.can_appeal ? (
+                <div className="appeal-denied" role="status">
+                  <b>
+                    APPEAL {myBanAppeal.appeal?.status?.toUpperCase() ?? "SENT"}
+                  </b>
+                  {myBanAppeal.appeal?.admin_note && (
+                    <p>{myBanAppeal.appeal.admin_note}</p>
+                  )}
+                </div>
+              ) : (
+                <form onSubmit={submitBanAppeal}>
+                  <label>
+                    YOUR NOTE
+                    <textarea
+                      value={appealNote}
+                      onChange={(event) => setAppealNote(event.target.value)}
+                      minLength={10}
+                      maxLength={1500}
+                      placeholder="Explain why this ban should be reviewed…"
+                      required
+                    />
+                  </label>
+                  <small>{appealNote.length}/1500</small>
+                  <button disabled={appealBusy}>
+                    {appealBusy ? "SENDING…" : "SUBMIT APPEAL"}
+                  </button>
+                </form>
+              )}
+              {appealStatus && (
+                <div className="report-status" role="status">
+                  {appealStatus}
+                </div>
+              )}
+            </section>
+          )}
           <button
             onClick={() => {
               if (userEmail) void signOut();
@@ -4862,6 +5258,29 @@ export default function Home() {
       >
         {!guest && (
           <div className="report-utility-bar">
+            <div
+              className="player-level-card"
+              aria-label={`Level ${playerProgression.level}, ${playerProgression.xp} of ${playerProgression.xp_required} XP`}
+            >
+              <span>
+                <b>LVL {playerProgression.level}</b>
+                <small>
+                  {playerProgression.xp.toLocaleString()} /{" "}
+                  {playerProgression.xp_required.toLocaleString()} XP
+                </small>
+              </span>
+              <i aria-hidden="true">
+                <u
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      (playerProgression.xp / playerProgression.xp_required) *
+                        100,
+                    )}%`,
+                  }}
+                />
+              </i>
+            </div>
             <button
               className="top-report-button"
               type="button"
@@ -5024,9 +5443,13 @@ export default function Home() {
               <header className="versus-hub-heading">
                 <div>
                   <p>MULTI-DEVICE REALTIME</p>
-                  <h2 id="versus-hub-title">SKYWAY 1V1</h2>
+                  <h2 id="versus-hub-title">
+                    {versusMode === "ranked" ? "RANKED 1V1" : "CASUAL 1V1"}
+                  </h2>
                 </div>
-                <strong>OUTLAST YOUR RIVAL</strong>
+                <strong>
+                  {versusMode === "ranked" ? "ELO ON THE LINE" : "NO ELO · JUST PLAY"}
+                </strong>
               </header>
               <div className="versus-hub-scroll">
                 <section
@@ -5041,6 +5464,41 @@ export default function Home() {
                       <h3 id="versus-matchmaking-title">MATCHMAKING</h3>
                     </div>
                   </header>
+                  <div className="versus-mode-picker" aria-label="1v1 queue type">
+                    <button
+                      className={versusMode === "casual" ? "selected" : ""}
+                      aria-pressed={versusMode === "casual"}
+                      disabled={versusPhase === "searching" || versusLeaving}
+                      onClick={() => {
+                        setVersusMode("casual");
+                        setVersusResult("");
+                      }}
+                    >
+                      <b>CASUAL</b>
+                      <small>NO ELO · OPEN TO EVERY LEVEL</small>
+                    </button>
+                    <button
+                      className={versusMode === "ranked" ? "selected" : ""}
+                      aria-pressed={versusMode === "ranked"}
+                      disabled={
+                        versusPhase === "searching" ||
+                        versusLeaving ||
+                        !playerProgression.ranked_unlocked
+                      }
+                      onClick={() => {
+                        setVersusMode("ranked");
+                        setVersusResult("");
+                        void loadVersusLeaderboard();
+                      }}
+                    >
+                      <b>RANKED</b>
+                      <small>
+                        {playerProgression.ranked_unlocked
+                          ? "ELO ENABLED · COMPETITIVE"
+                          : `LOCKED · REACH LEVEL 25 (LVL ${playerProgression.level})`}
+                      </small>
+                    </button>
+                  </div>
                   {versusPhase === "searching" ? (
                     <div className="versus-searching" role="status" aria-live="polite">
                       <div className="matchmaking-spinner" aria-hidden="true">
@@ -5075,7 +5533,9 @@ export default function Home() {
                         disabled={guest || versusLeaving}
                         aria-describedby={guest ? "versus-signin-note" : undefined}
                       >
-                        {versusLeaving ? "FINISHING PREVIOUS MATCH…" : "FIND OPPONENT"}
+                        {versusLeaving
+                          ? "FINISHING PREVIOUS MATCH…"
+                          : `FIND ${versusMode.toUpperCase()} OPPONENT`}
                       </button>
                       {guest && (
                         <small id="versus-signin-note" className="versus-signin-note">
@@ -5124,7 +5584,11 @@ export default function Home() {
                     </li>
                     <li>
                       Bot practice uses the same local rules but never changes
-                      ranked wins, losses, or rating.
+                      wins, losses, XP, or rating.
+                    </li>
+                    <li>
+                      Casual never shows or changes Elo. Ranked unlocks at level
+                      25 and records Elo.
                     </li>
                   </ol>
                 </section>
@@ -5158,6 +5622,7 @@ export default function Home() {
                   </div>
                 </section>
 
+                {versusMode === "ranked" && (
                 <section
                   className="versus-hub-panel versus-leaderboard-panel"
                   aria-labelledby="versus-leaderboard-title"
@@ -5220,6 +5685,7 @@ export default function Home() {
                     </ol>
                   )}
                 </section>
+                )}
               </div>
             </div>
           ) : (
@@ -5330,6 +5796,9 @@ export default function Home() {
                 <small>
                   SPEED ×{getWaveSpeedMultiplier(wave).toFixed(2)}
                 </small>
+                {mode !== "normal" && (
+                  <small>SCORE ×{modeMultiplier.toFixed(2)}</small>
+                )}
               </div>
               {items.map((x) => (
                 <div
@@ -5758,6 +6227,57 @@ export default function Home() {
                     >
                       CHANGE PASSWORD
                     </button>
+                  )}
+                  {(playerAccess?.active_bans?.length ?? 0) > 0 && (
+                    <div className="settings-appeal">
+                      <h3>APPEAL A BAN</h3>
+                      {myBanAppeal?.appeal?.status === "pending" ? (
+                        <div className="appeal-pending" role="status">
+                          <b>APPEAL PENDING</b>
+                          <span>
+                            Sent {new Date(
+                              myBanAppeal.appeal.created_at,
+                            ).toLocaleString()}
+                          </span>
+                          <p>{myBanAppeal.appeal.player_note}</p>
+                        </div>
+                      ) : myBanAppeal && !myBanAppeal.can_appeal ? (
+                        <div className="appeal-denied" role="status">
+                          <b>
+                            APPEAL {myBanAppeal.appeal?.status?.toUpperCase() ??
+                              "SENT"}
+                          </b>
+                          {myBanAppeal.appeal?.admin_note && (
+                            <p>{myBanAppeal.appeal.admin_note}</p>
+                          )}
+                        </div>
+                      ) : (
+                        <form onSubmit={submitBanAppeal}>
+                          <label>
+                            YOUR NOTE
+                            <textarea
+                              value={appealNote}
+                              onChange={(event) =>
+                                setAppealNote(event.target.value)
+                              }
+                              minLength={10}
+                              maxLength={1500}
+                              placeholder="Explain why this ban should be reviewed…"
+                              required
+                            />
+                          </label>
+                          <small>{appealNote.length}/1500</small>
+                          <button disabled={appealBusy}>
+                            {appealBusy ? "SENDING…" : "SUBMIT APPEAL"}
+                          </button>
+                        </form>
+                      )}
+                      {appealStatus && (
+                        <div className="report-status" role="status">
+                          {appealStatus}
+                        </div>
+                      )}
+                    </div>
                   )}
                   <div className="settings-report">
                     <h3>REPORT AN ISSUE</h3>
@@ -6192,10 +6712,9 @@ export default function Home() {
                         </p>
                         <div className="inventory-roster">
                           {roster.map((character) => {
-                            const owned = isCharacterOwned(
-                              unlocks,
-                              character.key,
-                            );
+                            const owned = guest
+                              ? isStarterCharacter(character.key)
+                              : isCharacterOwned(unlocks, character.key);
                             const focused =
                               sectionFocused &&
                               inventoryCharacter.characterKey === character.key;
@@ -6449,7 +6968,7 @@ export default function Home() {
             style={adminOpen ? undefined : { display: "none" }}
           >
             <section
-              className={`admin-inbox${adminTab === "players" ? " player-editor-shell" : ""}`}
+              className={`admin-inbox${adminTab === "players" ? " player-editor-shell" : adminTab === "appeals" ? " appeals-shell" : ""}`}
               role="dialog"
               aria-modal="true"
               aria-labelledby="admin-dialog-title"
@@ -6470,7 +6989,9 @@ export default function Home() {
                   ? "ADMIN 01 · INBOX"
                   : adminTab === "admins"
                     ? "ADMIN 02 · ADMINS"
-                    : "ADMIN 03 · PLAYER LOOKUP + COMMANDS"}
+                    : adminTab === "players"
+                      ? "ADMIN 03 · PLAYER LOOKUP + COMMANDS"
+                      : "ADMIN 04 · APPEALS + BANS"}
               </h2>
               <div className="admin-tabs">
                 <button
@@ -6494,6 +7015,12 @@ export default function Home() {
                   }}
                 >
                   03 · PLAYER LOOKUP
+                </button>
+                <button
+                  className={adminTab === "appeals" ? "active" : ""}
+                  onClick={() => void loadAppeals(appealFilter)}
+                >
+                  04 · APPEALS
                 </button>
               </div>
               {adminTab === "reports" ? (
@@ -6520,7 +7047,7 @@ export default function Home() {
                           <p>{r.message}</p>
                           <small>
                             {new Date(r.created_at).toLocaleString()} ·{" "}
-                            {r.user_id.slice(0, 8)}
+                            {r.username ?? r.user_id.slice(0, 8)}
                           </small>
                           <button onClick={() => resolveReport(r.id)}>
                             RESOLVE & DELETE
@@ -6592,6 +7119,135 @@ export default function Home() {
                         )}
                       </article>
                     ))}
+                  </div>
+                </div>
+              ) : adminTab === "appeals" ? (
+                <div className="admin-appeals">
+                  {adminRole !== "main" && (
+                    <div className="appeal-read-only" role="note">
+                      CO-ADMIN VIEW ONLY · A MAIN ADMIN MUST APPROVE, DENY, OR
+                      UNBAN.
+                    </div>
+                  )}
+                  <div className="appeal-filter" aria-label="Appeal filter">
+                    {(["pending", "approved", "denied", "all"] as const).map(
+                      (filter) => (
+                        <button
+                          key={filter}
+                          className={appealFilter === filter ? "active" : ""}
+                          onClick={() => void loadAppeals(filter)}
+                        >
+                          {filter.toUpperCase()}
+                        </button>
+                      ),
+                    )}
+                  </div>
+                  {adminAppealStatus && (
+                    <div className="report-status" role="status">
+                      {adminAppealStatus}
+                    </div>
+                  )}
+                  <div className="appeal-list">
+                    {adminAppeals.length === 0 ? (
+                      <div className="empty-reports">
+                        No {appealFilter === "all" ? "" : `${appealFilter} `}
+                        appeals.
+                      </div>
+                    ) : (
+                      adminAppeals.map((appeal) => (
+                        <article key={appeal.id}>
+                          <header>
+                            <div>
+                              <b>{appeal.username || "NO USERNAME"}</b>
+                              <small>{appeal.email}</small>
+                            </div>
+                            <span className={`appeal-state ${appeal.status}`}>
+                              {appeal.status.toUpperCase()}
+                            </span>
+                          </header>
+                          <dl>
+                            <div>
+                              <dt>BAN</dt>
+                              <dd>
+                                {(appeal.ban_scope || "unknown").toUpperCase()}
+                                {` · ${appeal.snapshot_active_ban_count}/${appeal.appealed_ban_count} APPEALED BANS ACTIVE`}
+                                {appeal.active_ban_count >
+                                  appeal.snapshot_active_ban_count &&
+                                  ` · ${appeal.active_ban_count - appeal.snapshot_active_ban_count} NEWER`}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>SUBMITTED</dt>
+                              <dd>{new Date(appeal.created_at).toLocaleString()}</dd>
+                            </div>
+                          </dl>
+                          {appeal.ban_note && (
+                            <div className="appeal-note ban-note">
+                              <b>ADMIN BAN NOTE</b>
+                              <p>{appeal.ban_note}</p>
+                            </div>
+                          )}
+                          <div className="appeal-note player-note">
+                            <b>PLAYER APPEAL</b>
+                            <p>{appeal.player_note}</p>
+                          </div>
+                          {appeal.status === "pending" &&
+                          adminRole === "main" ? (
+                            <div className="appeal-review">
+                              <label>
+                                RESPONSE NOTE <span>OPTIONAL · SHOWN TO PLAYER</span>
+                                <textarea
+                                  value={adminAppealNotes[appeal.id] ?? ""}
+                                  onChange={(event) =>
+                                    setAdminAppealNotes((current) => ({
+                                      ...current,
+                                      [appeal.id]: event.target.value,
+                                    }))
+                                  }
+                                  maxLength={500}
+                                  placeholder="Optional response explaining this decision…"
+                                />
+                              </label>
+                              <div>
+                                <button
+                                  disabled={adminAppealBusyId !== null}
+                                  onClick={() =>
+                                    void resolveBanAppeal(appeal.id, "approve")
+                                  }
+                                >
+                                  APPROVE &amp; UNBAN
+                                </button>
+                                <button
+                                  disabled={adminAppealBusyId !== null}
+                                  onClick={() =>
+                                    void resolveBanAppeal(appeal.id, "deny")
+                                  }
+                                >
+                                  DENY
+                                </button>
+                              </div>
+                            </div>
+                          ) : appeal.status === "pending" ? (
+                            <div className="appeal-card-read-only">
+                              READ ONLY · WAITING FOR A MAIN ADMIN
+                            </div>
+                          ) : (
+                            <footer>
+                              Reviewed {appeal.reviewed_at
+                                ? new Date(appeal.reviewed_at).toLocaleString()
+                                : "—"}
+                              {appeal.reviewed_by_username ||
+                              appeal.reviewed_by_email
+                                ? ` by ${appeal.reviewed_by_username || appeal.reviewed_by_email}`
+                                : ""}
+                              {appeal.admin_note
+                                ? ` · Note: ${appeal.admin_note}`
+                                : ""}
+                            </footer>
+                          )}
+                        </article>
+                      ))
+                    )}
                   </div>
                 </div>
               ) : null}

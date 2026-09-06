@@ -3,7 +3,8 @@
 -- Secure player lookup, account inventory/stat administration, app-device
 -- registration, scoped bans, command autocomplete, and an append-only audit
 -- trail. Admin command text is parsed by the client into the typed RPC below;
--- no command text is ever executed as SQL.
+-- no command text is ever executed as SQL. Match coin balances are gameplay-only
+-- and never mutable through admin commands.
 
 begin;
 
@@ -828,23 +829,7 @@ begin
       from public.multiplayer_players player
       join public.multiplayer_matches match on match.id = player.match_id
       where player.user_id = p_user_id
-    ),
-    'extractions', coalesce((
-      select jsonb_agg(jsonb_build_object(
-        'id', extraction.id,
-        'box_type', extraction.box_type,
-        'gem_cost', extraction.gem_cost,
-        'gems_before', extraction.balance_before,
-        'gems_after', extraction.balance_after,
-        'item_key', extraction.item_key,
-        'item_type', extraction.item_type,
-        'rarity', extraction.rarity,
-        'was_new', extraction.is_new,
-        'created_at', extraction.created_at
-      ) order by extraction.created_at desc)
-      from public.extraction_transactions extraction
-      where extraction.user_id = p_user_id
-    ), '[]'::jsonb)
+    )
   ) into v_result;
 
   return v_result;
@@ -880,13 +865,13 @@ begin
     'commands', jsonb_build_array(
       '/grant <character|cosmetic> [item] [username|email]',
       '/revoke <character|cosmetic> [item] [from username|email]',
-      '/set <gems|high_score|coins> <value> [username|email]',
+      '/set <gems|high_score> <value> [username|email]',
       '/ban [account + device + leaderboard] for <duration|permanently>',
       '/bann [account + device + score] for <duration|permanently>',
       '/unban [ban id]'
     ),
     'item_kinds', jsonb_build_array('character', 'cosmetic'),
-    'stats', jsonb_build_array('gems', 'high_score', 'coins'),
+    'stats', jsonb_build_array('gems', 'high_score'),
     'ban_scopes', jsonb_build_array('account', 'device', 'leaderboard'),
     'duration_units', jsonb_build_array('years', 'days', 'hours', 'minutes'),
     'selected_user_id', p_selected_user_id,
@@ -1024,7 +1009,6 @@ declare
   v_expires_at timestamptz;
   v_ban_id bigint;
   v_ban_ids jsonb := '[]'::jsonb;
-  v_active_match_id uuid;
 begin
   if not public.is_main_admin() then
     raise exception 'Only main admins can run player commands';
@@ -1040,9 +1024,6 @@ begin
 
   if v_action = 'bann' then
     v_action := 'ban';
-  end if;
-  if v_action not in ('grant', 'revoke', 'set', 'ban', 'unban') then
-    raise exception 'Unknown player command';
   end if;
   if char_length(v_reason) > 500 then
     raise exception 'Reason must be 500 characters or fewer';
@@ -1065,6 +1046,20 @@ begin
   -- exception block rolls back a partial mutation before the failed attempt is
   -- appended to the audit table.
   begin
+    -- Match coins are server-earned state. Match direct RPC inputs against
+    -- current and legacy aliases before processing any typed admin action.
+    if regexp_replace(v_action, '[^a-z0-9]+', '', 'g') ~
+         '(coin|obstaclepoint|versuspoint|melon)'
+       or regexp_replace(v_stat_key, '[^a-z0-9]+', '', 'g') ~
+         '(coin|obstaclepoint|versuspoint|melon)'
+       or regexp_replace(v_item_kind, '[^a-z0-9]+', '', 'g') ~
+         '(coin|obstaclepoint|versuspoint|melon)' then
+      raise exception 'Coin balances are gameplay-only and cannot be changed by admin commands';
+    end if;
+    if v_action not in ('grant', 'revoke', 'set', 'ban', 'unban') then
+      raise exception 'Unknown player command';
+    end if;
+
     if v_action in ('grant', 'revoke') then
       if v_item_kind not in ('character', 'cosmetic') then
         raise exception 'Item kind must be character or cosmetic';
@@ -1179,63 +1174,39 @@ begin
       if v_stat_key = 'score' then
         v_stat_key := 'high_score';
       end if;
-      if v_stat_key not in ('gems', 'high_score', 'coins') then
-        raise exception 'Stat must be gems, high_score, or coins';
+      if v_stat_key not in ('gems', 'high_score') then
+        raise exception 'Stat must be gems or high_score';
       end if;
       if p_value is null or p_value < 0 then
         raise exception 'Stat value must be a non-negative whole number';
       end if;
       if (v_stat_key = 'gems' and p_value > 1000000000)
-         or (v_stat_key = 'high_score' and p_value > 1000000000000)
-         or (v_stat_key = 'coins' and p_value > 1000000) then
+         or (v_stat_key = 'high_score' and p_value > 1000000000000) then
         raise exception 'Stat value is above the administrative safety limit';
       end if;
 
-      if v_stat_key in ('gems', 'high_score') then
-        insert into public.player_stats(user_id, total_gems, high_score, updated_at)
-        values (p_target_user_id, 0, 0, now())
-        on conflict (user_id) do nothing;
+      insert into public.player_stats(user_id, total_gems, high_score, updated_at)
+      values (p_target_user_id, 0, 0, now())
+      on conflict (user_id) do nothing;
 
-        update public.player_stats stats
-        set total_gems = case
-              when v_stat_key = 'gems' then p_value
-              else stats.total_gems
-            end,
-            high_score = case
-              when v_stat_key = 'high_score' then p_value
-              else stats.high_score
-            end,
-            updated_at = now()
-        where stats.user_id = p_target_user_id;
-      else
-        select player.match_id
-        into v_active_match_id
-        from public.multiplayer_players player
-        join public.multiplayer_matches match on match.id = player.match_id
-        where player.user_id = p_target_user_id
-          and match.status in ('countdown', 'playing', 'intermission')
-        order by match.created_at desc
-        limit 1
-        for update of player;
-
-        if v_active_match_id is null then
-          raise exception 'Coins can only be set while the player has an active 1v1 match';
-        end if;
-
-        update public.multiplayer_players player
-        set obstacle_points = p_value::integer,
-            updated_at = now()
-        where player.match_id = v_active_match_id
-          and player.user_id = p_target_user_id;
-      end if;
+      update public.player_stats stats
+      set total_gems = case
+            when v_stat_key = 'gems' then p_value
+            else stats.total_gems
+          end,
+          high_score = case
+            when v_stat_key = 'high_score' then p_value
+            else stats.high_score
+          end,
+          updated_at = now()
+      where stats.user_id = p_target_user_id;
 
       v_result := jsonb_build_object(
         'ok', true,
         'action', v_action,
         'target_user_id', p_target_user_id,
         'stat_key', v_stat_key,
-        'value', p_value,
-        'match_id', v_active_match_id
+        'value', p_value
       );
 
     elsif v_action = 'ban' then
@@ -1547,4 +1518,47 @@ revoke all on function public.get_leaderboard() from public;
 grant execute on function public.get_leaderboard() to anon, authenticated;
 
 notify pgrst, 'reload schema';
+
+-- Prevent this historical setup from restoring either the removed receipt
+-- payload or any old admin coin mutation when it is rerun manually.
+do $$
+begin
+  if position(
+       'extraction_transactions' in lower(
+         pg_get_functiondef(to_regprocedure('public.admin_get_player(uuid)'))
+       )
+     ) > 0
+     or position(
+       '''extractions''' in lower(
+         pg_get_functiondef(to_regprocedure('public.admin_get_player(uuid)'))
+       )
+     ) > 0 then
+    raise exception 'admin_get_player still exposes shop receipts';
+  end if;
+
+  if position(
+       'coins' in lower(pg_get_functiondef(to_regprocedure(
+         'public.admin_command_suggestions(text,text,uuid,integer)'
+       )))
+     ) > 0 then
+    raise exception 'Admin player commands still suggest coin mutation';
+  end if;
+
+  if position(
+       'set obstacle_points' in lower(pg_get_functiondef(to_regprocedure(
+         'public.admin_execute_player_command(text,uuid,text,text,text,bigint,text[],uuid,bigint,boolean,bigint,text,text)'
+       )))
+     ) > 0
+     or position(
+       'coin balances are gameplay-only' in lower(pg_get_functiondef(
+         to_regprocedure(
+           'public.admin_execute_player_command(text,uuid,text,text,text,bigint,text[],uuid,bigint,boolean,bigint,text,text)'
+         )
+       ))
+     ) = 0 then
+    raise exception 'Admin coin-command lock is missing';
+  end if;
+end
+$$;
+
 commit;

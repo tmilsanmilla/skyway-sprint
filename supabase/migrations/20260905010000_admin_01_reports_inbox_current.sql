@@ -104,6 +104,52 @@ create trigger block_banned_player_reports
 before insert or update or delete on public.player_reports
 for each row execute function app_private.block_account_banned_actor();
 
+-- Return the private report inbox with each reporter's current username. The
+-- browser never receives another player's email or direct profile access.
+create or replace function public.get_admin_reports()
+returns table (
+  id bigint,
+  user_id uuid,
+  username text,
+  report_type text,
+  message text,
+  status text,
+  created_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if auth.uid() is null or not public.is_admin() then
+    raise exception 'Admin access required' using errcode = '42501';
+  end if;
+
+  return query
+  select
+    report.id,
+    report.user_id,
+    profile.username::text,
+    report.report_type,
+    report.message,
+    report.status,
+    report.created_at
+  from public.player_reports report
+  left join public.player_profiles profile
+    on profile.user_id = report.user_id
+  where report.status <> 'resolved'
+  order by report.created_at desc;
+end;
+$$;
+
+comment on function public.get_admin_reports() is
+  'Admin 01: role-checked unresolved report inbox joined to reporter username; never returns email.';
+
+revoke all on function public.get_admin_reports()
+  from public, anon, authenticated;
+grant execute on function public.get_admin_reports()
+  to authenticated;
+
 -- The archive was removed. Resolving a report permanently deletes that one
 -- report after checking the caller's immutable admin identity.
 create or replace function public.resolve_player_report(report_id bigint)
@@ -204,6 +250,9 @@ begin
      or has_table_privilege('authenticated', 'public.player_reports', 'DELETE')
      or has_table_privilege('authenticated', 'public.admin_todos', 'SELECT')
      or has_function_privilege(
+       'anon', 'public.get_admin_reports()', 'EXECUTE'
+     )
+     or has_function_privilege(
        'anon', 'public.resolve_player_report(bigint)', 'EXECUTE'
      ) then
     raise exception 'Admin 01 still has an unsafe browser privilege';
@@ -217,6 +266,9 @@ begin
      )
      or not has_column_privilege(
        'authenticated', 'public.player_reports', 'message', 'INSERT'
+     )
+     or not has_function_privilege(
+       'authenticated', 'public.get_admin_reports()', 'EXECUTE'
      )
      or not has_function_privilege(
        'authenticated', 'public.resolve_player_report(bigint)', 'EXECUTE'
@@ -242,6 +294,12 @@ select
   ) and not has_table_privilege(
     'authenticated', 'public.player_reports', 'DELETE'
   ) as report_mutation_requires_rpc,
+  has_function_privilege(
+    'authenticated', 'public.get_admin_reports()', 'EXECUTE'
+  ) as username_report_rpc_installed,
+  not has_function_privilege(
+    'anon', 'public.get_admin_reports()', 'EXECUTE'
+  ) as anonymous_cannot_read_reports,
   has_function_privilege(
     'authenticated', 'public.resolve_player_report(bigint)', 'EXECUTE'
   ) as resolve_rpc_installed,
