@@ -366,6 +366,11 @@ const AMBIENT_HAZARDS: ReadonlyArray<Kind> = [
 ];
 const MAX_HAZARD_LANES = TRACK_LANES.length - 1;
 const MAX_SAME_HAZARD_STREAK = 4;
+// The largest obstacle art (a spiked rock) extends well beyond its body box.
+// Keep a full visual footprint between any legacy/carried same-lane items.
+const MIN_SAME_LANE_GAP = 24;
+const HORIZON_PREVIEW_SIZE = 12;
+const WAVE_HAZARD_PLAN_SIZE = 128;
 const isHazardKind = (kind: Kind) =>
   kind !== "gem" &&
   kind !== "coin" &&
@@ -381,6 +386,7 @@ const appendSafeAttackWave = (
   random: () => number = Math.random,
 ) => {
   if (hazards.length === 0) return current;
+  const safeSpacing = Math.max(MIN_SAME_LANE_GAP, spacing);
   const trackLanes = getTrackLanes(laneCount);
   const maxHazardLanes = Math.max(
     1,
@@ -395,7 +401,6 @@ const appendSafeAttackWave = (
   );
   let safeLane =
     firstEscapeLanes[Math.floor(random() * firstEscapeLanes.length)] ?? 2;
-  const reservedSafeLanes = new Set<number>([safeLane]);
   let attackLanes: number[] = [];
   let previousSafeLane = startingLane;
   const shuffle = (lanes: readonly number[]) => {
@@ -421,7 +426,6 @@ const appendSafeAttackWave = (
           reachableSafeLanes[
             Math.floor(random() * reachableSafeLanes.length)
           ];
-        reservedSafeLanes.add(safeLane);
       }
       attackLanes = shuffle(trackLanes.filter((lane) => lane !== safeLane));
       // Make every later group close the last group's escape lane first. The
@@ -440,7 +444,7 @@ const appendSafeAttackWave = (
       // One purchase group arrives as a wall, not a single-file stream. The
       // first wall closes the runner's current lane; each later wall closes
       // the previous escape lane while leaving an adjacent route open.
-      y: -10 - Math.floor(index / maxHazardLanes) * spacing,
+      y: -10 - Math.floor(index / maxHazardLanes) * safeSpacing,
       kind,
       attackEscapeLane: safeLane,
       attackSafeLanes: [safeLane],
@@ -463,12 +467,7 @@ const appendSafeAttackWave = (
         groupSize > 1 || attackItems.length > maxHazardLanes ? 1 : undefined,
     };
   });
-  const safeCurrent = current.filter(
-    (item) =>
-      !isHazardKind(item.kind) ||
-      !reservedSafeLanes.has(item.lane),
-  );
-  return [...safeCurrent, ...coordinatedAttacks];
+  return [...current, ...coordinatedAttacks];
 };
 const appendServerAttackGroups = (
   current: Item[],
@@ -480,6 +479,7 @@ const appendServerAttackGroups = (
 ) => {
   if (attacks.length === 0) return current;
   const normalizedLaneCount = Math.max(1, Math.round(laneCount));
+  const safeSpacing = Math.max(MIN_SAME_LANE_GAP, spacing);
   const orderedAttacks = [...attacks].sort(
     (left, right) =>
       (left.laneGroup ?? 0) - (right.laneGroup ?? 0) ||
@@ -569,19 +569,6 @@ const appendServerAttackGroups = (
       ...Array.from(grouped.entries()).sort(([left], [right]) => left - right),
     );
   }
-  const reservedSafeLanes = new Set(
-    orderedGroups.flatMap(([, group]) => {
-      if (canUseCheckerboard) {
-        const occupied = new Set(group.map((attack) => Number(attack.lane)));
-        return getTrackLanes(normalizedLaneCount).filter(
-          (lane) => !occupied.has(lane),
-        );
-      }
-      return group.flatMap((attack) =>
-        Number.isInteger(attack.escapeLane) ? [Number(attack.escapeLane)] : [],
-      );
-    }),
-  );
   const spawned = orderedGroups.flatMap(([, group], groupIndex) => {
     const occupied = new Set(group.map((attack) => Number(attack.lane)));
     const declaredEscapeLane = group.find((attack) =>
@@ -622,7 +609,7 @@ const appendServerAttackGroups = (
             Number.isInteger(attack.lane) ? Number(attack.lane) : 0,
           ),
         ),
-        y: -12 - groupIndex * spacing,
+        y: -12 - groupIndex * safeSpacing,
         kind: attack.kind,
         attackToken: attack.id,
         attackGroup: groupIndex,
@@ -632,12 +619,85 @@ const appendServerAttackGroups = (
           group.length > 1 || orderedGroups.length > 1 ? 1 : undefined,
       }));
   });
-  const safeCurrent = current.filter(
-    (item) =>
-      !isHazardKind(item.kind) ||
-      !reservedSafeLanes.has(item.lane),
+  return [...current, ...spawned];
+};
+
+const splitLaneUniqueAttackGroups = (items: readonly Item[]) => {
+  const grouped = new Map<number, Item[]>();
+  items.forEach((item, fallbackIndex) => {
+    const groupKey = item.attackGroup ?? fallbackIndex;
+    const group = grouped.get(groupKey) ?? [];
+    group.push(item);
+    grouped.set(groupKey, group);
+  });
+  const result: Item[][] = [];
+  grouped.forEach((group) => {
+    let batch: Item[] = [];
+    let occupiedLanes = new Set<number>();
+    group.forEach((item) => {
+      if (occupiedLanes.has(item.lane)) {
+        result.push(batch);
+        batch = [];
+        occupiedLanes = new Set<number>();
+      }
+      batch.push({ ...item, y: -12 });
+      occupiedLanes.add(item.lane);
+    });
+    if (batch.length > 0) result.push(batch);
+  });
+  return result;
+};
+
+const countKinds = (kinds: readonly Kind[]) => {
+  const counts = new Map<Kind, number>();
+  kinds.forEach((kind) => counts.set(kind, (counts.get(kind) ?? 0) + 1));
+  return Array.from(counts.entries()).map(
+    ([kind, count]) => `${kind.toUpperCase()} ×${count}`,
   );
-  return [...safeCurrent, ...spawned];
+};
+
+const buildWaveHazardPlan = (
+  mapId: MapId,
+  versusRun: boolean,
+  sameHazardLimit: number,
+  startingStreak: { kind: Kind | null; count: number },
+  random: () => number = Math.random,
+) => {
+  const kinds: Kind[] = [];
+  let streak = { ...startingStreak };
+  for (let index = 0; index < WAVE_HAZARD_PLAN_SIZE; index += 1) {
+    let selected: Kind = "log";
+    if (versusRun) {
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const natural = chooseNaturalObstacle(mapId, random);
+        selected = natural === "spike" ? "spikes" : natural;
+        if (streak.count < sameHazardLimit || selected !== streak.kind) break;
+      }
+      if (streak.count >= sameHazardLimit && selected === streak.kind) {
+        const weightedFallback = Object.entries(
+          getMapRules(mapId).naturalObstacleWeights,
+        ).find(
+          ([obstacle, weight]) =>
+            Number(weight) > 0 &&
+            (obstacle === "spike" ? "spikes" : obstacle) !== streak.kind,
+        )?.[0];
+        if (weightedFallback)
+          selected = weightedFallback === "spike" ? "spikes" : weightedFallback as Kind;
+      }
+    } else {
+      const choices =
+        streak.count >= sameHazardLimit
+          ? AMBIENT_HAZARDS.filter((hazard) => hazard !== streak.kind)
+          : AMBIENT_HAZARDS;
+      selected = choices[Math.floor(random() * choices.length)] ?? "log";
+    }
+    kinds.push(selected);
+    streak =
+      streak.kind === selected
+        ? { kind: selected, count: streak.count + 1 }
+        : { kind: selected, count: 1 };
+  }
+  return kinds;
 };
 const AUDIO_PREFERENCES_KEY = "skyway.audio.v1";
 const DEVICE_TOKEN_KEY = "skyway.device.v1";
@@ -785,6 +845,8 @@ const normalizeVersusObstacle = (value: unknown): Kind | null => {
   return null;
 };
 const BOT_MAX_HEARTS = 3;
+const STRIDE_SHIELD_MS = 250;
+const BLITZ_COOLDOWN_MS = 10000;
 const VERSUS_ATTACK_DAMAGE: Readonly<Record<VersusAttackKind, number>> = {
   barrel: 0.5,
   log: 1,
@@ -798,6 +860,7 @@ const simulateBotWave = (
   currentHearts: number,
   attacks: readonly VersusAttackKind[],
   waveNumber: number,
+  maximumHearts: number = BOT_MAX_HEARTS,
   random: () => number = Math.random,
 ) => {
   let nextHearts = currentHearts;
@@ -826,10 +889,15 @@ const simulateBotWave = (
     }
     nextHearts -= VERSUS_ATTACK_DAMAGE[attack];
   });
-  if (nextHearts > 0)
-    nextHearts = Math.min(BOT_MAX_HEARTS, nextHearts + 1);
+  const heartsAfterDamage = Math.max(0, nextHearts);
+  const heartsAfterHealing =
+    heartsAfterDamage > 0
+      ? Math.min(maximumHearts, heartsAfterDamage + 1)
+      : 0;
   return {
-    hearts: Math.max(0, nextHearts),
+    hearts: heartsAfterDamage,
+    heartsAfterDamage,
+    heartsAfterHealing,
     landed,
     dodged,
   };
@@ -968,7 +1036,7 @@ const CHARACTER_ABILITIES = {
   },
   runner_stride: {
     name: "FLOW STRIDE",
-    description: "Every third lane change grants a brief dodge shield.",
+    description: "Every third lane change grants a 0.25-second dodge shield.",
   },
   runner_courier: {
     name: "SPECIAL DELIVERY",
@@ -984,7 +1052,7 @@ const CHARACTER_ABILITIES = {
   },
   runner_blitz: {
     name: "VOLT CLEAVE",
-    description: "Press E to dash and destroy the nearest non-rock obstacle in the current lane.",
+    description: "Press E to dash and destroy the nearest non-rock obstacle in the current lane. Cooldown: 10 seconds.",
   },
   runner_horizon: {
     name: "FAR HORIZON",
@@ -1339,15 +1407,13 @@ const getCharacterMaxHearts = (
 ) =>
   characterKey === "medic_patch"
     ? 4
-    : characterKey === "medic_oracle" || characterKey === "tank_atlas"
+    : characterKey === "tank_atlas"
     ? 6
-    : characterKey === "medic_seraph" ||
-        characterKey === "medic_beacon" ||
-        characterKey === "tank_colossus"
+    : characterKey === "medic_beacon" || characterKey === "tank_colossus"
       ? 5.5
       : characterKey === "tank_guard"
         ? 4.5
-        : characterKey === "tank_hammer" || characterClass === "medic"
+        : characterKey === "medic_suture" || characterKey === "tank_hammer"
           ? 5
           : characterClass === "tank"
             ? 4
@@ -1688,9 +1754,14 @@ export default function Home() {
     [oracleProphecies, setOracleProphecies] = useState<OracleProphecy[]>([]),
     [oracleCompleted, setOracleCompleted] = useState(0),
     [pulseGame, setPulseGame] = useState<PulseGameState | null>(null),
-    [waveForecast, setWaveForecast] = useState<string[]>([]);
+    [waveForecast, setWaveForecast] = useState<string[]>([]),
+    [waveForecastCollapsed, setWaveForecastCollapsed] = useState(false),
+    [deferredAttackGroups, setDeferredAttackGroups] = useState<Item[][]>([]),
+    [velocityDisplayPercent, setVelocityDisplayPercent] = useState(0);
   const id = useRef(0),
     last = useRef(0),
+    itemsSnapshotRef = useRef<Item[]>(items),
+    deferredAttackGroupsRef = useRef<Item[][]>(deferredAttackGroups),
     userIdRef = useRef<string | null>(null),
     gemsRef = useRef(0),
     gemStreakRef = useRef(0),
@@ -1714,6 +1785,12 @@ export default function Home() {
     relayChargesRef = useRef(0),
     velocityChargeMsRef = useRef(0),
     velocityMilestoneRef = useRef(0),
+    velocityDisplayPercentRef = useRef(0),
+    waveSpawnPlanRef = useRef<{
+      wave: number;
+      kinds: Kind[];
+      cursor: number;
+    } | null>(null),
     timeStopUsedRef = useRef(false),
     timeStopRemainingRef = useRef(0),
     timeStopDeadlineRef = useRef(0),
@@ -1799,6 +1876,7 @@ export default function Home() {
     realtimeRef = useRef<ReturnType<typeof supabase.channel> | null>(null),
     incomingAttacksRef = useRef<PendingVersusAttack[]>([]),
     spawnedAttackIdsRef = useRef<Set<string>>(new Set()),
+    queuedAttackTokenIdsRef = useRef<Set<string>>(new Set()),
     processedPickupIdsRef = useRef<Set<number>>(new Set()),
     versusPickupNonceRef = useRef(createVersusPickupNonce()),
     versusFinishedRef = useRef(false),
@@ -1839,6 +1917,10 @@ export default function Home() {
     extractBusyRef = useRef(false),
     extractFeedbackRef = useRef<HTMLDivElement | null>(null),
     botAttackPointsRef = useRef(0),
+    botScoreRef = useRef(0),
+    botScoreCarryRef = useRef(0),
+    practiceBotMaxHeartsRef = useRef(BOT_MAX_HEARTS),
+    practiceBotNextWaveHeartsRef = useRef<number | null>(null),
     playerAttacksAgainstBotRef = useRef<VersusAttackKind[]>([]),
     state = useRef({
       lane,
@@ -1856,6 +1938,8 @@ export default function Home() {
     wavePause,
     hearts,
   };
+  itemsSnapshotRef.current = items;
+  deferredAttackGroupsRef.current = deferredAttackGroups;
   gemsRef.current = gems;
   scoreRef.current = score;
   waveRef.current = wave;
@@ -1882,6 +1966,53 @@ export default function Home() {
     },
     [],
   );
+  const enqueueDeferredAttackItems = useCallback((attackItems: Item[]) => {
+    const unseenItems = attackItems.filter(
+      (item) =>
+        !item.attackToken ||
+        (!spawnedAttackIdsRef.current.has(item.attackToken) &&
+          !queuedAttackTokenIdsRef.current.has(item.attackToken)),
+    );
+    const groups = splitLaneUniqueAttackGroups(unseenItems);
+    if (groups.length === 0) return;
+    groups.forEach((group) =>
+      group.forEach((item) => {
+        if (item.attackToken)
+          queuedAttackTokenIdsRef.current.add(item.attackToken);
+      }),
+    );
+    const nextGroups = [...deferredAttackGroupsRef.current, ...groups];
+    deferredAttackGroupsRef.current = nextGroups;
+    setDeferredAttackGroups(nextGroups);
+  }, []);
+  useEffect(() => {
+    const group = deferredAttackGroups[0];
+    if (!group) return;
+    const groupIds = new Set(group.map((item) => item.id));
+    const inserted = group.every((candidate) =>
+      items.some((item) => item.id === candidate.id),
+    );
+    if (inserted) {
+      group.forEach((item) => {
+        if (!item.attackToken) return;
+        queuedAttackTokenIdsRef.current.delete(item.attackToken);
+        spawnedAttackIdsRef.current.add(item.attackToken);
+      });
+      const remainingGroups = deferredAttackGroups.slice(1);
+      deferredAttackGroupsRef.current = remainingGroups;
+      setDeferredAttackGroups(remainingGroups);
+      return;
+    }
+    const occupiedLanes = new Set(items.map((item) => item.lane));
+    if (group.some((item) => occupiedLanes.has(item.lane))) return;
+    setItems((current) => {
+      if (current.some((item) => groupIds.has(item.id))) return current;
+      const currentOccupiedLanes = new Set(current.map((item) => item.lane));
+      if (group.some((item) => currentOccupiedLanes.has(item.lane)))
+        return current;
+      return [...current, ...group];
+    });
+  }, [deferredAttackGroups, items]);
   useEffect(() => {
     let savedTrack: Soundtrack = "energetic";
     let savedMusic = 0.45;
@@ -2939,13 +3070,16 @@ export default function Home() {
       dashBoostRemainingRef.current = 0;
       dashCooldownRemainingRef.current = restoring ? 5000 : 0;
       blitzBoostRemainingRef.current = 0;
-      blitzCooldownRemainingRef.current = restoring ? 6000 : 0;
+      blitzCooldownRemainingRef.current = restoring ? BLITZ_COOLDOWN_MS : 0;
       strideMoveCountRef.current = 0;
       vectorBlockWaveRef.current = restoring ? restoredWave : 0;
       haloPartsRef.current = 0;
       relayChargesRef.current = 0;
       velocityChargeMsRef.current = 0;
       velocityMilestoneRef.current = 0;
+      velocityDisplayPercentRef.current = 0;
+      setVelocityDisplayPercent(0);
+      waveSpawnPlanRef.current = null;
       timeStopUsedRef.current = restoring;
       timeStopRemainingRef.current = 0;
       timeStopDeadlineRef.current = 0;
@@ -3013,6 +3147,7 @@ export default function Home() {
       setOracleCompleted(0);
       setPulseGame(null);
       setWaveForecast([]);
+      setWaveForecastCollapsed(false);
       setAbilityStateVersion((value) => value + 1);
     },
     [],
@@ -3022,44 +3157,78 @@ export default function Home() {
       number: number,
       applyCharacterEffects = true,
       characterOverride?: string,
+      mapOverride?: MapId,
+      versusRunOverride?: boolean,
     ) => {
       const announcedCharacter = characterOverride ?? activeCharacter;
       const announcedAbility =
         CHARACTER_ABILITIES[announcedCharacter as CharacterKey] ??
         CHARACTER_ABILITIES.runner_ace;
       oracleHitCountRef.current = 0;
+      const forecastMapId = mapOverride ?? activeMapId;
+      const forecastVersusRun = versusRunOverride ?? isVersusRun;
+      const sameHazardLimit =
+        announcedCharacter === "misc_muse"
+          ? 2
+          : announcedCharacter === "misc_scribe"
+            ? 3
+            : MAX_SAME_HAZARD_STREAK;
+      const plannedKinds = buildWaveHazardPlan(
+        forecastMapId,
+        forecastVersusRun,
+        sameHazardLimit,
+        ambientHazardStreakRef.current,
+      );
+      waveSpawnPlanRef.current = {
+        wave: number,
+        kinds: plannedKinds,
+        cursor: 0,
+      };
       const canForecast =
         announcedCharacter === "runner_horizon" ||
         announcedCharacter === "medic_oracle" ||
         (announcedCharacter === "runner_zenith" && number >= 9);
       if (canForecast) {
-        const forecastRules = getMapRules(activeMapId);
-        const expectedTotal = Math.max(
-          8,
-          Math.round((12 + number * 2) * forecastRules.totalObstacleMultiplier),
+        const carriedNatural = itemsSnapshotRef.current.filter(
+          (item) => isHazardKind(item.kind) && !item.attackToken,
         );
-        const naturalForecast = Object.entries(
-          forecastRules.naturalObstacleWeights,
-        )
-          .filter(([, weight]) => Number(weight) > 0)
-          .map(
-            ([kind, weight]) =>
-              `${kind.toUpperCase()} ≈${Math.max(1, Math.round((expectedTotal * Number(weight)) / 100))}`,
-          );
-        const purchasedForecast = incomingAttacksRef.current.map(
-          (attack) =>
-            `${attack.kind.toUpperCase()} · ${attack.lane === undefined ? "LANE HIDDEN" : `LANE ${attack.lane + 1}`}`,
+        const carriedPurchased = itemsSnapshotRef.current.filter(
+          (item) => isHazardKind(item.kind) && Boolean(item.attackToken),
         );
+        const queuedPurchased = new Map<string, Kind>();
+        deferredAttackGroupsRef.current.flat().forEach((item) =>
+          queuedPurchased.set(
+            item.attackToken ?? `local:${item.id}`,
+            item.kind,
+          ),
+        );
+        incomingAttacksRef.current.forEach((attack) =>
+          queuedPurchased.set(attack.id, attack.kind),
+        );
+        const section = (label: string, kinds: Kind[]) =>
+          kinds.length > 0
+            ? [`${label} · ${kinds.length}`, ...countKinds(kinds)]
+            : [`${label} · NONE`];
+        const naturalPreview = plannedKinds.slice(0, HORIZON_PREVIEW_SIZE);
         setWaveForecast([
-          `WAVE ${number} · ABOUT ${expectedTotal} NATURAL OBSTACLES`,
-          ...naturalForecast,
-          ...(purchasedForecast.length > 0
-            ? ["RIVAL PURCHASES", ...purchasedForecast]
-            : isVersusRun
-              ? ["RIVAL PURCHASES · NONE QUEUED"]
-              : []),
+          `WAVE ${number} · EXACT NEXT ${naturalPreview.length}`,
+          ...section("NEXT NATURAL HAZARDS", naturalPreview),
+          ...section(
+            "CARRIED NATURAL HAZARDS",
+            carriedNatural.map((item) => item.kind),
+          ),
+          ...section(
+            "CARRIED RIVAL HAZARDS",
+            carriedPurchased.map((item) => item.kind),
+          ),
+          ...section(
+            "QUEUED RIVAL HAZARDS",
+            Array.from(queuedPurchased.values()),
+          ),
         ]);
-      } else setWaveForecast([]);
+      } else {
+        setWaveForecast([]);
+      }
       void audioEngine.playSfx("wave");
       setWaveMessage(`WAVE ${number}`);
       setWavePause(true);
@@ -3179,10 +3348,16 @@ export default function Home() {
       mode === "normal" ? runMapHealth.startingHp : 1;
     const runCenterLane = Math.floor(runMapRules.laneCount / 2);
     resetVersusClientSync();
+    incomingAttacksRef.current = [];
+    spawnedAttackIdsRef.current.clear();
+    queuedAttackTokenIdsRef.current.clear();
+    deferredAttackGroupsRef.current = [];
+    setDeferredAttackGroups([]);
     ambientHazardStreakRef.current = { kind: null, count: 0 };
     setLastRunXpBreakdown(null);
     setLane(runCenterLane);
     state.current.lane = runCenterLane;
+    itemsSnapshotRef.current = [];
     setItems([]);
     setScore(0);
     setWaveProgress(0);
@@ -3219,6 +3394,9 @@ export default function Home() {
     }
     resetCharacterAbilityState();
     botAttackPointsRef.current = 0;
+    botScoreRef.current = 0;
+    botScoreCarryRef.current = 0;
+    practiceBotNextWaveHeartsRef.current = null;
     playerAttacksAgainstBotRef.current = [];
     turnLockedRef.current = false;
     if (delayedMoveTimerRef.current) {
@@ -3229,7 +3407,7 @@ export default function Home() {
     setRunning(true);
     last.current = 0;
     void audioEngine.start(soundtrack);
-    announceWave(1, true, runCharacter);
+    announceWave(1, true, runCharacter, runMapId, mapOverride !== undefined);
     if (runCharacter === "medic_oracle") {
       setPaused(true);
       setAbilityChoice({ kind: "oracle-prophecy" });
@@ -3252,11 +3430,17 @@ export default function Home() {
     progressionRunIdRef.current = null;
     progressionAwardedRunIdRef.current = null;
     resetVersusClientSync();
+    incomingAttacksRef.current = [];
+    spawnedAttackIdsRef.current.clear();
+    queuedAttackTokenIdsRef.current.clear();
+    deferredAttackGroupsRef.current = [];
+    setDeferredAttackGroups([]);
     setLastRunXpBreakdown(null);
     setRunning(false);
     setPaused(false);
     setPauseMenuOpen(false);
     setOver(false);
+    itemsSnapshotRef.current = [];
     setItems([]);
     setLane(activeCenterLane);
     state.current.lane = activeCenterLane;
@@ -3289,6 +3473,10 @@ export default function Home() {
     }
     resetCharacterAbilityState();
     botAttackPointsRef.current = 0;
+    botScoreRef.current = 0;
+    botScoreCarryRef.current = 0;
+    practiceBotMaxHeartsRef.current = BOT_MAX_HEARTS;
+    practiceBotNextWaveHeartsRef.current = null;
     playerAttacksAgainstBotRef.current = [];
     turnLockedRef.current = false;
     if (delayedMoveTimerRef.current) {
@@ -3303,6 +3491,7 @@ export default function Home() {
       versusPointsRef.current = 0;
       setVersusOpponent("WAITING…");
       setVersusOpponentHearts(BOT_MAX_HEARTS);
+      setVersusOpponentScore(0);
       setVersusResult("");
       setVersusIntermissionReady(false);
     }
@@ -3479,8 +3668,8 @@ export default function Home() {
       if (hasCharacterAbility("runner_stride")) {
         strideMoveCountRef.current += 1;
         if (strideMoveCountRef.current % 3 === 0) {
-          grantInvincibility(750);
-          showAbilityNotice("FLOW STRIDE · DODGE SHIELD", 800);
+          grantInvincibility(STRIDE_SHIELD_MS);
+          showAbilityNotice("FLOW STRIDE · 0.25 SECOND SHIELD", 650);
         }
       }
       if (
@@ -3734,7 +3923,7 @@ export default function Home() {
         return current.filter((item) => item.id !== target.id);
       });
       blitzBoostRemainingRef.current = 750;
-      blitzCooldownRemainingRef.current = 6000;
+      blitzCooldownRemainingRef.current = BLITZ_COOLDOWN_MS;
       grantInvincibility(400);
       showAbilityNotice(
         destroyed ? "VOLT CLEAVE · OBSTACLE DESTROYED" : "VOLT CLEAVE · DASH",
@@ -4173,6 +4362,7 @@ export default function Home() {
         p_match_id: matchId,
         p_lane_index: restoredCenterLane,
       });
+      itemsSnapshotRef.current = [];
       setItems([]);
       processedPickupIdsRef.current.clear();
       ambientHazardStreakRef.current = { kind: null, count: 0 };
@@ -4348,49 +4538,40 @@ export default function Home() {
       setPaused(true);
     } else {
       const attacks = Array.from(mergedPending.values()).filter(
-        (attack) => !spawnedAttackIdsRef.current.has(attack.id),
+        (attack) =>
+          !spawnedAttackIdsRef.current.has(attack.id) &&
+          !queuedAttackTokenIdsRef.current.has(attack.id),
       );
       incomingAttacksRef.current = [];
-      attacks.forEach((attack) =>
-        spawnedAttackIdsRef.current.add(attack.id),
-      );
-      if (attacks.length > 0)
-        setItems((current) => {
-          const hasServerFormation = attacks.every(
-            (attack) =>
-              Number.isInteger(attack.lane) &&
-              Number.isInteger(attack.laneGroup),
-          );
-          return hasServerFormation
+      if (attacks.length > 0) {
+        const hasServerFormation = attacks.every(
+          (attack) =>
+            Number.isInteger(attack.lane) &&
+            Number.isInteger(attack.laneGroup),
+        );
+        enqueueDeferredAttackItems(
+          hasServerFormation
             ? appendServerAttackGroups(
-                current,
-                attacks,
-                () => id.current++,
-                restoredMapRules.laneCount,
-                preserveRunState
-                  ? state.current.lane
-                  : restoredCenterLane,
+                [], attacks, () => id.current++, restoredMapRules.laneCount,
+                preserveRunState ? state.current.lane : restoredCenterLane,
                 getAttackGroupSpacing(restoredWave),
               )
             : appendSafeAttackWave(
-                current,
-                attacks.map((attack) => attack.kind),
-                () => id.current++,
+                [], attacks.map((attack) => attack.kind), () => id.current++,
                 getAttackGroupSpacing(restoredWave),
-                preserveRunState
-                  ? state.current.lane
-                  : restoredCenterLane,
+                preserveRunState ? state.current.lane : restoredCenterLane,
                 restoredMapRules.laneCount,
-              );
-        });
+              ),
+        );
+      }
       setVersusPhase("playing");
       setVersusIntermissionReady(false);
       setPaused(false);
       void audioEngine.start(soundtrack);
       if (!preserveRunState)
-        announceWave(restoredWave, freshMatch, characterKey);
+        announceWave(restoredWave, freshMatch, characterKey, restoredMap, true);
       else if (!versusTransitionBusyRef.current)
-        announceWave(restoredWave, true, characterKey);
+        announceWave(restoredWave, true, characterKey, restoredMap, true);
     }
     return true;
   };
@@ -4429,6 +4610,9 @@ export default function Home() {
     setVersusIntermissionReady(false);
     incomingAttacksRef.current = [];
     spawnedAttackIdsRef.current.clear();
+    queuedAttackTokenIdsRef.current.clear();
+    deferredAttackGroupsRef.current = [];
+    setDeferredAttackGroups([]);
     subscribeToMatch(matchId);
     setPlayScope("versus");
     setVersusPhase("ready");
@@ -4529,6 +4713,9 @@ export default function Home() {
     versusFinishedRef.current = false;
     incomingAttacksRef.current = [];
     spawnedAttackIdsRef.current.clear();
+    queuedAttackTokenIdsRef.current.clear();
+    deferredAttackGroupsRef.current = [];
+    setDeferredAttackGroups([]);
     botAttackPointsRef.current = 0;
     playerAttacksAgainstBotRef.current = [];
     progressionRunIdRef.current = null;
@@ -4543,12 +4730,17 @@ export default function Home() {
       practiceMap,
       BOT_MAX_HEARTS,
       BOT_MAX_HEARTS,
-    ).startingHp;
+    );
+    practiceBotMaxHeartsRef.current = practiceBotHealth.maxHp;
+    practiceBotNextWaveHeartsRef.current = null;
+    botScoreRef.current = 0;
+    botScoreCarryRef.current = 0;
     setMainView("versus");
     setPlayScope("practice");
     setVersusPhase("playing");
     setVersusOpponent("TRAINING BOT");
-    setVersusOpponentHearts(practiceBotHealth);
+    setVersusOpponentHearts(practiceBotHealth.startingHp);
+    setVersusOpponentScore(0);
     setVersusPoints(0);
     versusPointsRef.current = 0;
     setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
@@ -4562,8 +4754,15 @@ export default function Home() {
     closeVersusChannel();
     incomingAttacksRef.current = [];
     spawnedAttackIdsRef.current.clear();
+    queuedAttackTokenIdsRef.current.clear();
+    deferredAttackGroupsRef.current = [];
+    setDeferredAttackGroups([]);
     versusAttackBusyRef.current = false;
     botAttackPointsRef.current = 0;
+    botScoreRef.current = 0;
+    botScoreCarryRef.current = 0;
+    practiceBotMaxHeartsRef.current = BOT_MAX_HEARTS;
+    practiceBotNextWaveHeartsRef.current = null;
     playerAttacksAgainstBotRef.current = [];
     setVersusAttackBusy(false);
     setVersusIntermissionReady(false);
@@ -4913,6 +5112,14 @@ export default function Home() {
           100000,
           velocityChargeMsRef.current + dt,
         );
+        const displayPercent = Math.min(
+          100,
+          Math.floor(velocityChargeMsRef.current / 1000),
+        );
+        if (displayPercent !== velocityDisplayPercentRef.current) {
+          velocityDisplayPercentRef.current = displayPercent;
+          setVelocityDisplayPercent(displayPercent);
+        }
         const milestone = Math.min(
           100,
           Math.floor(velocityChargeMsRef.current / 10000) * 10,
@@ -5001,8 +5208,9 @@ export default function Home() {
       }
       if (
         now - last.current >
-        Math.max(330, 980 - wave * 55) /
-          activeMapRules.totalObstacleMultiplier
+          Math.max(330, 980 - wave * 55) /
+            activeMapRules.totalObstacleMultiplier &&
+        deferredAttackGroupsRef.current.length === 0
       ) {
         last.current = now;
         const r = Math.random(),
@@ -5043,6 +5251,12 @@ export default function Home() {
               )
             : AMBIENT_HAZARDS;
         const randomHazard = () => {
+          const plannedWave = waveSpawnPlanRef.current;
+          if (
+            plannedWave?.wave === wave &&
+            plannedWave.cursor < plannedWave.kinds.length
+          )
+            return plannedWave.kinds[plannedWave.cursor];
           if (!isVersusRun)
             return hazardChoices[
               Math.floor(Math.random() * hazardChoices.length)
@@ -5066,16 +5280,26 @@ export default function Home() {
         else if (r < danger || isVersusRun) kind = randomHazard();
         else if (r > gemThreshold) kind = "gem";
         else kind = randomHazard();
+        const advancePlannedHazard = () => {
+          const plannedWave = waveSpawnPlanRef.current;
+          if (
+            plannedWave?.wave === wave &&
+            plannedWave.kinds[plannedWave.cursor] === kind
+          )
+            plannedWave.cursor += 1;
+        };
         if (
           isHazardKind(kind) &&
           phoenixFeatherActiveRef.current &&
           phoenixFeatherReadyWaveRef.current === wave
         ) {
           phoenixFeatherReadyWaveRef.current = wave + 1;
+          advancePlannedHazard();
           showAbilityNotice("PHOENIX FEATHER · FIRST OBSTACLE DESTROYED", 900);
-        } else setItems((v) => {
+        } else {
+          const currentItems = itemsSnapshotRef.current;
           const reservedAttackSafeLanes = new Set(
-            v
+            currentItems
               .filter(
                 (item) =>
                   item.attackGroup !== undefined && item.y < 91,
@@ -5089,50 +5313,62 @@ export default function Home() {
               ),
           );
           const hazardLanes = new Set(
-            v
+            currentItems
               .filter(
                 (item) => isHazardKind(item.kind) && item.y < 18,
               )
               .map((item) => item.lane),
           );
-          if (
+          const hazardLaneLimitReached =
             isHazardKind(kind) &&
             hazardLanes.size >=
               (isVersusRun
                 ? Math.max(1, activeLaneCount - 1)
-                : modeRules.hazardLaneLimit)
-          )
-            return v;
+                : modeRules.hazardLaneLimit);
+          // A lane stays occupied until its current object leaves the track.
+          // This prevents fast barrels or snowflakes from overtaking rocks,
+          // gems, and every other slower object in the same lane.
           const blocked = new Set(
-            v.filter((item) => item.y < 18).map((item) => item.lane),
+            currentItems
+              .filter((item) => item.y < 108)
+              .map((item) => item.lane),
           );
           const spawnableLanes =
             kind === "current" && activeMapId === "skyway"
               ? [...CURRENT_RULES.allowedLaneIndexes]
               : getTrackLanes(activeLaneCount);
-          const lanes = spawnableLanes.filter(
-            (lane) =>
-              !blocked.has(lane) &&
-              (!isHazardKind(kind) ||
-                !reservedAttackSafeLanes.has(lane)),
-          );
-          if (!lanes.length) return v;
-          const spawnLane = lanes[Math.floor(Math.random() * lanes.length)];
-          if (isHazardKind(kind)) {
-            const previous = ambientHazardStreakRef.current;
-            ambientHazardStreakRef.current =
-              previous.kind === kind
-                ? { kind, count: previous.count + 1 }
-                : { kind, count: 1 };
+          const lanes = hazardLaneLimitReached
+            ? []
+            : spawnableLanes.filter(
+                (lane) =>
+                  !blocked.has(lane) &&
+                  (!isHazardKind(kind) ||
+                    !reservedAttackSafeLanes.has(lane)),
+              );
+          if (lanes.length > 0) {
+            const spawnLane = lanes[Math.floor(Math.random() * lanes.length)];
+            advancePlannedHazard();
+            if (isHazardKind(kind)) {
+              const previous = ambientHazardStreakRef.current;
+              ambientHazardStreakRef.current =
+                previous.kind === kind
+                  ? { kind, count: previous.count + 1 }
+                  : { kind, count: 1 };
+            }
+            const nextItems = [
+              ...currentItems,
+              { id: id.current++, lane: spawnLane, y: -10, kind },
+            ];
+            itemsSnapshotRef.current = nextItems;
+            setItems(nextItems);
           }
-          return [...v, { id: id.current++, lane: spawnLane, y: -10, kind }];
-        });
+        }
       }
       setItems((old) => {
         let clearRecoveryZone = false;
         let clearDamagedLane = false;
         let relayDischarge = false;
-        const advanced = old.flatMap((item) => {
+        const getItemSpeedFactor = (item: Item) => {
           const isHazard = isHazardKind(item.kind);
           let speedFactor =
             item.kind === "barrel"
@@ -5227,17 +5463,44 @@ export default function Home() {
           // destroying its rotating safe route (or making that route unfair).
           if (item.formationSpeed !== undefined)
             speedFactor = item.formationSpeed;
+          return speedFactor;
+        };
+        const nextYById = new Map<number, number>();
+        const itemsByLane = new Map<number, Item[]>();
+        old.forEach((item) => {
+          const laneItems = itemsByLane.get(item.lane) ?? [];
+          laneItems.push(item);
+          itemsByLane.set(item.lane, laneItems);
+        });
+        itemsByLane.forEach((laneItems) => {
+          let frontY = Number.POSITIVE_INFINITY;
+          [...laneItems]
+            .sort((left, right) => right.y - left.y || left.id - right.id)
+            .forEach((item) => {
+              const proposedY = pendingKatanaReflectionIdsRef.current.has(
+                item.id,
+              )
+                ? 65
+                : item.y +
+                  BASE_ITEM_SPEED *
+                    obstacleSpeedMultiplier *
+                    getItemSpeedFactor(item) *
+                    dt;
+              const separatedY = Number.isFinite(frontY)
+                ? Math.min(proposedY, frontY - MIN_SAME_LANE_GAP)
+                : proposedY;
+              nextYById.set(item.id, separatedY);
+              frontY = separatedY;
+            });
+        });
+        const advanced = old.flatMap((item) => {
+          const isHazard = isHazardKind(item.kind);
           const n = {
             ...item,
-            y:
-              item.y +
-              BASE_ITEM_SPEED *
-                obstacleSpeedMultiplier *
-                speedFactor *
-                dt,
+            y: nextYById.get(item.id) ?? item.y,
           };
           if (pendingKatanaReflectionIdsRef.current.has(n.id))
-            return [{ ...n, y: 65 }];
+            return [n];
           const crossedRunnerBand = item.y < 91 && n.y >= 65;
           const abilityGraze =
             (activeCharacter === "trickster_rogue" ||
@@ -5305,6 +5568,8 @@ export default function Home() {
               if (activeCharacter === "runner_velocity") {
                 velocityChargeMsRef.current = 0;
                 velocityMilestoneRef.current = 0;
+                velocityDisplayPercentRef.current = 0;
+                setVelocityDisplayPercent(0);
                 setAbilityStateVersion((value) => value + 1);
                 showAbilityNotice("FULL VELOCITY · MOMENTUM RESET", 800);
               }
@@ -6317,7 +6582,17 @@ export default function Home() {
         }
       }
       if (scoreGain > 0) setScore((v) => v + scoreGain);
-      setWaveProgress((v) => v + waveProgressGain);
+      if (isBotPractice && versusOpponentHearts > 0) {
+        botScoreCarryRef.current +=
+          rawProgressGain * currentSpeedMultiplier;
+        const botScoreGain = Math.floor(botScoreCarryRef.current);
+        if (botScoreGain > 0) {
+          botScoreCarryRef.current -= botScoreGain;
+          botScoreRef.current += botScoreGain;
+          setVersusOpponentScore(botScoreRef.current);
+        }
+      }
+      setWaveProgress((value) => value + waveProgressGain);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -6338,6 +6613,7 @@ export default function Home() {
     activeCharacter,
     playScope,
     isBotPractice,
+    versusOpponentHearts,
     isOnlineVersus,
     isVersusRun,
     modeMultiplier,
@@ -6576,9 +6852,11 @@ export default function Home() {
           versusOpponentHearts,
           queuedAttacks,
           next - 1,
+          practiceBotMaxHeartsRef.current,
         );
-        setVersusOpponentHearts(outcome.hearts);
-        if (outcome.hearts <= 0) {
+        practiceBotNextWaveHeartsRef.current = outcome.heartsAfterHealing;
+        setVersusOpponentHearts(outcome.heartsAfterDamage);
+        if (outcome.heartsAfterDamage <= 0) {
           setVersusResult("PRACTICE VICTORY");
           setVersusPhase("finished");
           setVersusIntermissionReady(false);
@@ -6665,9 +6943,9 @@ export default function Home() {
         }
         botAttackPointsRef.current = botBudget;
         if (botAttacks.length > 0)
-          setItems((current) =>
+          enqueueDeferredAttackItems(
             appendSafeAttackWave(
-              current,
+              [],
               botAttacks.map((attack) =>
                 attack === "spike" ? "spikes" : attack,
               ),
@@ -6682,6 +6960,10 @@ export default function Home() {
             ? `TRAINING BOT SENT ${botAttacks.length} HAZARD${botAttacks.length === 1 ? "" : "S"}`
             : "TRAINING BOT SAVED ITS ATTACK COINS",
         );
+        if (practiceBotNextWaveHeartsRef.current !== null) {
+          setVersusOpponentHearts(practiceBotNextWaveHeartsRef.current);
+          practiceBotNextWaveHeartsRef.current = null;
+        }
         setVersusPhase("playing");
         setVersusIntermissionReady(false);
         setPaused(false);
@@ -6755,7 +7037,11 @@ export default function Home() {
           }>;
           serverPending.forEach((attack) => {
             const kind = normalizeVersusObstacle(attack.obstacle_type);
-            if (attack.id && spawnedAttackIdsRef.current.has(attack.id)) return;
+            if (
+              attack.id &&
+              (spawnedAttackIdsRef.current.has(attack.id) ||
+                queuedAttackTokenIdsRef.current.has(attack.id))
+            ) return;
             if (attack.id && kind)
               pending.set(attack.id, {
                 id: attack.id,
@@ -6785,18 +7071,15 @@ export default function Home() {
           const attacks = Array.from(pending.values());
           incomingAttacksRef.current = [];
           if (attacks.length > 0) {
-            attacks.forEach((attack) => {
-              spawnedAttackIdsRef.current.add(attack.id);
-            });
-            setItems((current) => {
-              const hasServerFormation = attacks.every(
-                (attack) =>
-                  Number.isInteger(attack.lane) &&
-                  Number.isInteger(attack.laneGroup),
-              );
-              return hasServerFormation
+            const hasServerFormation = attacks.every(
+              (attack) =>
+                Number.isInteger(attack.lane) &&
+                Number.isInteger(attack.laneGroup),
+            );
+            enqueueDeferredAttackItems(
+              hasServerFormation
                 ? appendServerAttackGroups(
-                    current,
+                    [],
                     attacks,
                     () => id.current++,
                     activeLaneCount,
@@ -6804,14 +7087,14 @@ export default function Home() {
                     getAttackGroupSpacing(wave),
                   )
                 : appendSafeAttackWave(
-                    current,
+                    [],
                     attacks.map((attack) => attack.kind),
                     () => id.current++,
                     getAttackGroupSpacing(wave),
                     state.current.lane,
                     activeLaneCount,
-                  );
-            });
+                  ),
+            );
           }
           setVersusResult("");
           setVersusPhase("playing");
@@ -6839,6 +7122,7 @@ export default function Home() {
     isBotPractice,
     isOnlineVersus,
     versusIntermissionReady,
+    enqueueDeferredAttackItems,
     enqueueVersusStateSync,
     applyAuthoritativeVersusPoints,
   ]);
@@ -7247,6 +7531,9 @@ export default function Home() {
     versusMatchRef.current = null;
     incomingAttacksRef.current = [];
     spawnedAttackIdsRef.current.clear();
+    queuedAttackTokenIdsRef.current.clear();
+    deferredAttackGroupsRef.current = [];
+    setDeferredAttackGroups([]);
     versusAttackBusyRef.current = false;
     setMainView("endless");
     setPlayScope("single");
@@ -7281,6 +7568,9 @@ export default function Home() {
     }
     resetCharacterAbilityState();
     botAttackPointsRef.current = 0;
+    botScoreRef.current = 0;
+    botScoreCarryRef.current = 0;
+    practiceBotNextWaveHeartsRef.current = null;
     playerAttacksAgainstBotRef.current = [];
     turnLockedRef.current = false;
     if (delayedMoveTimerRef.current) {
@@ -7288,6 +7578,7 @@ export default function Home() {
       delayedMoveTimerRef.current = null;
     }
     damageLockedRef.current = false;
+    itemsSnapshotRef.current = [];
     setItems([]);
     setOver(false);
     setScore(0);
@@ -9065,7 +9356,7 @@ export default function Home() {
                       </>
                     )}
                     {activeCharacter === "runner_velocity" && (
-                      <div className="ability-meter"><div className="ability-meter-label"><b>VELOCITY</b><span>{Math.floor(velocityChargeMsRef.current / 1000)}%</span></div><span className="ability-meter-track"><i className="ability-meter-fill" style={{ width: `${Math.min(100, velocityChargeMsRef.current / 1000)}%` }} /></span></div>
+                      <div className={`ability-meter velocity-meter ${velocityDisplayPercent >= 100 ? "max" : velocityDisplayPercent >= 50 ? "charged" : velocityDisplayPercent > 0 ? "charging" : ""}`}><div className="ability-meter-label"><b>VELOCITY</b><span>{velocityDisplayPercent}%</span></div><span className="ability-meter-track"><i className="ability-meter-fill" style={{ width: `${velocityDisplayPercent}%` }} /></span></div>
                     )}
                     {hasCharacterAbility("medic_halo") && (
                       <div className="ability-meter"><div className="ability-meter-label"><b>HALO REVIVE</b><span>{haloPartsRef.current}/3</span></div><div className="ability-pips">{[1, 2, 3].map((part) => <i key={part} className={haloPartsRef.current >= part ? "filled" : ""} />)}</div></div>
@@ -9073,7 +9364,23 @@ export default function Home() {
                     {hasCharacterAbility("runner_relay") && <p className="ability-panel-note">OVERCHARGED HEARTS · {relayChargesRef.current}</p>}
                     {hasCharacterAbility("medic_seraph") && <p className="ability-panel-note">TELEPORT CHANCE · {seraphTeleportChanceRef.current}%</p>}
                     {waveForecast.length > 0 && (
-                      <><p className="ability-panel-note">HORIZON FORECAST · projected natural counts; rival purchases are exact.</p><div className="ability-preview-grid">{waveForecast.map((entry) => <div className="ability-preview-card" key={entry}><small>{entry}</small></div>)}</div></>
+                      <section className="horizon-forecast">
+                        <button
+                          type="button"
+                          className="horizon-forecast-toggle"
+                          aria-expanded={!waveForecastCollapsed}
+                          aria-controls="horizon-forecast-results"
+                          onClick={() => setWaveForecastCollapsed((value) => !value)}
+                        >
+                          <span><small>EXACT NEXT 12</small><b>HORIZON FORECAST</b></span>
+                          <strong aria-hidden="true">{waveForecastCollapsed ? "+" : "−"}</strong>
+                        </button>
+                        {!waveForecastCollapsed && (
+                          <div id="horizon-forecast-results" className="ability-preview-grid">
+                            {waveForecast.map((entry, index) => <div className="ability-preview-card" key={`${index}:${entry}`}><small>{entry}</small></div>)}
+                          </div>
+                        )}
+                      </section>
                     )}
                   </div>
                 </aside>
@@ -9104,9 +9411,22 @@ export default function Home() {
                   }}
                   aria-label={`Conveyor lane ${factoryConveyor.lane + 1} at ${factoryConveyor.speedMultiplier} times speed`}
                 >
-                  <span>CONVEYOR ×{factoryConveyor.speedMultiplier}</span>
+                  {(factoryConveyor.lane === 0 || factoryConveyor.lane === 3) && (
+                    <span>CONVEYOR ×{factoryConveyor.speedMultiplier}</span>
+                  )}
                 </div>
               )}
+              {activeMapId === "factory" &&
+                (factoryConveyor.lane === 1 || factoryConveyor.lane === 2) && (
+                  <div
+                    className={`factory-conveyor-top-label ${factoryConveyor.speedMultiplier > 1 ? "fast" : "slow"}`}
+                    style={{
+                      left: `${((factoryConveyor.lane + 0.5) / activeLaneCount) * 100}%`,
+                    }}
+                  >
+                    CONVEYOR ×{factoryConveyor.speedMultiplier}
+                  </div>
+                )}
               <div className="wave-chip">
                 WAVE {wave}
                 <small>
@@ -9134,12 +9454,13 @@ export default function Home() {
                 </div>
               ))}
               <div
-                className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}${beaconActiveRef.current ? " beacon-active" : ""}${reviveFlyingRef.current ? " flight-active" : ""}${haloPartsRef.current >= 3 ? " halo-ready" : ""}`}
+                className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}${beaconActiveRef.current ? " beacon-active" : ""}${reviveFlyingRef.current ? " flight-active" : ""}${haloPartsRef.current >= 3 ? " halo-ready" : ""}${activeCharacter === "runner_velocity" && velocityDisplayPercent > 0 ? velocityDisplayPercent >= 100 ? " velocity-max" : velocityDisplayPercent >= 50 ? " velocity-charged" : " velocity-charging" : ""}`}
                 style={{ left: `${((lane + 0.5) / activeLaneCount) * 100}%` }}
               >
                 {hasCharacterAbility("medic_halo") && haloPartsRef.current > 0 && <i className="runner-halo" data-pieces={haloPartsRef.current} />}
                 {beaconActiveRef.current && <i className="runner-beacon" />}
                 {reviveFlyingRef.current && <i className="flight-wings" />}
+                {activeCharacter === "runner_velocity" && velocityDisplayPercent > 0 && <i className="velocity-trail" aria-hidden="true" />}
                 <div className="head" />
                 <div className="body" />
                 <i className="arm a1" />
@@ -9466,20 +9787,33 @@ export default function Home() {
               aria-label={`${getDisplayedHearts(hearts)} displayed hearts`}
             >
               {Array.from({ length: Math.ceil(maxHearts) }, (_, n) => n).map(
-                (n) => (
-                  <span
-                    key={n}
-                    className={
-                      getDisplayedHearts(hearts) - n >= 1
-                        ? ""
-                        : getDisplayedHearts(hearts) - n > 0
-                          ? "partial"
-                          : "lost"
-                    }
-                  >
-                    ♥
-                  </span>
-                ),
+                (n) => {
+                  const displayedHearts = getDisplayedHearts(hearts);
+                  const visibleHeartCount = Math.ceil(displayedHearts);
+                  const visibleOvercharges = Math.min(
+                    relayChargesRef.current,
+                    visibleHeartCount,
+                  );
+                  const overcharged =
+                    hasCharacterAbility("runner_relay") &&
+                    n >= visibleHeartCount - visibleOvercharges &&
+                    n < visibleHeartCount;
+                  const fillClass =
+                    displayedHearts - n >= 1
+                      ? ""
+                      : displayedHearts - n > 0
+                        ? "partial"
+                        : "lost";
+                  return (
+                    <span
+                      key={n}
+                      className={`heart-slot${overcharged ? " overcharged" : ""}`}
+                    >
+                      <span className={`heart-glyph ${fillClass}`}>♥</span>
+                      {overcharged && <i aria-hidden="true">↯</i>}
+                    </span>
+                  );
+                },
               )}
             </div>
             <button

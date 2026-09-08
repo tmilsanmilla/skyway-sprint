@@ -1522,13 +1522,13 @@ where excluded.character_class<>'tank';
 with finished_abilities(item_key,passive_ability,weapon_effect) as (values
   ('runner_ace','Earns 10% more score.','Adds 3% distance score.'),
   ('runner_dash','Moves 6% faster and earns 6% more score; its E dash grants a 1-second speed burst and a brief shield.','Adds 3% distance score.'),
-  ('runner_stride','Every third lane change grants a brief dodge shield.','Adds 3% distance score.'),
+  ('runner_stride','Every third lane change grants a 0.25-second dodge shield.','Adds 3% distance score.'),
   ('tank_glacier','Ignores snowflake freeze effects.','Adds 5% distance score.'),
   ('runner_courier','A gem or attack coin grants 25% more score for 4 seconds.','Adds 4% distance score.'),
   ('runner_tempo','Odd waves are 15% faster with 15% more score; even waves are 15% slower with 15% less score.','Adds 4% distance score.'),
   ('tank_reactor','Missing health gradually grants up to 40% more speed and 30% more score.','Adds 5% distance score.'),
   ('runner_vector','Earns 12% more score in an outside lane and blocks the first outside-lane hit each wave.','Adds 5% distance score.'),
-  ('runner_blitz','Can dash and destroy the first non-rock obstacle ahead.','Adds 5% distance score.'),
+  ('runner_blitz','Can dash and destroy the first non-rock obstacle ahead. Cooldown: 10 seconds.','Adds 5% distance score.'),
   ('medic_halo','At full health earns 15% more score; three hitless waves store a revive to 1 HP.','Adds 6% distance score.'),
   ('runner_orbit','Can wrap between outside lanes every 3 seconds.','Adds 6% distance score.'),
   ('runner_relay','Every two completed waves overcharges a heart; losing it clears the closest obstacle in every lane.','Adds 6% distance score.'),
@@ -1545,8 +1545,8 @@ with finished_abilities(item_key,passive_ability,weapon_effect) as (values
   ('medic_mender','Twenty hitless seconds heals 0.5 HP once per wave.','Adds 5% distance score.'),
   ('medic_pulse','On lethal damage, a 10-second timed-key challenge can revive for 1 HP at 10 hits, 2 HP at 20, or full HP at 30.','Adds 5% distance score.'),
   ('medic_tonic','Gems become ingredients; brew one 1, 2, or 3 HP potion for 5, 10, or 15 ingredients and use it manually. Wave healing is 0.5 HP.','Adds 5% distance score.'),
-  ('medic_suture','Restores to full every third wave; otherwise heals 1 HP only every second wave.','Adds 6% distance score.'),
-  ('medic_beacon','At 1 HP, glows, disables spikes, and slows all obstacles by 50%.','Adds 6% distance score.'),
+  ('medic_suture','Can reach 5 HP. Restores to full every third wave; otherwise heals 1 HP only every second wave.','Adds 6% distance score.'),
+  ('medic_beacon','Can reach 5.5 HP. At 1 HP, glows, disables spikes, and slows all obstacles by 50%.','Adds 6% distance score.'),
   ('medic_lifeline','Once per run, lethal damage restores maximum HP and makes that obstacle harmless; can pause and choose another lane three times.','Activates the three-use lane Rescue Hook.'),
   ('medic_seraph','A hit can teleport to an empty lane; chance starts at 100% and drops 5% per activation. At 0%, Divine Recovery activates.','Each gem has a 10% chance to heal 1 HP.'),
   ('tank_atlas','Keeps its healing passive, cannot fall below 1 HP, and must change lanes before the sky-crush timer expires.','Halves obstacle damage for 2 seconds after changing lanes.'),
@@ -2741,7 +2741,16 @@ begin
       heartbeat_active=false
   where run_id=p_run_id;
 
-  select count(*)::bigint into v_gem_count
+  select coalesce(sum(
+    case
+      when coalesce(event.metadata->>'gems_awarded','')~'^[0-9]{1,18}$'
+        then greatest(
+          1::numeric,
+          least(1000000::numeric,(event.metadata->>'gems_awarded')::numeric)
+        )
+      else 1::numeric
+    end
+  ),0)::bigint into v_gem_count
   from public.player_progression_events event
   where event.user_id=v_uid and event.source='gem'
     and event.metadata->>'context_id'=p_run_id::text
@@ -2817,7 +2826,16 @@ drop trigger if exists award_finished_1v1_progression
 -- corrected source rules.
 with endless_gems as(
   select event.user_id,event.metadata->>'context_id' as context_id,
-         count(*)::bigint as gem_count
+    coalesce(sum(
+      case
+        when coalesce(event.metadata->>'gems_awarded','')~'^[0-9]{1,18}$'
+          then greatest(
+            1::numeric,
+            least(1000000::numeric,(event.metadata->>'gems_awarded')::numeric)
+          )
+        else 1::numeric
+      end
+    ),0)::bigint as gem_count
   from public.player_progression_events event
   where event.source='gem'
     and event.metadata->>'context_type'='endless'
