@@ -1164,7 +1164,7 @@ on conflict (id) do nothing;
 create table if not exists public.player_ranked_1v1_stats (
   season_id integer not null references public.ranked_1v1_seasons(id),
   user_id uuid not null references auth.users(id) on delete cascade,
-  rating integer not null default 1000 check (rating >= 100),
+  rating numeric(18,6) not null default 1500,
   matches_played bigint not null default 0 check (matches_played >= 0),
   wins bigint not null default 0 check (wins >= 0),
   losses bigint not null default 0 check (losses >= 0),
@@ -1188,13 +1188,80 @@ create table if not exists public.ranked_1v1_results (
   player_one_user_id uuid references auth.users(id) on delete set null,
   player_two_user_id uuid references auth.users(id) on delete set null,
   winner_user_id uuid references auth.users(id) on delete set null,
-  player_one_rating_before integer not null,
-  player_two_rating_before integer not null,
-  player_one_rating_after integer not null,
-  player_two_rating_after integer not null,
+  player_one_rating_before numeric(18,6) not null,
+  player_two_rating_before numeric(18,6) not null,
+  player_one_rating_after numeric(18,6) not null,
+  player_two_rating_after numeric(18,6) not null,
   recorded_at timestamptz not null default now(),
   primary key (season_id, match_id)
 );
+
+-- Upgrade an existing season without erasing its match record. Ratings are
+-- stored to six decimal places so the pool can be centered accurately, while
+-- the public leaderboard rounds only the value players see. Accounts with no
+-- Ranked games have not established a rating yet and start at exactly 1500.
+alter table public.player_ranked_1v1_stats
+  drop constraint if exists player_ranked_1v1_stats_rating_check;
+alter table public.player_ranked_1v1_stats
+  alter column rating drop default,
+  alter column rating type numeric(18,6) using rating::numeric(18,6),
+  alter column rating set default 1500;
+alter table public.ranked_1v1_results
+  alter column player_one_rating_before type numeric(18,6)
+    using player_one_rating_before::numeric(18,6),
+  alter column player_two_rating_before type numeric(18,6)
+    using player_two_rating_before::numeric(18,6),
+  alter column player_one_rating_after type numeric(18,6)
+    using player_one_rating_after::numeric(18,6),
+  alter column player_two_rating_after type numeric(18,6)
+    using player_two_rating_after::numeric(18,6);
+
+update public.player_ranked_1v1_stats
+set rating = 1500
+where matches_played = 0 and rating <> 1500;
+
+-- Recenter each existing season once on upgrade. This preserves every
+-- player's relative rating and history while restoring a 1500 pool average.
+do $$
+declare
+  v_season_id integer;
+  v_average numeric;
+  v_residual numeric;
+  v_anchor uuid;
+begin
+  for v_season_id in
+    select distinct stats.season_id
+    from public.player_ranked_1v1_stats stats
+    where stats.matches_played > 0
+  loop
+    select avg(stats.rating) into v_average
+    from public.player_ranked_1v1_stats stats
+    where stats.season_id = v_season_id and stats.matches_played > 0;
+
+    update public.player_ranked_1v1_stats stats
+    set rating = round(stats.rating + (1500 - v_average), 6)
+    where stats.season_id = v_season_id and stats.matches_played > 0;
+
+    select
+      1500::numeric * count(*) - sum(stats.rating)
+    into v_residual
+    from public.player_ranked_1v1_stats stats
+    where stats.season_id = v_season_id and stats.matches_played > 0;
+
+    if v_residual <> 0 then
+      select stats.user_id into v_anchor
+      from public.player_ranked_1v1_stats stats
+      where stats.season_id = v_season_id and stats.matches_played > 0
+      order by stats.user_id
+      limit 1;
+
+      update public.player_ranked_1v1_stats stats
+      set rating = stats.rating + v_residual
+      where stats.season_id = v_season_id and stats.user_id = v_anchor;
+    end if;
+  end loop;
+end;
+$$;
 
 create index if not exists player_ranked_1v1_stats_rank_idx
   on public.player_ranked_1v1_stats(
@@ -1249,15 +1316,22 @@ declare
   v_result_two numeric;
   v_expected_one numeric;
   v_expected_two numeric;
-  v_rating_one integer;
-  v_rating_two integer;
+  v_k_one numeric;
+  v_k_two numeric;
+  v_rating_one numeric(18,6);
+  v_rating_two numeric(18,6);
+  v_average_rating numeric;
+  v_center_offset numeric;
+  v_center_residual numeric;
+  v_center_anchor uuid;
   v_inserted uuid;
 begin
   select season.id into v_season_id
   from public.ranked_1v1_seasons season
   where season.is_active and season.starts_at <= new.recorded_at
     and (season.ends_at is null or season.ends_at > new.recorded_at)
-  order by season.starts_at desc limit 1;
+  order by season.starts_at desc limit 1
+  for update;
   if v_season_id is null
      or new.player_one_user_id is null
      or new.player_two_user_id is null then
@@ -1291,16 +1365,28 @@ begin
     v_result_one := 0.5; v_result_two := 0.5;
   end if;
   v_expected_one := 1 / (
-    1 + power(10::numeric, (v_two.rating - v_one.rating)::numeric / 400)
+    1 + power(10::numeric, (v_two.rating - v_one.rating)::numeric / 600)
   );
   v_expected_two := 1 / (
-    1 + power(10::numeric, (v_one.rating - v_two.rating)::numeric / 400)
+    1 + power(10::numeric, (v_one.rating - v_two.rating)::numeric / 600)
   );
-  v_rating_one := greatest(
-    100, v_one.rating + round(32 * (v_result_one - v_expected_one))::integer
+  -- matches_played is the number of prior Ranked games here: this match is
+  -- added only after both K values have been calculated.
+  v_k_one := case
+    when v_one.matches_played <= 27
+      then 525::numeric / (v_one.matches_played + 10)::numeric
+    else 14::numeric
+  end;
+  v_k_two := case
+    when v_two.matches_played <= 27
+      then 525::numeric / (v_two.matches_played + 10)::numeric
+    else 14::numeric
+  end;
+  v_rating_one := round(
+    v_one.rating + v_k_one * (v_result_one - v_expected_one), 6
   );
-  v_rating_two := greatest(
-    100, v_two.rating + round(32 * (v_result_two - v_expected_two))::integer
+  v_rating_two := round(
+    v_two.rating + v_k_two * (v_result_two - v_expected_two), 6
   );
 
   insert into public.ranked_1v1_results(
@@ -1353,6 +1439,52 @@ begin
       updated_at = now()
   where stats.season_id = v_season_id
     and stats.user_id = new.player_two_user_id;
+
+  -- After each Ranked result, shift every established rating in the season by
+  -- the same amount so the pool average remains exactly 1500. The season-row
+  -- lock above serializes this pool-wide update across concurrent matches.
+  select avg(stats.rating) into v_average_rating
+  from public.player_ranked_1v1_stats stats
+  where stats.season_id = v_season_id and stats.matches_played > 0;
+  v_center_offset := 1500 - v_average_rating;
+
+  update public.player_ranked_1v1_stats stats
+  set rating = round(stats.rating + v_center_offset, 6),
+      updated_at = now()
+  where stats.season_id = v_season_id and stats.matches_played > 0;
+
+  -- Six-decimal storage can leave a microscopic rounding remainder. Assign it
+  -- deterministically so the stored mean, not merely the displayed mean, is
+  -- exactly 1500 without changing any visible whole-number rating.
+  select 1500::numeric * count(*) - sum(stats.rating)
+  into v_center_residual
+  from public.player_ranked_1v1_stats stats
+  where stats.season_id = v_season_id and stats.matches_played > 0;
+  if v_center_residual <> 0 then
+    select stats.user_id into v_center_anchor
+    from public.player_ranked_1v1_stats stats
+    where stats.season_id = v_season_id and stats.matches_played > 0
+    order by stats.user_id
+    limit 1;
+    update public.player_ranked_1v1_stats stats
+    set rating = stats.rating + v_center_residual
+    where stats.season_id = v_season_id
+      and stats.user_id = v_center_anchor;
+  end if;
+
+  select stats.rating into v_rating_one
+  from public.player_ranked_1v1_stats stats
+  where stats.season_id = v_season_id
+    and stats.user_id = new.player_one_user_id;
+  select stats.rating into v_rating_two
+  from public.player_ranked_1v1_stats stats
+  where stats.season_id = v_season_id
+    and stats.user_id = new.player_two_user_id;
+
+  update public.ranked_1v1_results result
+  set player_one_rating_after = v_rating_one,
+      player_two_rating_after = v_rating_two
+  where result.season_id = v_season_id and result.match_id = new.match_id;
   return new;
 end;
 $$;
@@ -1493,7 +1625,7 @@ begin
         eligible.best_score desc, lower(eligible.username), eligible.user_id
     ) as rank, eligible.* from eligible
   )
-  select ranked.rank, ranked.username, ranked.rating,
+  select ranked.rank, ranked.username, round(ranked.rating)::integer,
     ranked.matches_played < 10, ranked.matches_played, ranked.wins,
     ranked.losses, ranked.draws, ranked.win_rate, ranked.current_streak,
     ranked.best_streak, ranked.best_wave, ranked.best_score,
@@ -1600,6 +1732,29 @@ select
       to_regprocedure('app_private.apply_player_xp(uuid,bigint,boolean)')
     )
   ) > 0 as bounded_xp_math_installed,
+  (
+    select position('1500' in coalesce(column_default, '')) > 0
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'player_ranked_1v1_stats'
+      and column_name = 'rating'
+  ) as ranked_rating_starts_at_1500,
+  position(
+    '/ 600' in pg_get_functiondef(to_regprocedure(
+      'app_private.apply_ranked_result_to_active_season()'
+    ))
+  ) > 0 and position(
+    '525::numeric / (v_one.matches_played + 10)::numeric'
+    in pg_get_functiondef(to_regprocedure(
+      'app_private.apply_ranked_result_to_active_season()'
+    ))
+  ) > 0 as ranked_dynamic_elo_installed,
+  position(
+    'v_center_offset := 1500 - v_average_rating'
+    in pg_get_functiondef(to_regprocedure(
+      'app_private.apply_ranked_result_to_active_season()'
+    ))
+  ) > 0 as ranked_pool_recentering_installed,
   not has_table_privilege(
     'authenticated', 'public.player_progression_events', 'SELECT'
   ) as progression_ledger_private;

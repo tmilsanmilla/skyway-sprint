@@ -1,17 +1,83 @@
 "use client";
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  FormEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { audioEngine, type Soundtrack } from "./audio-engine";
 import { AdminPlayerEditor } from "./admin-player-editor";
+import {
+  ATTACK_POINT_COSTS,
+  CURRENT_RULES,
+  GROVE_RULES,
+  MAP_IDS,
+  MAP_RULES,
+  PITCH_KATANA_RULES,
+  VOLCANO_RULES,
+  activatePitchKatana,
+  applyMapHealthModifiers,
+  chooseNaturalObstacle,
+  createFactoryConveyorState,
+  createPitchKatanaState,
+  getAttackPointsForCoin,
+  getAvailableAttacks,
+  getFactoryObstacleSpeedMultiplier,
+  getMapRules,
+  getNewVolcanoStationaryDamage,
+  isCharacterClassAllowed,
+  isPitchKatanaMovementLocked,
+  resetPitchKatanaAtWaveEnd,
+  resolveCurrentInteraction,
+  resolvePitchKatanaCollision,
+  selectOneVersusOneMap,
+  settlePitchKatanaWindow,
+  type AttackId,
+  type FactoryConveyorState,
+  type MapId,
+  type MapPriorityList,
+  type PitchKatanaState,
+} from "./arena-map-rules";
 type Kind =
-  "gem" | "coin" | "car" | "log" | "snowflake" | "rock" | "barrel" | "spikes";
+  | "gem"
+  | "coin"
+  | "mushroom"
+  | "car"
+  | "log"
+  | "snowflake"
+  | "current"
+  | "rock"
+  | "barrel"
+  | "spikes";
 type Item = {
   id: number;
   lane: number;
   y: number;
   kind: Kind;
+  attackToken?: string;
+  attackGroup?: number;
+  attackEscapeLane?: number;
+  attackSafeLanes?: readonly number[];
+  formationSpeed?: number;
+  seededUntilWave?: number;
 };
 type GameMode = "normal" | "hardcore" | "impossible";
+type OracleProphecy = "no-hit" | "completion" | "near-death";
+type AbilityChoice =
+  | { kind: "lifeline-lane" }
+  | { kind: "pacer-character" }
+  | { kind: "oracle-prophecy" }
+  | { kind: "oracle-passive"; options: CharacterKey[] }
+  | null;
+type PulseGameState = {
+  hits: number;
+  prompt: "A" | "S" | "D" | "F";
+  endsAt: number;
+  remaining: number;
+};
 type PlayerReport = {
   id: number;
   user_id: string;
@@ -142,18 +208,54 @@ type PlayerProgression = {
   ranked_unlocked: boolean;
   xp_awarded?: number;
 };
-type VersusAttackKind =
-  | "barrel"
-  | "log"
-  | "car"
-  | "snowflake"
-  | "spike"
-  | "rock";
-type PendingVersusAttack = { id: string; kind: Kind };
+type RunXpBreakdown = {
+  total: number;
+  finish: number;
+  score: number;
+  waves: number;
+  playtime: number;
+};
+const normalizeRunXpBreakdown = (value: unknown): RunXpBreakdown | null => {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const read = (key: keyof RunXpBreakdown) => {
+    const amount = Number(record[key]);
+    return Number.isFinite(amount) ? Math.max(0, Math.floor(amount)) : 0;
+  };
+  return {
+    total: read("total"),
+    finish: read("finish"),
+    score: read("score"),
+    waves: read("waves"),
+    playtime: read("playtime"),
+  };
+};
+type VersusAttackKind = AttackId;
+type PendingVersusAttack = {
+  id: string;
+  kind: Kind;
+  lane?: number;
+  laneGroup?: number;
+  lanePosition?: number;
+  escapeLane?: number;
+};
 type VersusStatePayload = {
+  map_rules?: Record<string, unknown> | null;
+  wave_rules?: {
+    wave?: number;
+    conveyor_lane_index?: number | null;
+    conveyor_speed_multiplier?: number | null;
+  } | null;
+  outcome?: string | null;
   match?: {
     status?: string;
     mode?: VersusMode;
+    map_key?: string | null;
+    map_selection_method?: string | null;
+    map_candidates?: string[] | null;
+    outcome?: string | null;
+    is_draw?: boolean;
+    second_death_bonus_points?: number;
     intermission_ends_at?: string | null;
     winner_user_id?: string | null;
   };
@@ -166,18 +268,91 @@ type VersusStatePayload = {
     character_key?: string | null;
     character_class?: string | null;
     max_hearts?: number | null;
+    current_wave_mushrooms?: number;
+    total_mushrooms_collected?: number;
+    eliminated_at?: string | null;
+    death_order?: number | null;
+    second_death_bonus_awarded?: boolean;
+    final_score?: number | null;
+    katana_broken?: boolean;
+    katana_cooldown_until?: string | null;
+    katana_cooldown_ends_at?: string | null;
+    zenith_time_stop_until?: string | null;
+    zenith_time_stop_used?: boolean;
+    obstacle_speed_multiplier?: number;
   };
   opponent?: {
     username?: string;
     hearts?: number;
+    score?: number;
     status?: string;
+    current_wave_mushrooms?: number;
+    total_mushrooms_collected?: number;
+    eliminated_at?: string | null;
+    death_order?: number | null;
+    second_death_bonus_awarded?: boolean;
+    final_score?: number | null;
+    zenith_time_stop_until?: string | null;
+    zenith_time_stop_used?: boolean;
+    obstacle_speed_multiplier?: number;
   };
   pending_attacks?: Array<{
     id?: string;
     obstacle_type?: string;
+    lane_index?: number | null;
+    lane_group?: number | null;
+    lane_position?: number | null;
+    escape_lane_index?: number | null;
+    source?: string | null;
   }>;
 };
+const readFactoryConveyorFromWaveRules = (
+  value: VersusStatePayload["wave_rules"],
+  laneCount: number,
+  expectedWave?: number,
+): FactoryConveyorState | null => {
+  if (!value) return null;
+  const ruleWave = Number(value.wave);
+  if (
+    expectedWave !== undefined &&
+    Number.isFinite(ruleWave) &&
+    Math.round(ruleWave) !== expectedWave
+  )
+    return null;
+  const lane = Number(value.conveyor_lane_index);
+  const speedMultiplier = Number(value.conveyor_speed_multiplier);
+  if (
+    !Number.isInteger(lane) ||
+    lane < 0 ||
+    lane >= laneCount ||
+    (speedMultiplier !== 0.5 && speedMultiplier !== 2)
+  )
+    return null;
+  return { lane, speedMultiplier };
+};
+type MapPriorityPayload = {
+  configured?: boolean;
+  map_order?: string[];
+  catalog?: Array<{ map_key?: string; display_name?: string }>;
+};
+const isMapId = (value: unknown): value is MapId =>
+  typeof value === "string" && (MAP_IDS as readonly string[]).includes(value);
+const normalizeMapId = (value: unknown): MapId =>
+  isMapId(value) ? value : "classic";
+const DEFAULT_MAP_PRIORITY: MapPriorityList = [...MAP_IDS];
+const MAP_SUMMARIES: Readonly<Record<MapId, string>> = {
+  classic: "5 lanes · standard rules",
+  alley: "3 lanes · dense traffic · double starting/max HP",
+  desert: "7 lanes · no healing · Runner or Trickster only",
+  skyway: "6 lanes · Current hazards · no Trickster",
+  pitch: "6 lanes · risk/reward Katana",
+  volcano: "7 lanes · Ace only · move before the heat hits",
+  factory: "4 lanes · changing conveyor speeds",
+  grove: "6 lanes · +1 HP · mushroom contest",
+};
 const TRACK_LANES = [0, 1, 2, 3, 4] as const;
+const getTrackLanes = (laneCount: number) =>
+  Array.from({ length: Math.max(1, Math.round(laneCount)) }, (_, lane) => lane);
 const AMBIENT_HAZARDS: ReadonlyArray<Kind> = [
   "log",
   "snowflake",
@@ -187,41 +362,275 @@ const AMBIENT_HAZARDS: ReadonlyArray<Kind> = [
 ];
 const MAX_HAZARD_LANES = TRACK_LANES.length - 1;
 const MAX_SAME_HAZARD_STREAK = 4;
-const isHazardKind = (kind: Kind) => kind !== "gem" && kind !== "coin";
+const isHazardKind = (kind: Kind) =>
+  kind !== "gem" && kind !== "coin" && kind !== "mushroom";
 const appendSafeAttackWave = (
   current: Item[],
   hazards: readonly Kind[],
   nextId: () => number,
   spacing: number,
+  playerLane: number,
+  laneCount: number = TRACK_LANES.length,
+  random: () => number = Math.random,
 ) => {
   if (hazards.length === 0) return current;
-  const occupiedHazardLanes = new Set(
-    current.filter((item) => isHazardKind(item.kind)).map((item) => item.lane),
+  const trackLanes = getTrackLanes(laneCount);
+  const maxHazardLanes = Math.max(
+    1,
+    Math.min(MAX_HAZARD_LANES, trackLanes.length - 1),
   );
-  const alreadySafeLanes = TRACK_LANES.filter(
-    (lane) => !occupiedHazardLanes.has(lane),
+  const startingLane = Math.max(
+    0,
+    Math.min(trackLanes.length - 1, Math.round(playerLane)),
   );
-  const safeLane =
-    alreadySafeLanes[Math.floor(Math.random() * alreadySafeLanes.length)] ??
-    TRACK_LANES[Math.floor(Math.random() * TRACK_LANES.length)];
-  const safeCurrent = current.filter(
-    (item) => !isHazardKind(item.kind) || item.lane !== safeLane,
+  const firstEscapeLanes = trackLanes.filter(
+    (lane) => Math.abs(lane - startingLane) === 1,
   );
-  const attackLanes = TRACK_LANES.filter((lane) => lane !== safeLane).sort(
-    () => Math.random() - 0.5,
-  );
-  return [
-    ...safeCurrent,
-    ...hazards.map((kind, index): Item => ({
+  let safeLane =
+    firstEscapeLanes[Math.floor(random() * firstEscapeLanes.length)] ?? 2;
+  const reservedSafeLanes = new Set<number>([safeLane]);
+  let attackLanes: number[] = [];
+  let previousSafeLane = startingLane;
+  const shuffle = (lanes: readonly number[]) => {
+    const shuffled = [...lanes];
+    for (let index = shuffled.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(random() * (index + 1));
+      [shuffled[index], shuffled[swapIndex]] = [
+        shuffled[swapIndex],
+        shuffled[index],
+      ];
+    }
+    return shuffled;
+  };
+  const attackItems = hazards.map((kind, index): Item => {
+    if (index % maxHazardLanes === 0) {
+      if (index > 0) {
+        previousSafeLane = safeLane;
+        const lastSafeLane = previousSafeLane;
+        const reachableSafeLanes = trackLanes.filter(
+          (lane) => Math.abs(lane - lastSafeLane) === 1,
+        );
+        safeLane =
+          reachableSafeLanes[
+            Math.floor(random() * reachableSafeLanes.length)
+          ];
+        reservedSafeLanes.add(safeLane);
+      }
+      attackLanes = shuffle(trackLanes.filter((lane) => lane !== safeLane));
+      // Make every later group close the last group's escape lane first. The
+      // new escape remains one move away, so the pressure cannot be camped but
+      // still leaves a reachable route through the pattern. For the first
+      // group, the previous safe lane is the player's current lane, so even
+      // one purchased obstacle makes a stationary player react.
+      attackLanes = [
+        previousSafeLane,
+        ...attackLanes.filter((lane) => lane !== previousSafeLane),
+      ];
+    }
+    return {
       id: nextId(),
-      lane: attackLanes[index % attackLanes.length],
-      y:
-        -10 -
-        index * spacing -
-        Math.floor(index / MAX_HAZARD_LANES) * spacing,
+      lane: attackLanes[index % maxHazardLanes],
+      // One purchase group arrives as a wall, not a single-file stream. The
+      // first wall closes the runner's current lane; each later wall closes
+      // the previous escape lane while leaving an adjacent route open.
+      y: -10 - Math.floor(index / maxHazardLanes) * spacing,
       kind,
-    })),
-  ];
+      attackEscapeLane: safeLane,
+      attackSafeLanes: [safeLane],
+    };
+  });
+  const coordinatedAttacks = attackItems.map((item, index) => {
+    const groupStart = Math.floor(index / maxHazardLanes) * maxHazardLanes;
+    const groupSize = Math.min(
+      maxHazardLanes,
+      attackItems.length - groupStart,
+    );
+    return {
+      ...item,
+      attackGroup: Math.floor(index / maxHazardLanes),
+      // Keeping the route on every member makes the opening persist while
+      // later ambient objects are being spawned.
+      attackEscapeLane: attackItems[groupStart]?.attackEscapeLane,
+      attackSafeLanes: attackItems[groupStart]?.attackSafeLanes,
+      formationSpeed:
+        groupSize > 1 || attackItems.length > maxHazardLanes ? 1 : undefined,
+    };
+  });
+  const safeCurrent = current.filter(
+    (item) =>
+      !isHazardKind(item.kind) ||
+      !reservedSafeLanes.has(item.lane),
+  );
+  return [...safeCurrent, ...coordinatedAttacks];
+};
+const appendServerAttackGroups = (
+  current: Item[],
+  attacks: readonly PendingVersusAttack[],
+  nextId: () => number,
+  laneCount: number,
+  playerLane: number,
+  spacing: number,
+) => {
+  if (attacks.length === 0) return current;
+  const normalizedLaneCount = Math.max(1, Math.round(laneCount));
+  const orderedAttacks = [...attacks].sort(
+    (left, right) =>
+      (left.laneGroup ?? 0) - (right.laneGroup ?? 0) ||
+      (left.lanePosition ?? 0) - (right.lanePosition ?? 0),
+  );
+  // New map RPCs already assign a complete server-owned formation. Rebuild a
+  // checkerboard only for legacy rows that predate that metadata; otherwise a
+  // client could silently replace the authoritative lanes and reopen a free
+  // camping lane.
+  const hasAuthoritativeFormation = orderedAttacks.every(
+    (attack) =>
+      Number.isInteger(attack.lane) &&
+      Number.isInteger(attack.laneGroup) &&
+      Number.isInteger(attack.lanePosition),
+  );
+  const canUseCheckerboard =
+    !hasAuthoritativeFormation &&
+    orderedAttacks.every((attack) => attack.kind !== "current");
+  const orderedGroups: Array<[number, PendingVersusAttack[]]> = [];
+  if (canUseCheckerboard) {
+    const trackLanes = getTrackLanes(normalizedLaneCount);
+    let cursor = 0;
+    let routeLane = Math.max(
+      0,
+      Math.min(normalizedLaneCount - 1, Math.round(playerLane)),
+    );
+    let wallParity = routeLane % 2;
+    while (cursor < orderedAttacks.length) {
+      const wallLanes = trackLanes.filter(
+        (lane) => lane % 2 === wallParity,
+      );
+      // A partial final wall closes the lane the runner should currently be
+      // using first, then the nearest prior openings. Full walls alternate
+      // parity, so every opening from one wall is covered by the next one.
+      const prioritizedWallLanes = [...wallLanes].sort((left, right) => {
+        if (left === routeLane) return -1;
+        if (right === routeLane) return 1;
+        return (
+          Math.abs(left - routeLane) - Math.abs(right - routeLane) ||
+          left - right
+        );
+      });
+      const groupSize = Math.min(
+        prioritizedWallLanes.length,
+        orderedAttacks.length - cursor,
+      );
+      const occupiedLanes = prioritizedWallLanes.slice(0, groupSize);
+      const safeLanes = trackLanes.filter(
+        (lane) => !occupiedLanes.includes(lane),
+      );
+      const reachableSafeLanes = safeLanes.filter(
+        (lane) => Math.abs(lane - routeLane) === 1,
+      );
+      const nextRouteLane =
+        reachableSafeLanes[orderedGroups.length % reachableSafeLanes.length] ??
+        safeLanes.sort(
+          (left, right) =>
+            Math.abs(left - routeLane) - Math.abs(right - routeLane) ||
+            left - right,
+        )[0] ??
+        routeLane;
+      const group = orderedAttacks.slice(cursor, cursor + groupSize).map(
+        (attack, index) => ({
+          ...attack,
+          lane: occupiedLanes[index],
+          laneGroup: orderedGroups.length,
+          lanePosition: index,
+          escapeLane: nextRouteLane,
+        }),
+      );
+      orderedGroups.push([orderedGroups.length, group]);
+      cursor += groupSize;
+      routeLane = nextRouteLane;
+      wallParity = wallParity === 0 ? 1 : 0;
+    }
+  } else {
+    const grouped = new Map<number, PendingVersusAttack[]>();
+    orderedAttacks.forEach((attack, fallbackIndex) => {
+      const group = Number.isInteger(attack.laneGroup)
+        ? Number(attack.laneGroup)
+        : fallbackIndex;
+      const values = grouped.get(group) ?? [];
+      values.push(attack);
+      grouped.set(group, values);
+    });
+    orderedGroups.push(
+      ...Array.from(grouped.entries()).sort(([left], [right]) => left - right),
+    );
+  }
+  const reservedSafeLanes = new Set(
+    orderedGroups.flatMap(([, group]) => {
+      if (canUseCheckerboard) {
+        const occupied = new Set(group.map((attack) => Number(attack.lane)));
+        return getTrackLanes(normalizedLaneCount).filter(
+          (lane) => !occupied.has(lane),
+        );
+      }
+      return group.flatMap((attack) =>
+        Number.isInteger(attack.escapeLane) ? [Number(attack.escapeLane)] : [],
+      );
+    }),
+  );
+  const spawned = orderedGroups.flatMap(([, group], groupIndex) => {
+    const occupied = new Set(group.map((attack) => Number(attack.lane)));
+    const declaredEscapeLane = group.find((attack) =>
+      Number.isInteger(attack.escapeLane),
+    )?.escapeLane;
+    const rawSafeLanes = canUseCheckerboard
+      ? getTrackLanes(normalizedLaneCount).filter(
+          (lane) => !occupied.has(lane),
+        )
+      : Array.from(
+          new Set(
+            group.flatMap((attack) =>
+              Number.isInteger(attack.escapeLane)
+                ? [Number(attack.escapeLane)]
+                : [],
+            ),
+          ),
+        );
+    const safeLanes = Number.isInteger(declaredEscapeLane)
+      ? [
+          Number(declaredEscapeLane),
+          ...rawSafeLanes.filter(
+            (lane) => lane !== Number(declaredEscapeLane),
+          ),
+        ]
+      : rawSafeLanes;
+    return [...group]
+      .sort(
+        (left, right) =>
+          (left.lanePosition ?? 0) - (right.lanePosition ?? 0),
+      )
+      .map((attack): Item => ({
+        id: nextId(),
+        lane: Math.max(
+          0,
+          Math.min(
+            normalizedLaneCount - 1,
+            Number.isInteger(attack.lane) ? Number(attack.lane) : 0,
+          ),
+        ),
+        y: -12 - groupIndex * spacing,
+        kind: attack.kind,
+        attackToken: attack.id,
+        attackGroup: groupIndex,
+        attackEscapeLane: safeLanes[0],
+        attackSafeLanes: safeLanes,
+        formationSpeed:
+          group.length > 1 || orderedGroups.length > 1 ? 1 : undefined,
+      }));
+  });
+  const safeCurrent = current.filter(
+    (item) =>
+      !isHazardKind(item.kind) ||
+      !reservedSafeLanes.has(item.lane),
+  );
+  return [...safeCurrent, ...spawned];
 };
 const AUDIO_PREFERENCES_KEY = "skyway.audio.v1";
 const DEVICE_TOKEN_KEY = "skyway.device.v1";
@@ -254,55 +663,62 @@ const SOUNDTRACKS: ReadonlyArray<{
 const VERSUS_ATTACKS: ReadonlyArray<{
   kind: VersusAttackKind;
   label: string;
-  cost: 2 | 3;
+  cost: 6 | 7 | 8;
   icon: string;
   description: string;
 }> = [
   {
     kind: "barrel",
     label: "BARREL",
-    cost: 2,
+    cost: ATTACK_POINT_COSTS.barrel,
     icon: "◉",
     description: "Fast roll · 0.5 HP",
   },
   {
     kind: "log",
     label: "LOG",
-    cost: 2,
+    cost: ATTACK_POINT_COSTS.log,
     icon: "▬",
     description: "Steady obstacle · 1 HP",
   },
   {
     kind: "car",
     label: "CAR",
-    cost: 3,
+    cost: ATTACK_POINT_COSTS.car,
     icon: "▰",
     description: "Fast lane pressure",
   },
   {
     kind: "snowflake",
     label: "SNOWFLAKE",
-    cost: 3,
+    cost: ATTACK_POINT_COSTS.snowflake,
     icon: "❄",
     description: "3-second freeze · every turn delayed 0.25 seconds",
   },
   {
+    kind: "current",
+    label: "CURRENT",
+    cost: ATTACK_POINT_COSTS.current,
+    icon: "≈",
+    description: "Skyway only · pushes or damages nearby runners",
+  },
+  {
     kind: "spike",
     label: "SPIKES",
-    cost: 3,
+    cost: ATTACK_POINT_COSTS.spike,
     icon: "▲",
     description: "Warning flash · ground trap",
   },
   {
     kind: "rock",
     label: "ROCK",
-    cost: 3,
+    cost: ATTACK_POINT_COSTS.rock,
     icon: "◆",
     description: "Slow threat · 2 HP",
   },
 ];
 const VERSUS_INTERMISSION_SECONDS = 10;
-const VERSUS_MAX_HEARTS = 6;
+const VERSUS_MAX_HEARTS = 12;
 const createVersusPickupNonce = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 const isTransportLikeError = (message: string) => {
@@ -339,11 +755,15 @@ const isCoinMatchStateError = (message: string) => {
 };
 const normalizeVersusHearts = (value: number) => {
   const finiteValue = Number.isFinite(value) ? value : 0;
-  return Math.min(
-    VERSUS_MAX_HEARTS,
-    Math.max(0, Math.round(finiteValue * 2) / 2),
-  );
+  return Math.min(VERSUS_MAX_HEARTS, Math.max(0, finiteValue));
 };
+// Preserve the exact hidden total at the network boundary; only the HUD rounds.
+const normalizeVersusHeartsForServer = (value: number) =>
+  normalizeVersusHearts(value);
+const getDisplayedHearts = (value: number) =>
+  Math.max(0, Math.ceil((Number.isFinite(value) ? value : 0) * 2) / 2);
+const getDisplayedAttackPoints = (value: number) =>
+  Math.max(0, Math.floor(Number.isFinite(value) ? value : 0));
 const normalizeVersusObstacle = (value: unknown): Kind | null => {
   if (value === "spike" || value === "spikes") return "spikes";
   if (
@@ -351,6 +771,7 @@ const normalizeVersusObstacle = (value: unknown): Kind | null => {
     value === "log" ||
     value === "car" ||
     value === "snowflake" ||
+    value === "current" ||
     value === "rock"
   )
     return value;
@@ -362,6 +783,7 @@ const VERSUS_ATTACK_DAMAGE: Readonly<Record<VersusAttackKind, number>> = {
   log: 1,
   car: 1,
   snowflake: 0,
+  current: 0.5,
   spike: 1,
   rock: 2,
 };
@@ -412,13 +834,19 @@ const secondsUntil = (value: unknown, fallback: number) => {
   return Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
 };
 type VersusPhase =
-  "idle" | "searching" | "ready" | "playing" | "intermission" | "finished";
+  | "idle"
+  | "searching"
+  | "ready"
+  | "playing"
+  | "intermission"
+  | "eliminated"
+  | "finished";
 const CLASS_CHARACTERS = {
   runner: [
     { key: "runner_ace", name: "Ace", weapon: "Baton", rarity: "common" },
     { key: "runner_dash", name: "Dash", weapon: "Jet Baton", rarity: "common" },
     { key: "runner_stride", name: "Stride", weapon: "Pace Blades", rarity: "common" },
-    { key: "tank_glacier", name: "Glacier", weapon: "Frost Shield", rarity: "uncommon" },
+    { key: "tank_glacier", name: "Glacier", weapon: "Frost Shield", rarity: "rare" },
     { key: "runner_courier", name: "Courier", weapon: "Parcel Staff", rarity: "uncommon" },
     { key: "runner_tempo", name: "Tempo", weapon: "Rhythm Rod", rarity: "uncommon" },
     { key: "tank_reactor", name: "Reactor", weapon: "Core Maul", rarity: "rare" },
@@ -427,7 +855,7 @@ const CLASS_CHARACTERS = {
     { key: "medic_halo", name: "Halo", weapon: "Sun Staff", rarity: "epic" },
     { key: "runner_orbit", name: "Orbit", weapon: "Ring Blades", rarity: "epic" },
     { key: "runner_relay", name: "Relay", weapon: "Circuit Baton", rarity: "epic" },
-    { key: "runner_horizon", name: "Horizon", weapon: "Skyline Disc", rarity: "epic" },
+    { key: "runner_horizon", name: "Horizon", weapon: "Skyline Disc", rarity: "legendary" },
     { key: "runner_velocity", name: "Velocity", weapon: "Turbo Spear", rarity: "legendary" },
     { key: "runner_pacer", name: "Pacer", weapon: "Relay Rod", rarity: "mythic" },
     { key: "runner_zenith", name: "Zenith", weapon: "Apex Relay", rarity: "mythic" },
@@ -447,8 +875,8 @@ const CLASS_CHARACTERS = {
     { key: "medic_lifeline", name: "Lifeline", weapon: "Rescue Hook", rarity: "legendary" },
     { key: "medic_seraph", name: "Seraph", weapon: "Halo Staff", rarity: "legendary" },
     { key: "tank_atlas", name: "Atlas", weapon: "World Maul", rarity: "legendary" },
-    { key: "medic_revive", name: "Revive", weapon: "Phoenix Needle", rarity: "legendary" },
-    { key: "medic_oracle", name: "Oracle", weapon: "Fate Censer", rarity: "mythic" },
+    { key: "medic_revive", name: "Revive", weapon: "Phoenix Feather", rarity: "legendary" },
+    { key: "medic_oracle", name: "Oracle", weapon: "Fate Sensor", rarity: "mythic" },
   ],
   tank: [
     { key: "tank_bulwark", name: "Bulwark", weapon: "Tower Shield", rarity: "common" },
@@ -528,40 +956,40 @@ const CHARACTER_ABILITIES = {
     description: "Can earn 10% more score.",
   },
   runner_dash: {
-    name: "JET STEP",
-    description: "Can move 6% faster, which earns 6% more distance score.",
+    name: "JET DASH",
+    description: "Moves 6% faster and earns 6% more running score. Press E to burst forward with a brief shield.",
   },
   runner_stride: {
-    name: "CENTER STRIDE",
-    description: "Can earn 12% more distance score while in the middle three lanes.",
+    name: "FLOW STRIDE",
+    description: "Every third lane change grants a brief dodge shield.",
   },
   runner_courier: {
     name: "SPECIAL DELIVERY",
-    description: "Can earn 25% more distance score for 4 seconds after collecting a gem or coin.",
+    description: "Earns 25% more running score for 4 seconds after collecting a gem or coin.",
   },
   runner_tempo: {
-    name: "EVEN TEMPO",
-    description: "Can earn 18% more distance score during every even-numbered wave.",
+    name: "SWING TEMPO",
+    description: "Odd waves are 15% faster with +15% score; even waves are 15% slower with -15% score.",
   },
   runner_vector: {
     name: "EDGE VECTOR",
-    description: "Can earn 25% more distance score while in either outside lane.",
+    description: "Earns 12% more score in an outside lane and blocks its first hit there each wave.",
   },
   runner_blitz: {
-    name: "BLITZ PACE",
-    description: "Can move 12% faster, which earns 12% more distance score.",
+    name: "VOLT CLEAVE",
+    description: "Press E to dash and destroy the nearest non-rock obstacle in the current lane.",
   },
   runner_horizon: {
     name: "FAR HORIZON",
-    description: "Can earn 30% more distance score from wave 10 onward.",
+    description: "Previews incoming obstacles before every wave and reveals rival purchases in 1v1.",
   },
   runner_velocity: {
     name: "FULL VELOCITY",
-    description: "Can move 20% faster, which earns 20% more distance score.",
+    description: "Each hitless second adds 1% speed and 2% score, up to +100% speed and +200% score. A hit resets it.",
   },
   runner_zenith: {
     name: "ZENITH CLIMB",
-    description: "Can add 2% distance score per completed wave, up to 60%.",
+    description: "Adds 2% running score per completed wave and inherits Runner abilities as it climbs. Time Stop unlocks on wave 15.",
   },
   runner_scout: {
     name: "QUICKSTEP",
@@ -582,8 +1010,8 @@ const CHARACTER_ABILITIES = {
     description: "Can make gems appear 2× as often.",
   },
   runner_relay: {
-    name: "BATON CHAIN",
-    description: "Can add 2% more score per completed wave, up to 20%.",
+    name: "OVERCHARGE RELAY",
+    description: "Every two completed waves overcharges a heart. Its discharge clears the closest obstacle in every lane.",
   },
   runner_comet: {
     name: "STAR DRIVE",
@@ -593,7 +1021,7 @@ const CHARACTER_ABILITIES = {
   runner_pacer: {
     name: "WAVE RUSH",
     description:
-      "Can make hazards move 1.5× faster and add a 2× score boost for the first 6 seconds of each wave, producing a 3× score rate before other bonuses.",
+      "Makes hazards 3× faster with 5× score for each wave's first 15 seconds. On death, pass the baton to a non-Runner once.",
   },
   runner_vault: {
     name: "SPIKE VAULT",
@@ -612,35 +1040,35 @@ const CHARACTER_ABILITIES = {
   runner_orbit: {
     name: "LANE ORBIT",
     description:
-      "Can wrap from one outside lane to the other by moving outward. Cooldown: 5 seconds.",
+      "Can wrap from one outside lane to the other by moving outward. Cooldown: 3 seconds.",
   },
   medic_patch: {
     name: "FIELD DRESSING",
-    description: "Can heal 1.5 HP after each wave and reach 5 HP.",
+    description: "Heals 1.5 HP after each wave and can reach 4 HP.",
   },
   medic_salve: {
     name: "DEEP SALVE",
-    description: "Can heal 2 HP after a wave when at 2 HP or less.",
+    description: "Heals 1.5 HP after a wave only when at 1 HP or less.",
   },
   medic_sprout: {
-    name: "GROWTH CYCLE",
-    description: "Can heal 0.5 HP with every second gem collected.",
+    name: "SEED WARD",
+    description: "Press E once per wave to seed an obstacle for two waves, reducing its damage by 0.5 HP. Barrels resist seeds.",
   },
   medic_tonic: {
-    name: "FIRST TONIC",
-    description: "Can heal 1 HP from the first gem or coin collected each wave.",
+    name: "FIELD ALCHEMY",
+    description: "Gems become ingredients. Brew one 1–3 HP potion and press E to drink it; wave healing is 0.5 HP.",
   },
   medic_beacon: {
     name: "BEACON HEART",
-    description: "Can reach 5.5 HP.",
+    description: "Can reach 5.5 HP. Reaching 1 HP lights a beacon that disables spikes and slows obstacles by 50%.",
   },
   medic_revive: {
     name: "PHOENIX REVIVE",
-    description: "Can survive one lethal hit per run with 0.5 HP.",
+    description: "Survives one lethal hit at 0.5 HP and takes flight: +50% speed and score, with logs and spikes harmless.",
   },
   medic_oracle: {
-    name: "THIRD OMEN",
-    description: "Can reach 6 HP and heal 2 HP after every third wave instead of 1 HP.",
+    name: "THREE PROPHECIES",
+    description: "Chooses a wave prophecy. Success grants its reward and +5% permanent score; failure costs 1 HP.",
   },
   medic_bloom: {
     name: "HEALING BLOOM",
@@ -652,12 +1080,12 @@ const CHARACTER_ABILITIES = {
       "Can reduce the first hit worth at least 1 HP by 1 HP once each wave, with a minimum of 0.5 HP damage.",
   },
   medic_pulse: {
-    name: "VITAL PULSE",
-    description: "Can heal 1 HP with every third gem collected.",
+    name: "LAST PULSE",
+    description: "On death, complete a 10-second timed-key rescue: 10 hits restores 1 HP, 20 restores 2, and 30 restores full HP.",
   },
   medic_suture: {
     name: "TRIAGE CYCLE",
-    description: "Can restore HP to 5 after every third completed wave.",
+    description: "Restores HP to 5 after every third completed wave, but otherwise heals 1 HP only every two waves.",
   },
   medic_vial: {
     name: "CRYSTAL TONIC",
@@ -666,26 +1094,26 @@ const CHARACTER_ABILITIES = {
   medic_lifeline: {
     name: "LIFELINE",
     description:
-      "Can heal 1.5 HP once per run after surviving a hit at 1 HP or less.",
+      "Once per run, lethal damage restores full HP and makes that obstacle type harmless. Rescue Hook can zip to another lane three times.",
   },
   medic_seraph: {
-    name: "DIVINE RECOVERY",
-    description: "Can reach 5.5 HP and heal 1.5 HP after each wave.",
+    name: "SERAPHIC SHIFT",
+    description: "Evades a hit by teleporting to an empty lane, starting at 100% chance and losing 5% per activation. Divine Recovery follows when depleted.",
   },
   medic_remedy: {
     name: "COLD REMEDY",
     description:
-      "Can heal 0.5 HP from the first snowflake collected each wave.",
+      "Can heal 1 HP from the first snowflake collected each wave.",
   },
   medic_reserve: {
     name: "RESERVE DOSE",
     description:
-      "Can store one 0.5 HP heal when a wave ends at full HP, then use it after surviving a hit.",
+      "Stores one 0.5 HP heal when a wave ends at full HP. Press E to use it when needed.",
   },
   medic_mender: {
     name: "STEADY MEND",
     description:
-      "Can heal 0.5 HP once each wave after avoiding damage for 12 seconds.",
+      "Can heal 0.5 HP once each wave after avoiding damage for 20 seconds.",
   },
   medic_halo: {
     name: "RADIANT PACE",
@@ -743,7 +1171,7 @@ const CHARACTER_ABILITIES = {
   },
   tank_atlas: {
     name: "WORLD BEARER",
-    description: "Can reach 6 HP and heal 1 HP after each wave.",
+    description: "Can reach 6 HP and heal 1 HP each wave, but must switch lanes before the sky-crush timer expires. Ordinary hits cannot lower Atlas below 1 HP.",
   },
   tank_drag: {
     name: "HEAVY DRAG",
@@ -756,7 +1184,7 @@ const CHARACTER_ABILITIES = {
   },
   tank_reactor: {
     name: "DANGER CORE",
-    description: "Can earn 25% more score while at 2 HP or less.",
+    description: "Missing HP progressively raises speed and score, up to +40% speed and +30% score.",
   },
   tank_bastion: {
     name: "HOLD GROUND",
@@ -902,7 +1330,9 @@ const getCharacterMaxHearts = (
   characterKey: string,
   characterClass: string,
 ) =>
-  characterKey === "medic_oracle" || characterKey === "tank_atlas"
+  characterKey === "medic_patch"
+    ? 4
+    : characterKey === "medic_oracle" || characterKey === "tank_atlas"
     ? 6
     : characterKey === "medic_seraph" ||
         characterKey === "medic_beacon" ||
@@ -932,6 +1362,28 @@ const getWeaponScoreBonus = (rarity: Rarity) =>
   WEAPON_SCORE_BONUS_BY_RARITY[rarity];
 const getWeaponScoreLabel = (rarity: Rarity) =>
   `+${Math.round(getWeaponScoreBonus(rarity) * 100)}% DISTANCE SCORE`;
+const UNIQUE_WEAPON_EFFECTS: Partial<Record<CharacterKey, string>> = {
+  runner_velocity: "+5% BASE SPEED · +10% RUNNING SCORE",
+  runner_pacer: "+10 SCORE ON EVERY LANE CHANGE",
+  medic_lifeline: "RESCUE HOOK · 3 TIME-STOP LANE ZIPS",
+  medic_seraph: "10% GEM CHANCE · HEAL 1 HP",
+  tank_atlas: "HALF DAMAGE FOR 2 SECONDS AFTER A LANE CHANGE",
+  medic_revive: "AFTER A HIT · DESTROY THE FIRST OBSTACLE EACH WAVE",
+  medic_oracle: "1ST HIT 0 DAMAGE · 2ND HIT HALF · THEN FULL",
+};
+const getCharacterWeaponScoreBonus = (
+  characterKey: CharacterKey,
+  rarity: Rarity,
+) =>
+  characterKey === "runner_velocity"
+    ? 0.1
+    : UNIQUE_WEAPON_EFFECTS[characterKey]
+      ? 0
+      : getWeaponScoreBonus(rarity);
+const getCharacterWeaponLabel = (
+  characterKey: CharacterKey,
+  rarity: Rarity,
+) => UNIQUE_WEAPON_EFFECTS[characterKey] ?? getWeaponScoreLabel(rarity);
 const STARTER_CHARACTER_KEYS: ReadonlySet<CharacterKey> = new Set([
   "runner_ace",
   "medic_patch",
@@ -949,11 +1401,12 @@ const isCharacterOwned = (
 ) =>
   Boolean(
     characterKey &&
-      owned.some(
-        (item) =>
-          item.item_type === "character" &&
-          item.item_key === characterKey,
-      ),
+      (isStarterCharacter(characterKey) ||
+        owned.some(
+          (item) =>
+            item.item_type === "character" &&
+            item.item_key === characterKey,
+        )),
   );
 const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
   const owns = (itemType: Unlock["item_type"], itemKey?: string | null) =>
@@ -989,6 +1442,18 @@ const BASE_ITEM_SPEED = 0.0452;
 const WAVE_SPEED_STEP = 0.25;
 const getWaveSpeedMultiplier = (waveNumber: number) =>
   1 + Math.max(0, waveNumber - 1) * WAVE_SPEED_STEP;
+const MIN_ATTACK_DODGE_WINDOW_MS = 300;
+const MAX_FORMATION_CHARACTER_SPEED_MULTIPLIER = 1.5;
+const getAttackGroupSpacing = (waveNumber: number) =>
+  Math.max(
+    22,
+    Math.ceil(
+      BASE_ITEM_SPEED *
+        getWaveSpeedMultiplier(waveNumber) *
+        MAX_FORMATION_CHARACTER_SPEED_MULTIPLIER *
+        MIN_ATTACK_DODGE_WINDOW_MS,
+    ),
+  );
 const GAME_MODE_RULES = {
   normal: { scoreMultiplier: 1, hazardLaneLimit: MAX_HAZARD_LANES },
   hardcore: { scoreMultiplier: 1.75, hazardLaneLimit: 3 },
@@ -1086,6 +1551,8 @@ const supabase = createBrowserClient(
 function Obstacle({ kind }: { kind: Kind }) {
   if (kind === "gem") return <span>♦</span>;
   if (kind === "coin") return <span>●</span>;
+  if (kind === "mushroom") return <span aria-hidden="true">🍄</span>;
+  if (kind === "current") return <span aria-hidden="true">≈</span>;
 
   if (kind === "barrel")
     return (
@@ -1170,16 +1637,44 @@ export default function Home() {
     [leaders, setLeaders] = useState<Leader[]>([]);
   const [soundtrack, setSoundtrack] = useState<Soundtrack>("energetic"),
     [musicVolume, setMusicVolume] = useState(0.45),
-    [sfxVolume, setSfxVolume] = useState(0.7);
+    [sfxVolume, setSfxVolume] = useState(0.7),
+    [runCharacterOverride, setRunCharacterOverride] = useState<CharacterKey | null>(null),
+    [abilityChoice, setAbilityChoice] = useState<AbilityChoice>(null),
+    [abilityStateVersion, setAbilityStateVersion] = useState(0),
+    [tonicIngredients, setTonicIngredients] = useState(0),
+    [tonicPotion, setTonicPotion] = useState<0 | 1 | 2 | 3>(0),
+    [oracleProphecies, setOracleProphecies] = useState<OracleProphecy[]>([]),
+    [oracleCompleted, setOracleCompleted] = useState(0),
+    [pulseGame, setPulseGame] = useState<PulseGameState | null>(null),
+    [waveForecast, setWaveForecast] = useState<string[]>([]);
   const id = useRef(0),
     last = useRef(0),
     userIdRef = useRef<string | null>(null),
     gemsRef = useRef(0),
     scoreRef = useRef(0),
+    waveRef = useRef(1),
     highScoreRef = useRef(0),
     scoreCarryRef = useRef(0),
+    currentCoinMultiplierRef = useRef(1),
     pacerRushRemainingRef = useRef(0),
+    pacerRevivalUsedRef = useRef(false),
     courierBoostRemainingRef = useRef(0),
+    dashBoostRemainingRef = useRef(0),
+    dashCooldownRemainingRef = useRef(0),
+    blitzBoostRemainingRef = useRef(0),
+    blitzCooldownRemainingRef = useRef(0),
+    strideMoveCountRef = useRef(0),
+    vectorBlockWaveRef = useRef(0),
+    haloPartsRef = useRef(0),
+    relayChargesRef = useRef(0),
+    velocityChargeMsRef = useRef(0),
+    velocityMilestoneRef = useRef(0),
+    timeStopUsedRef = useRef(false),
+    timeStopRemainingRef = useRef(0),
+    timeStopDeadlineRef = useRef(0),
+    permanentObstacleSlowRef = useRef(1),
+    collisionWaveRef = useRef(0),
+    damageTakenWaveRef = useRef(0),
     driftBoostRemainingRef = useRef(0),
     sparkBoostRemainingRef = useRef(0),
     flareDamageWaveRef = useRef(0),
@@ -1197,15 +1692,28 @@ export default function Home() {
     rogueGrazeCooldownUntilRef = useRef(0),
     rogueGrazedItemIdsRef = useRef<Set<number>>(new Set()),
     bloomGemWaveRef = useRef(0),
-    pulseGemCountRef = useRef(0),
-    sproutGemCountRef = useRef(0),
-    tonicCollectibleWaveRef = useRef(0),
+    sproutSeedWaveRef = useRef(0),
     remedySnowflakeWaveRef = useRef(0),
     reserveHealStoredRef = useRef(false),
-    menderChargeRemainingRef = useRef(12000),
+    beaconActiveRef = useRef(false),
+    menderChargeRemainingRef = useRef(20000),
     menderHealedWaveRef = useRef(0),
     lifelineUsedRef = useRef(false),
+    lifelineHookUsesRef = useRef(0),
+    lifelineImmuneKindsRef = useRef<Set<Kind>>(new Set()),
+    seraphTeleportChanceRef = useRef(100),
+    atlasLaneElapsedRef = useRef(0),
+    atlasLaneLimitRef = useRef(5000),
+    lastLaneChangeAtRef = useRef(0),
     reviveUsedRef = useRef(false),
+    reviveFlyingRef = useRef(false),
+    phoenixFeatherActiveRef = useRef(false),
+    phoenixFeatherReadyWaveRef = useRef(0),
+    pulseUsedRef = useRef(false),
+    oracleHitCountRef = useRef(0),
+    oracleInvincibleWaveRef = useRef(0),
+    oracleShieldWaveRef = useRef(0),
+    oracleBorrowedAbilitiesRef = useRef<Set<CharacterKey>>(new Set()),
     rampartCollisionCountRef = useRef(0),
     flickerShieldWaveRef = useRef(0),
     switchLastDirectionRef = useRef(0),
@@ -1239,6 +1747,7 @@ export default function Home() {
       count: 0,
     }),
     versusMatchRef = useRef<string | null>(null),
+    versusMapRef = useRef<MapId>("classic"),
     versusSearchingRef = useRef(false),
     versusSearchTokenRef = useRef(0),
     versusPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
@@ -1249,6 +1758,15 @@ export default function Home() {
     processedPickupIdsRef = useRef<Set<number>>(new Set()),
     versusPickupNonceRef = useRef(createVersusPickupNonce()),
     versusFinishedRef = useRef(false),
+    versusSelfEliminatedRef = useRef(false),
+    pitchKatanaRef = useRef<PitchKatanaState>(createPitchKatanaState()),
+    pitchKatanaArmingRef = useRef(false),
+    pendingKatanaReflectionIdsRef = useRef<Set<number>>(new Set()),
+    pitchKatanaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
+    volcanoStationaryMsRef = useRef(0),
+    factoryConveyorRef = useRef<FactoryConveyorState>(
+      createFactoryConveyorState(),
+    ),
     versusPointsRef = useRef(0),
     versusCoinAwardQueueRef = useRef<Promise<void>>(Promise.resolve()),
     versusStateSyncQueueRef = useRef<Promise<void>>(Promise.resolve()),
@@ -1265,8 +1783,15 @@ export default function Home() {
     ),
     progressionRunIdRef = useRef<string | null>(null),
     progressionAwardedRunIdRef = useRef<string | null>(null),
+    progressionResetIntentRef = useRef(0),
     progressionStartIntentRef = useRef(0),
+    progressionStartPromiseRef = useRef<{
+      intent: number;
+      promise: Promise<string | null>;
+    } | null>(null),
+    progressionHeartbeatQueueRef = useRef<Promise<void>>(Promise.resolve()),
     progressionAwardPromiseRef = useRef<Promise<void> | null>(null),
+    progressionOwnerUserIdRef = useRef<string | null>(null),
     extractBusyRef = useRef(false),
     extractFeedbackRef = useRef<HTMLDivElement | null>(null),
     botAttackPointsRef = useRef(0),
@@ -1289,6 +1814,7 @@ export default function Home() {
   };
   gemsRef.current = gems;
   scoreRef.current = score;
+  waveRef.current = wave;
   highScoreRef.current = highScore;
   useEffect(
     () => () => {
@@ -1302,6 +1828,8 @@ export default function Home() {
         clearTimeout(abilityNoticeTimerRef.current);
       if (waveAnnouncementTimerRef.current)
         clearTimeout(waveAnnouncementTimerRef.current);
+      if (pitchKatanaTimerRef.current)
+        clearTimeout(pitchKatanaTimerRef.current);
       versusSearchingRef.current = false;
       versusSearchTokenRef.current += 1;
       if (versusPollTimerRef.current)
@@ -1407,11 +1935,20 @@ export default function Home() {
     completed_runs: 0,
     ranked_unlocked: false,
   }),
-    [progressionRunVersion, setProgressionRunVersion] = useState(0);
+    [progressionRunVersion, setProgressionRunVersion] = useState(0),
+    [lastRunXpBreakdown, setLastRunXpBreakdown] =
+      useState<RunXpBreakdown | null>(null);
   const [endlessMode, setEndlessMode] = useState<GameMode>("normal");
   const [mainView, setMainView] = useState<MainView>("endless"),
     [playScope, setPlayScope] = useState<PlayScope>("single"),
     [versusMode, setVersusMode] = useState<VersusMode>("casual"),
+    [versusMap, setVersusMap] = useState<MapId>("classic"),
+    [mapPriority, setMapPriority] = useState<MapId[]>([
+      ...DEFAULT_MAP_PRIORITY,
+    ]),
+    [mapPriorityConfigured, setMapPriorityConfigured] = useState(false),
+    [mapPriorityBusy, setMapPriorityBusy] = useState(false),
+    [mapPriorityStatus, setMapPriorityStatus] = useState(""),
     [versusPhase, setVersusPhase] = useState<VersusPhase>("idle"),
     [versusOpponent, setVersusOpponent] = useState("WAITING…"),
     [versusPoints, setVersusPoints] = useState(0),
@@ -1419,6 +1956,14 @@ export default function Home() {
       VERSUS_INTERMISSION_SECONDS,
     ),
     [versusOpponentHearts, setVersusOpponentHearts] = useState(3),
+    [versusOpponentScore, setVersusOpponentScore] = useState(0),
+    [versusSelfMushrooms, setVersusSelfMushrooms] = useState(0),
+    [versusOpponentMushrooms, setVersusOpponentMushrooms] = useState(0),
+    [versusSelfEliminated, setVersusSelfEliminated] = useState(false),
+    [pitchKatanaVersion, setPitchKatanaVersion] = useState(0),
+    [factoryConveyor, setFactoryConveyor] = useState<FactoryConveyorState>(
+      factoryConveyorRef.current,
+    ),
     [versusResult, setVersusResult] = useState(""),
     [versusAttackBusy, setVersusAttackBusy] = useState(false),
     [versusIntermissionReady, setVersusIntermissionReady] = useState(false),
@@ -1431,70 +1976,245 @@ export default function Home() {
     ),
     [versusSyncRetry, setVersusSyncRetry] = useState(0);
   versusPointsRef.current = versusPoints;
-  const applyProgressionPayload = useCallback((value: unknown) => {
-    if (!value || typeof value !== "object") return;
-    const payload = value as Partial<PlayerProgression>;
-    const level = Math.max(1, Math.floor(Number(payload.level) || 1));
-    const xp = Math.max(0, Math.floor(Number(payload.xp) || 0));
-    const xpRequired = Math.max(
-      1,
-      Math.floor(Number(payload.xp_required) || 100),
-    );
-    setPlayerProgression({
-      level,
-      xp: Math.min(xp, xpRequired - 1),
-      xp_required: xpRequired,
-      lifetime_xp: Math.max(
-        0,
-        Math.floor(Number(payload.lifetime_xp) || 0),
-      ),
-      completed_runs: Math.max(
-        0,
-        Math.floor(Number(payload.completed_runs) || 0),
-      ),
-      ranked_unlocked:
-        payload.ranked_unlocked === true || level >= 25,
-      xp_awarded:
-        payload.xp_awarded === undefined
-          ? undefined
-          : Math.max(0, Math.floor(Number(payload.xp_awarded) || 0)),
-    });
-  }, []);
-  const refreshProgression = useCallback(async () => {
-    if (!userIdRef.current) return;
+  versusMapRef.current = versusMap;
+  versusSelfEliminatedRef.current = versusSelfEliminated;
+  const applyProgressionPayload = useCallback(
+    (value: unknown, requestUserId: string) => {
+      if (userIdRef.current !== requestUserId) return;
+      if (!value || typeof value !== "object") return;
+      const payload = value as Partial<PlayerProgression>;
+      const level = Math.max(1, Math.floor(Number(payload.level) || 1));
+      const xp = Math.max(0, Math.floor(Number(payload.xp) || 0));
+      const xpRequired = Math.max(
+        1,
+        Math.floor(Number(payload.xp_required) || 100),
+      );
+      const nextProgression: PlayerProgression = {
+        level,
+        xp: Math.min(xp, xpRequired - 1),
+        xp_required: xpRequired,
+        lifetime_xp: Math.max(
+          0,
+          Math.floor(Number(payload.lifetime_xp) || 0),
+        ),
+        completed_runs: Math.max(
+          0,
+          Math.floor(Number(payload.completed_runs) || 0),
+        ),
+        ranked_unlocked: payload.ranked_unlocked === true || level >= 25,
+        xp_awarded:
+          payload.xp_awarded === undefined
+            ? undefined
+            : Math.max(0, Math.floor(Number(payload.xp_awarded) || 0)),
+      };
+      // Gem and coin saves can finish in a different order. Never let an older
+      // response visually roll a signed-in player's level or XP backwards.
+      setPlayerProgression((current) => {
+        if (userIdRef.current !== requestUserId) return current;
+        const belongsToCurrentAccount =
+          progressionOwnerUserIdRef.current === requestUserId;
+        if (
+          belongsToCurrentAccount &&
+          nextProgression.lifetime_xp < current.lifetime_xp
+        )
+          return current;
+        progressionOwnerUserIdRef.current = requestUserId;
+        return nextProgression;
+      });
+    },
+    [],
+  );
+  const refreshProgression = useCallback(async (expectedUserId?: string) => {
+    const requestUserId = expectedUserId ?? userIdRef.current;
+    if (!requestUserId || userIdRef.current !== requestUserId) return;
     const { data, error } = await supabase.rpc("get_player_progression");
+    if (userIdRef.current !== requestUserId) return;
     if (error) {
       console.error("Could not load player progression:", error.message);
       return;
     }
-    applyProgressionPayload(data);
+    applyProgressionPayload(data, requestUserId);
   }, [applyProgressionPayload]);
-  const startProgressionRun = useCallback(async () => {
+  const startProgressionRun = useCallback(async function requestRunStart(): Promise<
+    string | null
+  > {
+    const inFlight = progressionStartPromiseRef.current;
+    if (inFlight) {
+      if (inFlight.intent === progressionStartIntentRef.current)
+        return inFlight.promise;
+      await inFlight.promise;
+      if (progressionStartPromiseRef.current === inFlight)
+        progressionStartPromiseRef.current = null;
+      return requestRunStart();
+    }
     const intent = progressionStartIntentRef.current + 1;
     progressionStartIntentRef.current = intent;
+    const pending = (async () => {
+      progressionRunIdRef.current = null;
+      progressionAwardedRunIdRef.current = null;
+      const requestUserId = userIdRef.current;
+      if (!requestUserId) return null;
+      const { data, error } = await supabase.rpc("start_progression_run");
+      if (
+        intent !== progressionStartIntentRef.current ||
+        userIdRef.current !== requestUserId
+      )
+        return null;
+      if (error || typeof data !== "string") {
+        console.error(
+          "Could not start account XP run:",
+          error?.message ?? "invalid run receipt",
+        );
+        return null;
+      }
+      progressionRunIdRef.current = data;
+      setProgressionRunVersion((value) => value + 1);
+      return data;
+    })();
+    const attempt = { intent, promise: pending };
+    progressionStartPromiseRef.current = attempt;
+    void pending.finally(() => {
+      if (progressionStartPromiseRef.current === attempt)
+        progressionStartPromiseRef.current = null;
+    });
+    return pending;
+  }, []);
+  const cancelPendingProgressionStart = useCallback(() => {
+    progressionResetIntentRef.current += 1;
+    if (!progressionStartPromiseRef.current) return;
+    progressionStartIntentRef.current += 1;
     progressionRunIdRef.current = null;
     progressionAwardedRunIdRef.current = null;
-    if (!userIdRef.current) return null;
-    const { data, error } = await supabase.rpc("start_progression_run");
-    if (intent !== progressionStartIntentRef.current) return null;
-    if (error || typeof data !== "string") {
-      console.error(
-        "Could not start account XP run:",
-        error?.message ?? "invalid run receipt",
-      );
-      return null;
-    }
-    progressionRunIdRef.current = data;
-    setProgressionRunVersion((value) => value + 1);
-    return data;
   }, []);
+  useEffect(() => {
+    const runId = progressionRunIdRef.current;
+    if (
+      !runId ||
+      !running ||
+      paused ||
+      wavePause ||
+      guest ||
+      playScope === "practice"
+    )
+      return;
+    let active = true;
+    const syncHeartbeat = (isActive: boolean) => {
+      const task = async () => {
+        const rpcName =
+          playScope === "versus"
+            ? "sync_1v1_progression"
+            : "sync_progression_run";
+        const identifiers =
+          playScope === "versus"
+            ? { p_match_id: runId }
+            : { p_run_id: runId };
+        return supabase.rpc(rpcName, {
+          ...identifiers,
+          p_wave: waveRef.current,
+          p_active: isActive,
+        });
+      };
+      const queued = progressionHeartbeatQueueRef.current.then(task, task);
+      progressionHeartbeatQueueRef.current = queued.then(
+        () => undefined,
+        () => undefined,
+      );
+      return queued;
+    };
+    const sendHeartbeat = async () => {
+      if (
+        !active ||
+        progressionRunIdRef.current !== runId ||
+        document.visibilityState !== "visible"
+      )
+        return;
+      const { error } = await syncHeartbeat(true);
+      if (
+        error &&
+        !/schema cache|sync_(?:1v1_)?progression|pgrst202/i.test(error.message)
+      )
+        console.error("Could not sync active run time:", error.message);
+    };
+    void sendHeartbeat();
+    const timer = setInterval(() => void sendHeartbeat(), 5000);
+    const syncVisibility = () => {
+      if (document.visibilityState === "visible") void sendHeartbeat();
+      else void syncHeartbeat(false);
+    };
+    document.addEventListener("visibilitychange", syncVisibility);
+    return () => {
+      active = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", syncVisibility);
+      void syncHeartbeat(false);
+    };
+  }, [
+    guest,
+    paused,
+    playScope,
+    progressionRunVersion,
+    running,
+    wavePause,
+  ]);
   const applyAuthoritativeVersusPoints = useCallback((value: unknown) => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return;
-    const points = Math.max(0, Math.floor(parsed));
+    const points = Math.max(0, parsed);
     versusPointsRef.current = points;
     setVersusPoints(points);
   }, []);
+  const loadMapPriority = useCallback(async () => {
+    const requestUserId = userIdRef.current;
+    if (!requestUserId) return;
+    setMapPriorityBusy(true);
+    setMapPriorityStatus("");
+    const { data, error } = await supabase.rpc("get_1v1_map_priorities");
+    if (userIdRef.current !== requestUserId) return;
+    setMapPriorityBusy(false);
+    if (error) {
+      setMapPriorityStatus("MAP PRIORITY DATABASE SETUP IS MISSING");
+      return;
+    }
+    const payload = (data ?? {}) as MapPriorityPayload;
+    const order = (payload.map_order ?? []).filter(isMapId);
+    if (order.length === MAP_IDS.length && new Set(order).size === MAP_IDS.length)
+      setMapPriority(order);
+    else setMapPriority([...DEFAULT_MAP_PRIORITY]);
+    setMapPriorityConfigured(payload.configured === true);
+  }, []);
+  const saveMapPriority = useCallback(async () => {
+    if (!userIdRef.current || mapPriorityBusy) return;
+    setMapPriorityBusy(true);
+    setMapPriorityStatus("SAVING PRIORITY LIST…");
+    const { data, error } = await supabase.rpc("set_1v1_map_priorities", {
+      p_map_order: mapPriority,
+    });
+    setMapPriorityBusy(false);
+    if (error) {
+      setMapPriorityStatus(error.message);
+      return;
+    }
+    const payload = (data ?? {}) as MapPriorityPayload;
+    const order = (payload.map_order ?? mapPriority).filter(isMapId);
+    if (order.length === MAP_IDS.length) setMapPriority(order);
+    setMapPriorityConfigured(true);
+    setMapPriorityStatus("PRIORITY LIST SAVED");
+  }, [mapPriority, mapPriorityBusy]);
+  const moveMapPriority = useCallback((index: number, direction: -1 | 1) => {
+    const destination = index + direction;
+    if (destination < 0 || destination >= MAP_IDS.length) return;
+    setMapPriority((current) => {
+      const next = [...current];
+      [next[index], next[destination]] = [next[destination], next[index]];
+      return next;
+    });
+    setMapPriorityConfigured(false);
+    setMapPriorityStatus("UNSAVED CHANGES");
+  }, []);
+  useEffect(() => {
+    if (mainView === "versus" && userEmail && !guest)
+      void loadMapPriority();
+  }, [guest, loadMapPriority, mainView, userEmail]);
   const enqueueVersusStateSync = useCallback(
     (task: () => Promise<void>) => {
       const queued = versusStateSyncQueueRef.current.then(task, task);
@@ -1505,6 +2225,7 @@ export default function Home() {
   );
   const resetVersusClientSync = useCallback(() => {
     processedPickupIdsRef.current.clear();
+    pendingKatanaReflectionIdsRef.current.clear();
     versusPickupNonceRef.current = createVersusPickupNonce();
     versusCoinAwardQueueRef.current = Promise.resolve();
     versusStateSyncQueueRef.current = Promise.resolve();
@@ -1520,12 +2241,18 @@ export default function Home() {
     }
   }, []);
   const reconcileVersusPoints = useCallback(
-    async (matchId: string) => {
+    async (matchId: string, requestUserId: string) => {
       try {
+        if (userIdRef.current !== requestUserId) return false;
         const { data, error } = await supabase.rpc("get_1v1_state", {
           p_match_id: matchId,
         });
-        if (error || versusMatchRef.current !== matchId) return false;
+        if (
+          error ||
+          userIdRef.current !== requestUserId ||
+          versusMatchRef.current !== matchId
+        )
+          return false;
         applyAuthoritativeVersusPoints(data?.self?.obstacle_points);
         return true;
       } catch {
@@ -1536,10 +2263,13 @@ export default function Home() {
   );
   const queueOnlineCoinAward = useCallback(
     (matchId: string, pickupId: number) => {
+      const requestUserId = userIdRef.current;
+      if (!requestUserId) return;
       const pickupClaimId = `coin:${versusPickupNonceRef.current}:${pickupId}`;
       const awardCoin = async () => {
         let attempt = 0;
         while (
+          userIdRef.current === requestUserId &&
           versusMatchRef.current === matchId &&
           !versusFinishedRef.current
         ) {
@@ -1551,10 +2281,14 @@ export default function Home() {
               p_amount: 1,
               p_pickup_id: pickupClaimId,
             });
-            if (versusMatchRef.current !== matchId) return;
+            if (
+              userIdRef.current !== requestUserId ||
+              versusMatchRef.current !== matchId
+            )
+              return;
             if (!error) {
               applyAuthoritativeVersusPoints(data?.obstacle_points);
-              void refreshProgression();
+              void refreshProgression(requestUserId);
               return;
             }
             lastError = error.message;
@@ -1573,7 +2307,11 @@ export default function Home() {
               matchId,
               true,
             );
-            if (!restored && versusMatchRef.current === matchId) {
+            if (
+              !restored &&
+              userIdRef.current === requestUserId &&
+              versusMatchRef.current === matchId
+            ) {
               versusFinishedRef.current = true;
               setVersusPhase("finished");
               setVersusIntermissionReady(false);
@@ -1590,8 +2328,12 @@ export default function Home() {
           }
           attempt += 1;
           if (attempt % 3 === 0) {
-            await reconcileVersusPoints(matchId);
-            if (versusMatchRef.current !== matchId) return;
+            await reconcileVersusPoints(matchId, requestUserId);
+            if (
+              userIdRef.current !== requestUserId ||
+              versusMatchRef.current !== matchId
+            )
+              return;
             setVersusResult(
               `COIN SAVE DELAYED · RETRYING · ${lastError.toUpperCase()}`,
             );
@@ -1616,8 +2358,12 @@ export default function Home() {
   const isVersusRun = playScope !== "single";
   const mode: GameMode = mainView === "versus" ? "normal" : endlessMode;
   const modeRules = GAME_MODE_RULES[mode];
-  const [playerClass, setPlayerClass] = useState("runner"),
-    [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
+  const activeMapId: MapId = isVersusRun ? versusMap : "classic";
+  const activeMapRules = getMapRules(activeMapId);
+  const activeLaneCount = activeMapRules.laneCount;
+  const activeCenterLane = Math.floor(activeLaneCount / 2);
+  const healingEnabled = activeMapRules.health.healingMultiplier > 0;
+  const [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
     [inventoryCharacter, setInventoryCharacter] = useState<{
       classKey: keyof typeof CLASS_CHARACTERS;
       characterKey: string;
@@ -1627,23 +2373,72 @@ export default function Home() {
     [environmentCosmetic, setEnvironmentCosmetic] = useState(""),
     [unlocks, setUnlocks] = useState<Unlock[]>([]),
     [extractResults, setExtractResults] = useState<ExtractionResult[]>([]);
-  const classBlockedByMode =
+  // Treat the four included starter kits as the only client-side defaults.
+  // Every other character must have a matching account unlock before it can
+  // affect gameplay, even if stale loadout or multiplayer state names it.
+  const selectedCharacterOwned = isCharacterOwned(unlocks, selectedCharacter);
+  const availableCharacter = selectedCharacterOwned
+    ? selectedCharacter
+    : "runner_ace";
+  const availableClass = getCharacterClassKey(availableCharacter);
+  const classBlockedByGameMode =
     mode === "impossible" ||
     (mode === "hardcore" &&
-      (playerClass === "medic" || playerClass === "tank"));
-  const activeClass = classBlockedByMode ? "runner" : playerClass;
-  const activeCharacter =
-    mode === "impossible" || classBlockedByMode
+      (availableClass === "medic" || availableClass === "tank"));
+  const classBlockedByMap =
+    isVersusRun &&
+    !isCharacterClassAllowed(activeMapId, availableClass);
+  const forcedMapCharacter = isVersusRun
+    ? activeMapRules.forcedCharacterId
+    : null;
+  const equippedCharacter =
+    mode === "impossible" || classBlockedByGameMode || classBlockedByMap
       ? "runner_ace"
-      : selectedCharacter;
-  const baseHearts =
+      : forcedMapCharacter ?? availableCharacter;
+  const activeCharacter = (runCharacterOverride ?? equippedCharacter) as CharacterKey;
+  const activeClass = getCharacterClassKey(activeCharacter);
+  const hasCharacterAbility = useCallback((characterKey: CharacterKey) => {
+    if (activeCharacter === characterKey) return true;
+    if (
+      activeCharacter === "medic_oracle" &&
+      oracleBorrowedAbilitiesRef.current.has(characterKey)
+    )
+      return true;
+    if (activeCharacter !== "runner_zenith") return false;
+    const unlockWave: Partial<Record<CharacterKey, number>> = {
+      runner_orbit: 5,
+      medic_halo: 7,
+      runner_horizon: 9,
+      runner_relay: 10,
+      tank_glacier: 12,
+      runner_ace: 12,
+      runner_dash: 12,
+      runner_stride: 12,
+    };
+    const requiredWave = unlockWave[characterKey];
+    return requiredWave !== undefined && wave >= requiredWave;
+  }, [activeCharacter, wave]);
+  const baseStartingHearts =
     activeClass === "tank" ? 4 : activeClass === "trickster" ? 2 : 3;
+  const baseCharacterMaxHearts = getCharacterMaxHearts(
+    activeCharacter,
+    activeClass,
+  );
+  const mapHealth = isVersusRun
+    ? applyMapHealthModifiers(
+        activeMapId,
+        baseStartingHearts,
+        baseCharacterMaxHearts,
+      )
+    : { startingHp: baseStartingHearts, maxHp: baseCharacterMaxHearts };
   const startingHearts =
-    mode === "impossible" || mode === "hardcore" ? 1 : baseHearts;
+    mode === "impossible" || mode === "hardcore"
+      ? 1
+      : mapHealth.startingHp;
   const localMaxHearts =
     mode === "impossible" || mode === "hardcore"
       ? 1
-      : getCharacterMaxHearts(activeCharacter, activeClass);
+      : mapHealth.maxHp;
   const maxHearts =
     isOnlineVersus && versusServerMaxHearts !== null
       ? versusServerMaxHearts
@@ -1655,15 +2450,21 @@ export default function Home() {
     CHARACTER_ABILITIES[activeCharacter as CharacterKey] ??
     CHARACTER_ABILITIES.runner_ace;
   const activeCharacterDefinition = getCharacterDefinition(activeCharacter);
-  const activeWeaponScoreBonus = getWeaponScoreBonus(
+  const activeWeaponScoreBonus = getCharacterWeaponScoreBonus(
+    activeCharacter as CharacterKey,
+    activeCharacterDefinition.rarity,
+  );
+  const activeWeaponLabel = getCharacterWeaponLabel(
+    activeCharacter as CharacterKey,
     activeCharacterDefinition.rarity,
   );
   const activeWeaponScoreMultiplier = 1 + activeWeaponScoreBonus;
   useEffect(() => {
+    const awardUserId = userIdRef.current;
     if (
       !over ||
       guest ||
-      !userIdRef.current ||
+      !awardUserId ||
       playScope === "practice" ||
       !progressionRunIdRef.current ||
       progressionAwardedRunIdRef.current === progressionRunIdRef.current
@@ -1674,16 +2475,42 @@ export default function Home() {
     progressionAwardedRunIdRef.current = runId;
     const awardRun = async () => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        const { data, error } = await supabase.rpc("award_completed_run", {
+        if (userIdRef.current !== awardUserId) return;
+        const scope =
+          playScope === "versus" ? `${versusMode}_1v1` : "endless";
+        if (scope === "endless")
+          await supabase.rpc("sync_progression_run", {
+            p_run_id: runId,
+            p_wave: waveRef.current,
+            p_active: false,
+          });
+        if (userIdRef.current !== awardUserId) return;
+        let result = await supabase.rpc("award_completed_run_v2", {
           p_run_id: runId,
           p_score: Math.max(0, Math.floor(scoreRef.current)),
-          p_scope:
-            playScope === "versus"
-              ? `${versusMode}_1v1`
-              : "endless",
+          p_scope: scope,
         });
+        if (
+          result.error &&
+          /award_completed_run_v2|schema cache|pgrst202/i.test(
+            result.error.message,
+          )
+        ) {
+          result = await supabase.rpc("award_completed_run", {
+            p_run_id: runId,
+            p_score: Math.max(0, Math.floor(scoreRef.current)),
+            p_scope: scope,
+          });
+        }
+        if (userIdRef.current !== awardUserId) return;
+        const { data, error } = result;
         if (!error) {
-          applyProgressionPayload(data);
+          applyProgressionPayload(data, awardUserId);
+          setLastRunXpBreakdown(
+            normalizeRunXpBreakdown(
+              (data as { xp_breakdown?: unknown } | null)?.xp_breakdown,
+            ),
+          );
           const savedHighScore = Number(
             (data as { high_score?: unknown } | null)?.high_score,
           );
@@ -1695,7 +2522,11 @@ export default function Home() {
         }
         if (attempt === 2) {
           console.error("Could not save run XP:", error.message);
-          progressionAwardedRunIdRef.current = null;
+          if (
+            userIdRef.current === awardUserId &&
+            progressionRunIdRef.current === runId
+          )
+            progressionAwardedRunIdRef.current = null;
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
@@ -1829,6 +2660,62 @@ export default function Home() {
     },
     [],
   );
+  const applyVersusTimeStopState = useCallback(
+    (
+      payload: {
+        zenith_time_stop_until?: string | null;
+        time_stop_until?: string | null;
+        zenith_time_stop_used?: boolean;
+        time_stop_used?: boolean;
+        obstacle_speed_multiplier?: number;
+      },
+      announce = false,
+    ) => {
+      const deadlineValue =
+        payload.zenith_time_stop_until ?? payload.time_stop_until;
+      const deadline =
+        typeof deadlineValue === "string" ? Date.parse(deadlineValue) : NaN;
+      const remaining = Number.isFinite(deadline)
+        ? Math.max(0, deadline - Date.now())
+        : 0;
+      const wasStopped = timeStopRemainingRef.current > 0;
+      let changed = false;
+      if (remaining > timeStopRemainingRef.current + 25) {
+        timeStopDeadlineRef.current = Math.max(
+          timeStopDeadlineRef.current,
+          deadline,
+        );
+        timeStopRemainingRef.current = Math.max(
+          timeStopRemainingRef.current,
+          remaining,
+        );
+        changed = true;
+      }
+      const requestedSlow = Number(payload.obstacle_speed_multiplier);
+      if (
+        Number.isFinite(requestedSlow) &&
+        requestedSlow > 0 &&
+        requestedSlow < permanentObstacleSlowRef.current
+      ) {
+        permanentObstacleSlowRef.current = Math.min(
+          permanentObstacleSlowRef.current,
+          Math.min(1, requestedSlow),
+        );
+        changed = true;
+      }
+      if (
+        (payload.zenith_time_stop_used || payload.time_stop_used) &&
+        !timeStopUsedRef.current
+      ) {
+        timeStopUsedRef.current = true;
+        changed = true;
+      }
+      if (changed) setAbilityStateVersion((value) => value + 1);
+      if (announce && remaining > 0 && !wasStopped)
+        showAbilityNotice("TIME STOP · BOTH ARENA RUNS FROZEN", 1800);
+    },
+    [showAbilityNotice],
+  );
   const grantInvincibility = useCallback((durationMs: number) => {
     const now = Date.now();
     const until = Math.max(invincibleUntilRef.current, now + durationMs);
@@ -1874,27 +2761,59 @@ export default function Home() {
       sentinelLastStandUsedRef.current = restoring;
       phantomPhaseWaveRef.current = restoring ? restoredWave : 0;
       scoreCarryRef.current = 0;
+      currentCoinMultiplierRef.current = 1;
       pacerRushRemainingRef.current = 0;
+      pacerRevivalUsedRef.current = restoring;
       courierBoostRemainingRef.current = 0;
+      dashBoostRemainingRef.current = 0;
+      dashCooldownRemainingRef.current = restoring ? 5000 : 0;
+      blitzBoostRemainingRef.current = 0;
+      blitzCooldownRemainingRef.current = restoring ? 6000 : 0;
+      strideMoveCountRef.current = 0;
+      vectorBlockWaveRef.current = restoring ? restoredWave : 0;
+      haloPartsRef.current = 0;
+      relayChargesRef.current = 0;
+      velocityChargeMsRef.current = 0;
+      velocityMilestoneRef.current = 0;
+      timeStopUsedRef.current = restoring;
+      timeStopRemainingRef.current = 0;
+      timeStopDeadlineRef.current = 0;
+      permanentObstacleSlowRef.current = 1;
+      pitchKatanaArmingRef.current = false;
+      collisionWaveRef.current = restoring ? restoredWave : 0;
+      damageTakenWaveRef.current = restoring ? restoredWave : 0;
       driftBoostRemainingRef.current = 0;
       sparkBoostRemainingRef.current = 0;
       flareDamageWaveRef.current = restoring ? restoredWave : 0;
       flareBoostWaveRef.current = 0;
-      orbitCooldownRemainingRef.current = restoring ? 5000 : 0;
+      orbitCooldownRemainingRef.current = restoring ? 3000 : 0;
       cometChargeRemainingRef.current = 8000;
       cometChargedRef.current = false;
       rogueGrazeCooldownUntilRef.current = restoring ? now + 1250 : 0;
       rogueGrazedItemIdsRef.current.clear();
       bloomGemWaveRef.current = restoring ? restoredWave : 0;
-      pulseGemCountRef.current = 0;
-      sproutGemCountRef.current = 0;
-      tonicCollectibleWaveRef.current = restoring ? restoredWave : 0;
+      sproutSeedWaveRef.current = restoring ? restoredWave : 0;
       remedySnowflakeWaveRef.current = restoring ? restoredWave : 0;
       reserveHealStoredRef.current = false;
-      menderChargeRemainingRef.current = 12000;
+      beaconActiveRef.current = false;
+      menderChargeRemainingRef.current = 20000;
       menderHealedWaveRef.current = restoring ? restoredWave : 0;
       lifelineUsedRef.current = restoring;
+      lifelineHookUsesRef.current = restoring ? 3 : 0;
+      lifelineImmuneKindsRef.current.clear();
+      seraphTeleportChanceRef.current = restoring ? 0 : 100;
+      atlasLaneElapsedRef.current = 0;
+      atlasLaneLimitRef.current = 5000;
+      lastLaneChangeAtRef.current = now;
       reviveUsedRef.current = restoring;
+      reviveFlyingRef.current = false;
+      phoenixFeatherActiveRef.current = false;
+      phoenixFeatherReadyWaveRef.current = 0;
+      pulseUsedRef.current = restoring;
+      oracleHitCountRef.current = 0;
+      oracleInvincibleWaveRef.current = 0;
+      oracleShieldWaveRef.current = 0;
+      oracleBorrowedAbilitiesRef.current.clear();
       rampartCollisionCountRef.current = 0;
       flickerShieldWaveRef.current = restoring ? restoredWave : 0;
       switchLastDirectionRef.current = 0;
@@ -1914,6 +2833,14 @@ export default function Home() {
       clockworkCooldownRemainingRef.current = restoring ? 5000 : 0;
       pickpocketPassedCountRef.current = 0;
       wildcardBuffRef.current = null;
+      setAbilityChoice(null);
+      setTonicIngredients(0);
+      setTonicPotion(0);
+      setOracleProphecies([]);
+      setOracleCompleted(0);
+      setPulseGame(null);
+      setWaveForecast([]);
+      setAbilityStateVersion((value) => value + 1);
     },
     [],
   );
@@ -1927,6 +2854,39 @@ export default function Home() {
       const announcedAbility =
         CHARACTER_ABILITIES[announcedCharacter as CharacterKey] ??
         CHARACTER_ABILITIES.runner_ace;
+      oracleHitCountRef.current = 0;
+      const canForecast =
+        announcedCharacter === "runner_horizon" ||
+        announcedCharacter === "medic_oracle" ||
+        (announcedCharacter === "runner_zenith" && number >= 9);
+      if (canForecast) {
+        const forecastRules = getMapRules(activeMapId);
+        const expectedTotal = Math.max(
+          8,
+          Math.round((12 + number * 2) * forecastRules.totalObstacleMultiplier),
+        );
+        const naturalForecast = Object.entries(
+          forecastRules.naturalObstacleWeights,
+        )
+          .filter(([, weight]) => Number(weight) > 0)
+          .map(
+            ([kind, weight]) =>
+              `${kind.toUpperCase()} ≈${Math.max(1, Math.round((expectedTotal * Number(weight)) / 100))}`,
+          );
+        const purchasedForecast = incomingAttacksRef.current.map(
+          (attack) =>
+            `${attack.kind.toUpperCase()} · ${attack.lane === undefined ? "LANE HIDDEN" : `LANE ${attack.lane + 1}`}`,
+        );
+        setWaveForecast([
+          `WAVE ${number} · ABOUT ${expectedTotal} NATURAL OBSTACLES`,
+          ...naturalForecast,
+          ...(purchasedForecast.length > 0
+            ? ["RIVAL PURCHASES", ...purchasedForecast]
+            : isVersusRun
+              ? ["RIVAL PURCHASES · NONE QUEUED"]
+              : []),
+        ]);
+      } else setWaveForecast([]);
       void audioEngine.playSfx("wave");
       setWaveMessage(`WAVE ${number}`);
       setWavePause(true);
@@ -1940,11 +2900,16 @@ export default function Home() {
         if (applyCharacterEffects && announcedCharacter === "runner_ace")
           showAbilityNotice("MOMENTUM · SCORE ×1.10", 1400);
         if (applyCharacterEffects && announcedCharacter === "runner_pacer") {
-          pacerRushRemainingRef.current = 6000;
+          pacerRushRemainingRef.current = 15000;
           showAbilityNotice(
-            "WAVE RUSH · SPEED ×1.5 + SCORE ×2 = ×3 FOR 6 SECONDS",
+            "WAVE RUSH · SPEED ×3 + SCORE ×5 = ×15 FOR 15 SECONDS",
             1800,
           );
+        }
+        if (oracleShieldWaveRef.current === number) {
+          oracleShieldWaveRef.current = 0;
+          grantInvincibility(10000);
+          showAbilityNotice("MERGED NO-HIT REWARD · 10 SECOND SHIELD", 1500);
         }
         if (
           applyCharacterEffects &&
@@ -1977,16 +2942,34 @@ export default function Home() {
         waveAnnouncementTimerRef.current = null;
       }, 1250);
     },
-    [activeCharacter, grantInvincibility, showAbilityNotice],
+    [
+      activeCharacter,
+      activeMapId,
+      grantInvincibility,
+      isVersusRun,
+      showAbilityNotice,
+    ],
   );
   const reset = useCallback(async (
-    forceNormalMode = false,
     trackProgression = true,
+    mapOverride?: MapId,
   ) => {
+    const resetIntent = progressionResetIntentRef.current + 1;
+    progressionResetIntentRef.current = resetIntent;
+    setRunCharacterOverride(null);
     if (trackProgression && progressionAwardPromiseRef.current)
       await progressionAwardPromiseRef.current;
+    if (resetIntent !== progressionResetIntentRef.current) return;
     if (trackProgression && userIdRef.current) {
-      const runId = await startProgressionRun();
+      const startingUserId = userIdRef.current;
+      const pendingStart = startProgressionRun();
+      const runId = await pendingStart;
+      if (
+        resetIntent !== progressionResetIntentRef.current ||
+        startingUserId !== userIdRef.current ||
+        (runId !== null && progressionRunIdRef.current !== runId)
+      )
+        return;
       if (!runId) {
         showAbilityNotice("ACCOUNT XP CONNECTION ERROR · TRY AGAIN", 1800);
         return;
@@ -1996,23 +2979,53 @@ export default function Home() {
       progressionRunIdRef.current = null;
       progressionAwardedRunIdRef.current = null;
     }
-    const runStartingHearts = forceNormalMode
-      ? playerClass === "tank"
-        ? 4
-        : playerClass === "trickster"
-          ? 2
-          : 3
-      : startingHearts;
-    const runCharacter = forceNormalMode ? selectedCharacter : activeCharacter;
+    const runMapId = mapOverride ?? activeMapId;
+    const runMapRules = getMapRules(runMapId);
+    const candidateCharacter = availableCharacter;
+    const candidateClass = getCharacterClassKey(candidateCharacter);
+    const candidateBlockedByMode =
+      mode === "impossible" ||
+      (mode === "hardcore" &&
+        (candidateClass === "medic" || candidateClass === "tank"));
+    const runCharacter =
+      candidateBlockedByMode
+        ? "runner_ace"
+        : runMapRules.forcedCharacterId ??
+          (isCharacterClassAllowed(runMapId, candidateClass)
+            ? candidateCharacter
+            : "runner_ace");
+    const runClass = getCharacterClassKey(runCharacter);
+    const runBaseStartingHearts =
+      runClass === "tank" ? 4 : runClass === "trickster" ? 2 : 3;
+    const runMapHealth = applyMapHealthModifiers(
+      runMapId,
+      runBaseStartingHearts,
+      getCharacterMaxHearts(runCharacter, runClass),
+    );
+    const runStartingHearts =
+      mode === "normal" ? runMapHealth.startingHp : 1;
+    const runCenterLane = Math.floor(runMapRules.laneCount / 2);
     resetVersusClientSync();
     ambientHazardStreakRef.current = { kind: null, count: 0 };
-    setLane(2);
+    setLastRunXpBreakdown(null);
+    setLane(runCenterLane);
+    state.current.lane = runCenterLane;
     setItems([]);
     setScore(0);
     setWaveProgress(0);
     setHearts(runStartingHearts);
     setWave(1);
     setOver(false);
+    setVersusSelfEliminated(false);
+    versusSelfEliminatedRef.current = false;
+    setVersusSelfMushrooms(0);
+    setVersusOpponentMushrooms(0);
+    pitchKatanaRef.current = createPitchKatanaState();
+    setPitchKatanaVersion((value) => value + 1);
+    volcanoStationaryMsRef.current = 0;
+    const nextConveyor = createFactoryConveyorState();
+    factoryConveyorRef.current = nextConveyor;
+    setFactoryConveyor(nextConveyor);
     setPaused(false);
     setPauseMenuOpen(false);
     setInvincible(false);
@@ -2044,30 +3057,47 @@ export default function Home() {
     last.current = 0;
     void audioEngine.start(soundtrack);
     announceWave(1, true, runCharacter);
+    if (runCharacter === "medic_oracle") {
+      setPaused(true);
+      setAbilityChoice({ kind: "oracle-prophecy" });
+    }
   }, [
-    activeCharacter,
+    activeMapId,
     announceWave,
+    availableCharacter,
     clearFreezeEffect,
-    playerClass,
+    mode,
     resetCharacterAbilityState,
     resetVersusClientSync,
-    selectedCharacter,
     showAbilityNotice,
     soundtrack,
     startProgressionRun,
-    startingHearts,
   ]);
   const resetGameToMenu = () => {
+    cancelPendingProgressionStart();
+    progressionStartIntentRef.current += 1;
+    progressionRunIdRef.current = null;
+    progressionAwardedRunIdRef.current = null;
     resetVersusClientSync();
+    setLastRunXpBreakdown(null);
     setRunning(false);
     setPaused(false);
     setPauseMenuOpen(false);
     setOver(false);
     setItems([]);
+    setLane(activeCenterLane);
+    state.current.lane = activeCenterLane;
     setScore(0);
     setWaveProgress(0);
     setWave(1);
     setHearts(startingHearts);
+    setVersusSelfEliminated(false);
+    versusSelfEliminatedRef.current = false;
+    setVersusSelfMushrooms(0);
+    setVersusOpponentMushrooms(0);
+    pitchKatanaRef.current = createPitchKatanaState();
+    setPitchKatanaVersion((value) => value + 1);
+    volcanoStationaryMsRef.current = 0;
     setInvincible(false);
     clearFreezeEffect();
     setAbilityNotice("");
@@ -2104,12 +3134,172 @@ export default function Home() {
       setVersusIntermissionReady(false);
     }
   };
+  const applyDirectMapDamage = useCallback(
+    (damage: number, notice: string) => {
+      if (
+        damage <= 0 ||
+        damageLockedRef.current ||
+        !state.current.running ||
+        state.current.hearts <= 0
+      )
+        return;
+      damageLockedRef.current = true;
+      const nextHearts = Math.max(0, state.current.hearts - damage);
+      state.current.hearts = nextHearts;
+      setHearts(nextHearts);
+      void audioEngine.playSfx("hit");
+      setFlash(damage <= 0.5 ? "life-half" : "life-lost");
+      showAbilityNotice(notice, 900);
+      if (nextHearts <= 0) {
+        setRunning(false);
+        setPaused(false);
+        setPauseMenuOpen(false);
+        setOver(true);
+        if (isBotPractice) {
+          setVersusResult("PRACTICE RUN COMPLETE");
+          setVersusPhase("finished");
+        } else if (isOnlineVersus) {
+          setVersusSelfEliminated(true);
+          versusSelfEliminatedRef.current = true;
+          setVersusPhase("eliminated");
+          setVersusIntermissionReady(false);
+          setVersusResult("RUN COMPLETE · RIVAL STILL RUNNING");
+        } else if (guest) {
+          gemsRef.current = 0;
+          setGems(0);
+        } else {
+          const best = Math.max(highScoreRef.current, scoreRef.current);
+          highScoreRef.current = best;
+          setHighScore(best);
+        }
+      }
+      setTimeout(() => {
+        setFlash("");
+        damageLockedRef.current = false;
+      }, 240);
+    },
+    [guest, isBotPractice, isOnlineVersus, showAbilityNotice],
+  );
+  const triggerPitchKatana = useCallback(() => {
+    if (
+      activeMapId !== "pitch" ||
+      !state.current.running ||
+      state.current.paused ||
+      state.current.wavePause
+    )
+      return;
+    const preflight = activatePitchKatana(
+      pitchKatanaRef.current,
+      Date.now(),
+      frozenUntilRef.current > Date.now(),
+    );
+    if (!preflight.activated) {
+      const message =
+        preflight.reason === "broken"
+          ? "KATANA BROKEN FOR THIS MATCH"
+          : preflight.reason === "frozen"
+            ? "KATANA LOCKED WHILE FROZEN"
+            : preflight.reason === "cooldown"
+              ? "KATANA RECHARGING"
+              : "KATANA ALREADY ACTIVE";
+      showAbilityNotice(message, 850);
+      return;
+    }
+    const beginGuard = (authoritativeCooldown?: unknown) => {
+      const activation = activatePitchKatana(
+        pitchKatanaRef.current,
+        Date.now(),
+        frozenUntilRef.current > Date.now(),
+      );
+      if (!activation.activated) {
+        showAbilityNotice("KATANA COULD NOT ARM", 900);
+        return;
+      }
+      const parsedCooldown =
+        typeof authoritativeCooldown === "string"
+          ? Date.parse(authoritativeCooldown)
+          : NaN;
+      pitchKatanaRef.current = {
+        ...activation.state,
+        cooldownUntilMs: Number.isFinite(parsedCooldown)
+          ? parsedCooldown
+          : activation.state.cooldownUntilMs,
+      };
+      setPitchKatanaVersion((value) => value + 1);
+      void audioEngine.playSfx("shield");
+      showAbilityNotice("KATANA ACTIVE · 0.4 SECOND GUARD", 650);
+      if (pitchKatanaTimerRef.current)
+        clearTimeout(pitchKatanaTimerRef.current);
+      pitchKatanaTimerRef.current = setTimeout(() => {
+        const settled = settlePitchKatanaWindow(
+          pitchKatanaRef.current,
+          Date.now(),
+        );
+        pitchKatanaRef.current = settled.state;
+        setPitchKatanaVersion((value) => value + 1);
+        if (settled.selfDamage > 0)
+          applyDirectMapDamage(
+            settled.selfDamage,
+            "KATANA MISSED · 0.5 HP LOST",
+          );
+        pitchKatanaTimerRef.current = null;
+      }, (PITCH_KATANA_RULES.activeSeconds + 0.02) * 1000);
+    };
+    if (isOnlineVersus && versusMatchRef.current) {
+      if (pitchKatanaArmingRef.current) return;
+      pitchKatanaArmingRef.current = true;
+      const matchId = versusMatchRef.current;
+      showAbilityNotice("KATANA ARMING…", 650);
+      void supabase
+        .rpc("activate_1v1_katana", { p_match_id: matchId })
+        .then(({ data, error }) => {
+          pitchKatanaArmingRef.current = false;
+          if (versusMatchRef.current !== matchId) return;
+          if (error) {
+            setVersusResult(error.message);
+            showAbilityNotice("KATANA COULD NOT ARM", 1000);
+            void hydrateVersusStateRef.current?.(matchId, true);
+            return;
+          }
+          beginGuard(
+            data?.katana_cooldown_until ?? data?.katana_cooldown_ends_at,
+          );
+        });
+      return;
+    }
+    beginGuard();
+  }, [
+    activeMapId,
+    applyDirectMapDamage,
+    isOnlineVersus,
+    showAbilityNotice,
+  ]);
   const completeMove = useCallback(
     (destination: number, direction: number) => {
       state.current.lane = destination;
       setLane(destination);
+      volcanoStationaryMsRef.current = 0;
+      if (isOnlineVersus && versusMatchRef.current)
+        void supabase.rpc("update_1v1_position", {
+          p_match_id: versusMatchRef.current,
+          p_lane_index: destination,
+        });
       void audioEngine.playSfx("move");
       const now = Date.now();
+      lastLaneChangeAtRef.current = now;
+      if (hasCharacterAbility("tank_atlas")) atlasLaneElapsedRef.current = 0;
+      if (activeCharacter === "runner_pacer") {
+        scoreRef.current += 10;
+        setScore(scoreRef.current);
+        showAbilityNotice("RELAY ROD · +10 SCORE", 600);
+      }
+      if (hasCharacterAbility("runner_stride")) {
+        strideMoveCountRef.current += 1;
+        if (strideMoveCountRef.current % 3 === 0) {
+          grantInvincibility(750);
+          showAbilityNotice("FLOW STRIDE · DODGE SHIELD", 800);
+        }
+      }
       if (
         activeCharacter === "tank_bastion" &&
         !bastionArmorChargedRef.current
@@ -2180,7 +3370,14 @@ export default function Home() {
         }
       }
     },
-    [activeCharacter, grantInvincibility, showAbilityNotice, wave],
+    [
+      activeCharacter,
+      grantInvincibility,
+      hasCharacterAbility,
+      isOnlineVersus,
+      showAbilityNotice,
+      wave,
+    ],
   );
   const move = useCallback(
     (d: number) => {
@@ -2188,24 +3385,29 @@ export default function Home() {
         !state.current.running ||
         state.current.paused ||
         state.current.wavePause ||
-        turnLockedRef.current
+        turnLockedRef.current ||
+        (activeMapId === "pitch" &&
+          isPitchKatanaMovementLocked(pitchKatanaRef.current, Date.now()))
       )
         return;
       const orbitWrap =
-        activeCharacter === "runner_orbit" &&
+        hasCharacterAbility("runner_orbit") &&
         orbitCooldownRemainingRef.current <= 0 &&
         ((state.current.lane === 0 && d < 0) ||
-          (state.current.lane === 4 && d > 0));
+          (state.current.lane === activeLaneCount - 1 && d > 0));
       const destination = orbitWrap
         ? state.current.lane === 0
-          ? 4
+          ? activeLaneCount - 1
           : 0
-        : Math.max(0, Math.min(4, state.current.lane + d));
+        : Math.max(
+            0,
+            Math.min(activeLaneCount - 1, state.current.lane + d),
+          );
       if (destination === state.current.lane) return;
       const finishMove = () => {
         completeMove(destination, d);
         if (orbitWrap) {
-          orbitCooldownRemainingRef.current = 5000;
+          orbitCooldownRemainingRef.current = 3000;
           showAbilityNotice("LANE ORBIT · EDGE WRAP", 850);
         }
       };
@@ -2222,14 +3424,234 @@ export default function Home() {
             turnLockedRef.current = false;
             delayedMoveTimerRef.current = null;
           },
-          activeCharacter === "runner_scout" ? 125 : 250,
+          250,
         );
+        return;
+      }
+      if (activeMapId === "volcano") {
+        turnLockedRef.current = true;
+        delayedMoveTimerRef.current = setTimeout(() => {
+          if (
+            state.current.running &&
+            !state.current.paused &&
+            !state.current.wavePause
+          )
+            finishMove();
+          turnLockedRef.current = false;
+          delayedMoveTimerRef.current = null;
+        }, VOLCANO_RULES.turnDelaySeconds * 1000);
         return;
       }
       finishMove();
     },
-    [activeCharacter, completeMove, showAbilityNotice],
+    [
+      activeLaneCount,
+      activeMapId,
+      completeMove,
+      hasCharacterAbility,
+      showAbilityNotice,
+    ],
   );
+  const triggerCharacterAction = useCallback(() => {
+    if (
+      !state.current.running ||
+      state.current.paused ||
+      state.current.wavePause ||
+      abilityChoice ||
+      pulseGame
+    )
+      return;
+    if (
+      activeCharacter === "runner_zenith" &&
+      wave >= 15 &&
+      !timeStopUsedRef.current
+    ) {
+      timeStopUsedRef.current = true;
+      if (isOnlineVersus && versusMatchRef.current) {
+        const matchId = versusMatchRef.current;
+        showAbilityNotice("TIME STOP · SYNCHRONIZING BOTH RUNS", 1200);
+        void supabase
+          .rpc("activate_1v1_zenith_time_stop", {
+            p_match_id: matchId,
+            p_score: Math.floor(scoreRef.current),
+          })
+          .then(({ data, error }) => {
+            if (versusMatchRef.current !== matchId) return;
+            if (error) {
+              timeStopUsedRef.current = false;
+              setVersusResult(error.message);
+              showAbilityNotice("TIME STOP COULD NOT ACTIVATE", 1300);
+              void hydrateVersusStateRef.current?.(matchId, true);
+              return;
+            }
+            const authoritativeScore = Number(data?.score);
+            const authoritativeHearts = Number(data?.hearts);
+            if (Number.isFinite(authoritativeScore)) {
+              scoreRef.current = Math.max(0, authoritativeScore);
+              setScore(scoreRef.current);
+            }
+            if (Number.isFinite(authoritativeHearts)) {
+              state.current.hearts = Math.max(
+                0,
+                Math.min(maxHearts, authoritativeHearts),
+              );
+              setHearts(state.current.hearts);
+            }
+            applyVersusTimeStopState(data ?? {}, true);
+            void audioEngine.playSfx("shield");
+          });
+        return;
+      }
+      timeStopRemainingRef.current = 10000;
+      timeStopDeadlineRef.current = Date.now() + 10000;
+      permanentObstacleSlowRef.current = Math.min(
+        permanentObstacleSlowRef.current,
+        0.75,
+      );
+      scoreRef.current += 15000;
+      setScore(scoreRef.current);
+      state.current.hearts = maxHearts;
+      setHearts(maxHearts);
+      setAbilityStateVersion((value) => value + 1);
+      showAbilityNotice("TIME STOP · FULL HP · +15,000 SCORE", 1800);
+      void audioEngine.playSfx("shield");
+      return;
+    }
+    if (activeCharacter === "runner_blitz") {
+      if (blitzCooldownRemainingRef.current > 0) {
+        showAbilityNotice("VOLT CLEAVE · RECHARGING", 700);
+        return;
+      }
+      let destroyed = false;
+      setItems((current) => {
+        const target = current
+          .filter(
+            (item) =>
+              item.lane === state.current.lane &&
+              item.y >= -10 &&
+              item.y < 91 &&
+              isHazardKind(item.kind) &&
+              item.kind !== "rock",
+          )
+          .sort((left, right) => right.y - left.y)[0];
+        if (!target) return current;
+        destroyed = true;
+        return current.filter((item) => item.id !== target.id);
+      });
+      blitzBoostRemainingRef.current = 750;
+      blitzCooldownRemainingRef.current = 6000;
+      grantInvincibility(400);
+      showAbilityNotice(
+        destroyed ? "VOLT CLEAVE · OBSTACLE DESTROYED" : "VOLT CLEAVE · DASH",
+        950,
+      );
+      void audioEngine.playSfx("shield");
+      return;
+    }
+    if (hasCharacterAbility("runner_dash")) {
+      if (dashCooldownRemainingRef.current > 0) {
+        showAbilityNotice("JET DASH · RECHARGING", 700);
+        return;
+      }
+      dashBoostRemainingRef.current = 1000;
+      dashCooldownRemainingRef.current = 5000;
+      grantInvincibility(350);
+      showAbilityNotice("JET DASH · SPEED BURST + DODGE SHIELD", 950);
+      void audioEngine.playSfx("move");
+      return;
+    }
+    if (
+      activeCharacter === "medic_lifeline" &&
+      lifelineHookUsesRef.current < 3
+    ) {
+      setPaused(true);
+      setAbilityChoice({ kind: "lifeline-lane" });
+      showAbilityNotice("RESCUE HOOK · CHOOSE ANOTHER LANE", 1000);
+      return;
+    }
+    if (
+      hasCharacterAbility("medic_reserve") &&
+      reserveHealStoredRef.current
+    ) {
+      reserveHealStoredRef.current = false;
+      const healed = Math.min(maxHearts, state.current.hearts + 0.5);
+      state.current.hearts = healed;
+      setHearts(healed);
+      setAbilityStateVersion((value) => value + 1);
+      showAbilityNotice("RESERVE DOSE · +0.5 HP", 950);
+      return;
+    }
+    if (hasCharacterAbility("medic_tonic") && tonicPotion > 0) {
+      if (reviveFlyingRef.current) {
+        showAbilityNotice("FLIGHT PREVENTS ALL HEALING", 900);
+        return;
+      }
+      const healed = Math.min(maxHearts, state.current.hearts + tonicPotion);
+      state.current.hearts = healed;
+      setHearts(healed);
+      showAbilityNotice(`POTION · +${tonicPotion} HP`, 950);
+      setTonicPotion(0);
+      return;
+    }
+    if (
+      hasCharacterAbility("medic_sprout") &&
+      sproutSeedWaveRef.current !== wave
+    ) {
+      let planted = false;
+      setItems((current) => {
+        const activeSeeds = current.filter(
+          (item) => (item.seededUntilWave ?? 0) >= wave,
+        ).length;
+        if (activeSeeds >= 2) return current;
+        const target = current
+          .filter(
+            (item) =>
+              isHazardKind(item.kind) &&
+              item.kind !== "barrel" &&
+              item.y >= -10 &&
+              item.y < 91 &&
+              !item.seededUntilWave,
+          )
+          .sort((left, right) => {
+            const lanePriority =
+              Number(right.lane === state.current.lane) -
+              Number(left.lane === state.current.lane);
+            return lanePriority || right.y - left.y;
+          })[0];
+        if (!target) return current;
+        planted = true;
+        return current.map((item) =>
+          item.id === target.id
+            ? { ...item, seededUntilWave: wave + 2 }
+            : item,
+        );
+      });
+      if (planted) sproutSeedWaveRef.current = wave;
+      showAbilityNotice(
+        planted ? "SEED WARD · DAMAGE -0.5 HP" : "SEED WARD · NO VALID OBSTACLE",
+        950,
+      );
+      return;
+    }
+    showAbilityNotice(
+      hasCharacterAbility("medic_tonic")
+        ? "BREW A POTION FROM THE LEFT-SIDE MENU"
+        : "NO ACTIVE ABILITY READY",
+      800,
+    );
+  }, [
+    abilityChoice,
+    activeCharacter,
+    applyVersusTimeStopState,
+    grantInvincibility,
+    hasCharacterAbility,
+    isOnlineVersus,
+    maxHearts,
+    pulseGame,
+    showAbilityNotice,
+    tonicPotion,
+    wave,
+  ]);
   const toggleManualPause = useCallback(() => {
     if (
       isOnlineVersus ||
@@ -2314,6 +3736,10 @@ export default function Home() {
             id: string;
             target_user_id: string;
             obstacle_type: Kind | "spike";
+            lane_index?: number | null;
+            lane_group?: number | null;
+            lane_position?: number | null;
+            escape_lane_index?: number | null;
           };
           if (attack.target_user_id === userIdRef.current) {
             const kind = normalizeVersusObstacle(attack.obstacle_type);
@@ -2323,7 +3749,30 @@ export default function Home() {
                 (pending) => pending.id === attack.id,
               )
             )
-              incomingAttacksRef.current.push({ id: attack.id, kind });
+              incomingAttacksRef.current.push({
+                id: attack.id,
+                kind,
+                lane:
+                  Number.isInteger(attack.lane_index) &&
+                  attack.lane_index !== null
+                    ? Number(attack.lane_index)
+                    : undefined,
+                laneGroup:
+                  Number.isInteger(attack.lane_group) &&
+                  attack.lane_group !== null
+                    ? Number(attack.lane_group)
+                    : undefined,
+                lanePosition:
+                  Number.isInteger(attack.lane_position) &&
+                  attack.lane_position !== null
+                    ? Number(attack.lane_position)
+                    : undefined,
+                escapeLane:
+                  Number.isInteger(attack.escape_lane_index) &&
+                  attack.escape_lane_index !== null
+                    ? Number(attack.escape_lane_index)
+                    : undefined,
+              });
           }
         },
       )
@@ -2341,19 +3790,30 @@ export default function Home() {
             user_id: string;
             hearts: number;
             status: string;
+            score?: number;
+            current_wave_mushrooms?: number;
             obstacle_points?: number;
             username?: string;
+            zenith_time_stop_until?: string | null;
+            zenith_time_stop_used?: boolean;
+            obstacle_speed_multiplier?: number;
           };
-          if (player.user_id === userIdRef.current) return;
+          if (player.user_id === userIdRef.current) {
+            applyVersusTimeStopState(player, true);
+            return;
+          }
           setVersusOpponentHearts(Number(player.hearts));
+          if (Number.isFinite(Number(player.score)))
+            setVersusOpponentScore(Math.max(0, Number(player.score)));
+          if (Number.isFinite(Number(player.current_wave_mushrooms)))
+            setVersusOpponentMushrooms(
+              Math.max(0, Number(player.current_wave_mushrooms)),
+            );
           if (player.username) setVersusOpponent(player.username);
           if (player.status === "eliminated") {
-            versusFinishedRef.current = true;
-            setVersusResult("VICTORY");
-            setVersusPhase("finished");
-            setVersusIntermissionReady(false);
-            setRunning(false);
-            setOver(true);
+            setVersusOpponentHearts(0);
+            if (!versusSelfEliminatedRef.current)
+              setVersusResult("RIVAL FINISHED · KEEP RUNNING FOR SCORE");
           }
         },
       )
@@ -2374,17 +3834,23 @@ export default function Home() {
           const match = payload.new as {
             status: string;
             winner_user_id: string | null;
+            is_draw?: boolean;
             intermission_ends_at?: string | null;
           };
           if (match.status === "finished") {
             versusFinishedRef.current = true;
             setVersusResult(
-              match.winner_user_id === userIdRef.current ? "VICTORY" : "DEFEAT",
+              match.is_draw
+                ? "DRAW"
+                : match.winner_user_id === userIdRef.current
+                  ? "VICTORY"
+                  : "DEFEAT",
             );
             setVersusPhase("finished");
             setVersusIntermissionReady(false);
             setRunning(false);
             setOver(true);
+            void hydrateVersusStateRef.current?.(matchId, true);
             return;
           }
           if (match.status === "intermission") {
@@ -2400,7 +3866,7 @@ export default function Home() {
             setVersusPhase("intermission");
             setVersusIntermissionReady(true);
             setPaused(true);
-            setVersusResult(remaining > 0 ? "INTERMISSION" : "SYNCING NEXT WAVE");
+            setVersusResult(remaining > 0 ? "INTERMISSION" : "STARTING NEXT WAVE");
             void enqueueVersusStateSync(async () => {
               await hydrateVersusState(
                 matchId,
@@ -2447,34 +3913,71 @@ export default function Home() {
     }
     versusRunHydratedRef.current = true;
     const snapshot = data as VersusStatePayload;
-    const { characterKey, characterClass } = getValidatedVersusCharacter(
+    const restoredMap = normalizeMapId(snapshot.match?.map_key);
+    const restoredMapRules = getMapRules(restoredMap);
+    const restoredCenterLane = Math.floor(restoredMapRules.laneCount / 2);
+    versusMapRef.current = restoredMap;
+    setVersusMap(restoredMap);
+    const validatedCharacter = getValidatedVersusCharacter(
       snapshot.self?.character_key,
       snapshot.self?.character_class,
     );
+    const restoredCandidate =
+      isCharacterOwned(unlocks, validatedCharacter.characterKey) &&
+      isCharacterClassAllowed(
+        restoredMap,
+        getCharacterClassKey(validatedCharacter.characterKey),
+      )
+        ? validatedCharacter.characterKey
+        : "runner_ace";
+    const characterKey =
+      restoredMapRules.forcedCharacterId ?? restoredCandidate;
+    const characterClass = getCharacterClassKey(characterKey);
     const rawMaxHearts = Number(snapshot.self?.max_hearts);
     const restoredMaxHearts =
       Number.isFinite(rawMaxHearts) &&
       rawMaxHearts >= 1 &&
-      rawMaxHearts <= VERSUS_MAX_HEARTS
+      rawMaxHearts <= VERSUS_MAX_HEARTS &&
+      characterKey === validatedCharacter.characterKey
         ? normalizeVersusHearts(rawMaxHearts)
-        : getCharacterMaxHearts(characterKey, characterClass);
+        : applyMapHealthModifiers(
+            restoredMap,
+            characterClass === "tank"
+              ? 4
+              : characterClass === "trickster"
+                ? 2
+                : 3,
+            getCharacterMaxHearts(characterKey, characterClass),
+          ).maxHp;
     const restoredWave = Math.max(1, Number(snapshot.self?.wave) || 1);
     const restoredScore = Math.max(0, Number(snapshot.self?.score) || 0);
     const restoredHearts = Math.min(
       restoredMaxHearts,
       normalizeVersusHearts(Number(snapshot.self?.hearts) || 0),
     );
+    const authoritativeConveyor =
+      restoredMap === "factory"
+        ? readFactoryConveyorFromWaveRules(
+            snapshot.wave_rules,
+            restoredMapRules.laneCount,
+            restoredWave,
+          )
+        : null;
     const matchStatus = snapshot.match?.status ?? "playing";
     if (snapshot.match?.mode === "casual" || snapshot.match?.mode === "ranked")
       setVersusMode(snapshot.match.mode);
-    const eliminated =
-      snapshot.self?.status === "eliminated" || matchStatus === "finished";
+    const selfEliminated = snapshot.self?.status === "eliminated";
+    const matchFinished = matchStatus === "finished";
 
     setSelectedCharacter(characterKey);
-    setPlayerClass(characterClass);
     setVersusServerMaxHearts(restoredMaxHearts);
     if (!preserveRunState) {
-      setLane(2);
+      setLane(restoredCenterLane);
+      state.current.lane = restoredCenterLane;
+      void supabase.rpc("update_1v1_position", {
+        p_match_id: matchId,
+        p_lane_index: restoredCenterLane,
+      });
       setItems([]);
       processedPickupIdsRef.current.clear();
       ambientHazardStreakRef.current = { kind: null, count: 0 };
@@ -2504,7 +4007,21 @@ export default function Home() {
         waveAnnouncementTimerRef.current = null;
       }
       last.current = 0;
+      pitchKatanaRef.current = createPitchKatanaState();
+      volcanoStationaryMsRef.current = 0;
+      const restoredConveyor =
+        authoritativeConveyor ?? createFactoryConveyorState();
+      factoryConveyorRef.current = restoredConveyor;
+      setFactoryConveyor(restoredConveyor);
+    } else if (authoritativeConveyor) {
+      factoryConveyorRef.current = authoritativeConveyor;
+      setFactoryConveyor(authoritativeConveyor);
     }
+    if (!preserveRunState)
+      timeStopUsedRef.current = Boolean(
+        snapshot.self?.zenith_time_stop_used,
+      );
+    applyVersusTimeStopState(snapshot.self ?? {});
     setScore(restoredScore);
     setWave(restoredWave);
     setHearts(restoredHearts);
@@ -2513,34 +4030,111 @@ export default function Home() {
     setVersusOpponentHearts(
       Math.max(0, Number(snapshot.opponent?.hearts) || 0),
     );
+    setVersusOpponentScore(
+      Math.max(
+        0,
+        Number(
+          snapshot.opponent?.final_score ?? snapshot.opponent?.score,
+        ) || 0,
+      ),
+    );
+    setVersusSelfMushrooms(
+      Math.max(0, Number(snapshot.self?.current_wave_mushrooms) || 0),
+    );
+    setVersusOpponentMushrooms(
+      Math.max(0, Number(snapshot.opponent?.current_wave_mushrooms) || 0),
+    );
+    setVersusSelfEliminated(selfEliminated);
+    versusSelfEliminatedRef.current = selfEliminated;
+    const restoredKatanaCooldownValue =
+      snapshot.self?.katana_cooldown_until ??
+      snapshot.self?.katana_cooldown_ends_at;
+    const restoredKatanaCooldown =
+      typeof restoredKatanaCooldownValue === "string"
+        ? Date.parse(restoredKatanaCooldownValue)
+        : NaN;
+    pitchKatanaRef.current = {
+      ...pitchKatanaRef.current,
+      broken:
+        pitchKatanaRef.current.broken ||
+        Boolean(snapshot.self?.katana_broken),
+      activeUntilMs: snapshot.self?.katana_broken
+        ? 0
+        : pitchKatanaRef.current.activeUntilMs,
+      cooldownUntilMs: Number.isFinite(restoredKatanaCooldown)
+        ? Math.max(
+            pitchKatanaRef.current.cooldownUntilMs,
+            restoredKatanaCooldown,
+          )
+        : pitchKatanaRef.current.cooldownUntilMs,
+    };
+    setPitchKatanaVersion((value) => value + 1);
     setPlayScope("versus");
-    setOver(eliminated);
-    setRunning(!eliminated);
+    setOver(selfEliminated || matchFinished);
+    setRunning(!selfEliminated && !matchFinished);
 
-    const pending = (snapshot.pending_attacks ?? [])
-      .map((attack) => ({
-        id: attack.id,
-        kind: normalizeVersusObstacle(attack.obstacle_type),
-      }))
-      .filter(
-        (attack): attack is { id: string; kind: Kind } =>
-          Boolean(attack.id && attack.kind),
-      );
+    const pending = (snapshot.pending_attacks ?? []).flatMap(
+      (attack): PendingVersusAttack[] => {
+        const kind = normalizeVersusObstacle(attack.obstacle_type);
+        if (!attack.id || !kind) return [];
+        return [
+          {
+            id: attack.id,
+            kind,
+            lane:
+              Number.isInteger(attack.lane_index) && attack.lane_index !== null
+                ? Number(attack.lane_index)
+                : undefined,
+            laneGroup:
+              Number.isInteger(attack.lane_group) && attack.lane_group !== null
+                ? Number(attack.lane_group)
+                : undefined,
+            lanePosition:
+              Number.isInteger(attack.lane_position) &&
+              attack.lane_position !== null
+                ? Number(attack.lane_position)
+                : undefined,
+            escapeLane:
+              Number.isInteger(attack.escape_lane_index) &&
+              attack.escape_lane_index !== null
+                ? Number(attack.escape_lane_index)
+                : undefined,
+          },
+        ];
+      },
+    );
     const mergedPending = new Map(
       incomingAttacksRef.current.map((attack) => [attack.id, attack]),
     );
     pending.forEach((attack) => mergedPending.set(attack.id, attack));
     incomingAttacksRef.current = Array.from(mergedPending.values());
 
-    if (eliminated) {
+    if (matchFinished) {
       setPaused(false);
       setVersusPhase("finished");
       setVersusIntermissionReady(false);
+      versusFinishedRef.current = true;
+      const finalSelfScore = Number(snapshot.self?.final_score);
+      if (Number.isFinite(finalSelfScore)) {
+        scoreRef.current = Math.max(0, finalSelfScore);
+        setScore(scoreRef.current);
+      }
+      const outcome = String(
+        snapshot.outcome ?? snapshot.match?.outcome ?? "",
+      ).toLowerCase();
       setVersusResult(
-        snapshot.match?.winner_user_id === userIdRef.current
-          ? "VICTORY"
-          : "DEFEAT",
+        snapshot.match?.is_draw || outcome === "draw"
+          ? "DRAW"
+          : outcome === "win" ||
+              snapshot.match?.winner_user_id === userIdRef.current
+            ? "VICTORY"
+            : "DEFEAT",
       );
+    } else if (selfEliminated) {
+      setPaused(false);
+      setVersusPhase("eliminated");
+      setVersusIntermissionReady(false);
+      setVersusResult("RUN COMPLETE · RIVAL STILL RUNNING");
     } else if (matchStatus === "intermission") {
       const remaining = secondsUntil(
         snapshot.match?.intermission_ends_at,
@@ -2549,6 +4143,7 @@ export default function Home() {
       setVersusCountdown(remaining);
       setVersusPhase("intermission");
       setVersusIntermissionReady(true);
+      setVersusResult("INTERMISSION");
       setPaused(true);
     } else if (snapshot.self?.status === "intermission") {
       setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
@@ -2565,14 +4160,34 @@ export default function Home() {
         spawnedAttackIdsRef.current.add(attack.id),
       );
       if (attacks.length > 0)
-        setItems((current) =>
-          appendSafeAttackWave(
-            current,
-            attacks.map((attack) => attack.kind),
-            () => id.current++,
-            9,
-          ),
-        );
+        setItems((current) => {
+          const hasServerFormation = attacks.every(
+            (attack) =>
+              Number.isInteger(attack.lane) &&
+              Number.isInteger(attack.laneGroup),
+          );
+          return hasServerFormation
+            ? appendServerAttackGroups(
+                current,
+                attacks,
+                () => id.current++,
+                restoredMapRules.laneCount,
+                preserveRunState
+                  ? state.current.lane
+                  : restoredCenterLane,
+                getAttackGroupSpacing(restoredWave),
+              )
+            : appendSafeAttackWave(
+                current,
+                attacks.map((attack) => attack.kind),
+                () => id.current++,
+                getAttackGroupSpacing(restoredWave),
+                preserveRunState
+                  ? state.current.lane
+                  : restoredCenterLane,
+                restoredMapRules.laneCount,
+              );
+        });
       setVersusPhase("playing");
       setVersusIntermissionReady(false);
       setPaused(false);
@@ -2589,17 +4204,30 @@ export default function Home() {
     matchId: string,
     opponent: string,
     serverStatus?: string,
+    serverMap?: unknown,
   ) => {
+    cancelPendingProgressionStart();
     resetVersusClientSync();
+    setLastRunXpBreakdown(null);
     progressionStartIntentRef.current += 1;
     progressionRunIdRef.current = matchId;
     progressionAwardedRunIdRef.current = null;
     setProgressionRunVersion((value) => value + 1);
     versusMatchRef.current = matchId;
+    const joinedMap = normalizeMapId(serverMap);
+    versusMapRef.current = joinedMap;
+    setVersusMap(joinedMap);
     versusFinishedRef.current = false;
+    versusSelfEliminatedRef.current = false;
+    setVersusSelfEliminated(false);
     setMainView("versus");
     setVersusOpponent(opponent || "RIVAL");
     setVersusOpponentHearts(3);
+    setVersusOpponentScore(0);
+    setVersusSelfMushrooms(0);
+    setVersusOpponentMushrooms(0);
+    pitchKatanaRef.current = createPitchKatanaState();
+    setPitchKatanaVersion((value) => value + 1);
     setVersusPoints(0);
     versusPointsRef.current = 0;
     setVersusResult("");
@@ -2683,6 +4311,7 @@ export default function Home() {
           data.match_id,
           data.opponent_username,
           data.status,
+          data.map_key,
         );
         return;
       }
@@ -2696,6 +4325,7 @@ export default function Home() {
     await poll();
   };
   const startBotPractice = () => {
+    cancelPendingProgressionStart();
     invalidateVersusSearch();
     closeVersusChannel();
     versusMatchRef.current = null;
@@ -2706,17 +4336,28 @@ export default function Home() {
     playerAttacksAgainstBotRef.current = [];
     progressionRunIdRef.current = null;
     progressionAwardedRunIdRef.current = null;
+    const practiceMap = selectOneVersusOneMap({
+      playerOnePriority: mapPriorityConfigured ? mapPriority : null,
+      playerTwoPriority: null,
+    });
+    versusMapRef.current = practiceMap;
+    setVersusMap(practiceMap);
+    const practiceBotHealth = applyMapHealthModifiers(
+      practiceMap,
+      BOT_MAX_HEARTS,
+      BOT_MAX_HEARTS,
+    ).startingHp;
     setMainView("versus");
     setPlayScope("practice");
     setVersusPhase("playing");
     setVersusOpponent("TRAINING BOT");
-    setVersusOpponentHearts(BOT_MAX_HEARTS);
+    setVersusOpponentHearts(practiceBotHealth);
     setVersusPoints(0);
     versusPointsRef.current = 0;
     setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
     setVersusResult("");
     setVersusIntermissionReady(false);
-    reset(true, false);
+    reset(false, practiceMap);
   };
   const clearVersusLocalSession = () => {
     resetVersusClientSync();
@@ -2730,12 +4371,21 @@ export default function Home() {
     setVersusAttackBusy(false);
     setVersusIntermissionReady(false);
     setPlayScope("single");
+    versusMapRef.current = "classic";
+    setVersusMap("classic");
     setVersusPhase("idle");
     setPaused(false);
     setVersusPoints(0);
     versusPointsRef.current = 0;
     setVersusOpponent("WAITING…");
     setVersusOpponentHearts(3);
+    setVersusOpponentScore(0);
+    setVersusSelfMushrooms(0);
+    setVersusOpponentMushrooms(0);
+    setVersusSelfEliminated(false);
+    versusSelfEliminatedRef.current = false;
+    pitchKatanaRef.current = createPitchKatanaState();
+    setPitchKatanaVersion((value) => value + 1);
   };
   const leaveVersusSession = async () => {
     const wasSearching = versusSearchingRef.current;
@@ -2784,6 +4434,10 @@ export default function Home() {
     if (nextView === mainView && !versusLeaving) return;
     setPauseMenuOpen(false);
     if (nextView === "versus") {
+      cancelPendingProgressionStart();
+      progressionStartIntentRef.current += 1;
+      progressionRunIdRef.current = null;
+      progressionAwardedRunIdRef.current = null;
       if (running && playScope === "single") resetGameToMenu();
       setPaused(false);
       setMainView("versus");
@@ -2814,6 +4468,7 @@ export default function Home() {
     const attack = VERSUS_ATTACKS.find((entry) => entry.kind === kind);
     if (
       !attack ||
+      !getAvailableAttacks(activeMapId).includes(kind) ||
       versusPhase !== "intermission" ||
       !versusIntermissionReady ||
       versusCountdown <= 0 ||
@@ -2902,6 +4557,20 @@ export default function Home() {
         )
       )
         return;
+      if (pulseGame) {
+        e.preventDefault();
+        const pressed = e.key.toUpperCase();
+        setPulseGame((current) => {
+          if (!current || pressed !== current.prompt) return current;
+          const keys = ["A", "S", "D", "F"] as const;
+          let nextPrompt = keys[Math.floor(Math.random() * keys.length)];
+          if (nextPrompt === current.prompt)
+            nextPrompt = keys[(keys.indexOf(nextPrompt) + 1) % keys.length];
+          return { ...current, hits: current.hits + 1, prompt: nextPrompt };
+        });
+        void audioEngine.playSfx("click");
+        return;
+      }
       if (["ArrowLeft", "a", "A"].includes(e.key)) {
         e.preventDefault();
         move(-1);
@@ -2910,20 +4579,110 @@ export default function Home() {
         e.preventDefault();
         move(1);
       }
-      if (e.key === " " && state.current.running && !isOnlineVersus) {
+      if (
+        e.key === " " &&
+        state.current.running &&
+        activeMapId === "pitch" &&
+        isVersusRun
+      ) {
+        e.preventDefault();
+        triggerPitchKatana();
+      } else if (e.key === " " && state.current.running && !isOnlineVersus) {
         e.preventDefault();
         toggleManualPause();
+      }
+      if (e.key === "e" || e.key === "E") {
+        e.preventDefault();
+        triggerCharacterAction();
       }
       if (
         e.key === "Enter" &&
         !state.current.running &&
-        mainView === "endless"
+        mainView === "endless" &&
+        !settingsOpen &&
+        !shopOpen &&
+        !inventoryOpen &&
+        !leaderboardOpen &&
+        !reportOpen &&
+        !adminOpen &&
+        !usernameRequired
       )
         reset();
     };
     addEventListener("keydown", key);
     return () => removeEventListener("keydown", key);
-  }, [move, reset, isOnlineVersus, mainView, toggleManualPause]);
+  }, [
+    adminOpen,
+    activeMapId,
+    inventoryOpen,
+    isOnlineVersus,
+    isVersusRun,
+    leaderboardOpen,
+    mainView,
+    move,
+    pulseGame,
+    reportOpen,
+    reset,
+    settingsOpen,
+    shopOpen,
+    toggleManualPause,
+    triggerPitchKatana,
+    triggerCharacterAction,
+    usernameRequired,
+  ]);
+  useEffect(() => {
+    if (!pulseGame) return;
+    const timer = setInterval(() => {
+      const remaining = Math.max(0, pulseGame.endsAt - Date.now());
+      if (remaining > 0) {
+        setPulseGame((current) =>
+          current ? { ...current, remaining } : current,
+        );
+        return;
+      }
+      clearInterval(timer);
+      const restoredHearts =
+        pulseGame.hits >= 30
+          ? maxHearts
+          : pulseGame.hits >= 20
+            ? Math.min(maxHearts, 2)
+            : pulseGame.hits >= 10
+              ? Math.min(maxHearts, 1)
+              : 0;
+      setPulseGame(null);
+      state.current.hearts = restoredHearts;
+      setHearts(restoredHearts);
+      if (restoredHearts > 0) {
+        setPaused(false);
+        setRunning(true);
+        showAbilityNotice(
+          `LAST PULSE · ${pulseGame.hits} HITS · ${restoredHearts} HP`,
+          1600,
+        );
+      } else {
+        setPaused(false);
+        setRunning(false);
+        setOver(true);
+        if (isBotPractice) {
+          setVersusResult("PRACTICE DEFEAT");
+          setVersusPhase("finished");
+        } else if (isOnlineVersus) {
+          setVersusSelfEliminated(true);
+          versusSelfEliminatedRef.current = true;
+          setVersusPhase("eliminated");
+          setVersusResult("RUN COMPLETE · RIVAL STILL RUNNING");
+        }
+        showAbilityNotice("LAST PULSE · RESCUE FAILED", 1600);
+      }
+    }, 100);
+    return () => clearInterval(timer);
+  }, [
+    isBotPractice,
+    isOnlineVersus,
+    maxHearts,
+    pulseGame,
+    showAbilityNotice,
+  ]);
   useEffect(() => {
     if (!running || paused || wavePause) return;
     let raf = 0,
@@ -2931,23 +4690,125 @@ export default function Home() {
     const tick = (now: number) => {
       const dt = Math.min(32, now - prev);
       prev = now;
+      if (timeStopDeadlineRef.current > 0) {
+        timeStopRemainingRef.current = Math.max(
+          0,
+          timeStopDeadlineRef.current - Date.now(),
+        );
+        if (timeStopRemainingRef.current === 0) {
+          timeStopDeadlineRef.current = 0;
+          setAbilityStateVersion((value) => value + 1);
+          showAbilityNotice(
+            permanentObstacleSlowRef.current < 1
+              ? "TIME RESUMED · OBSTACLES PERMANENTLY 25% SLOWER"
+              : "TIME RESUMED",
+            1800,
+          );
+        }
+        raf = requestAnimationFrame(tick);
+        return;
+      }
       const currentSpeedMultiplier = getWaveSpeedMultiplier(wave);
       const pacerRushActive =
         activeCharacter === "runner_pacer" &&
         pacerRushRemainingRef.current > 0;
       const mimicPhase = (wave - 1) % 3;
-      const characterSpeedMultiplier = pacerRushActive
-        ? 1.5
-        : activeCharacter === "runner_dash"
-          ? 1.06
-          : activeCharacter === "runner_blitz"
-            ? 1.12
-            : activeCharacter === "runner_velocity"
-              ? 1.2
-              : 1;
+      if (activeCharacter === "runner_velocity") {
+        velocityChargeMsRef.current = Math.min(
+          100000,
+          velocityChargeMsRef.current + dt,
+        );
+        const milestone = Math.min(
+          100,
+          Math.floor(velocityChargeMsRef.current / 10000) * 10,
+        );
+        if (milestone > velocityMilestoneRef.current) {
+          velocityMilestoneRef.current = milestone;
+          setAbilityStateVersion((value) => value + 1);
+          showAbilityNotice(
+            milestone === 100
+              ? "MAXIMUM VELOCITY · SCORE ×3 · SPEED ×2"
+              : milestone === 50
+                ? "VELOCITY 50% · UPBEAT MIX ENGAGED"
+                : `VELOCITY ${milestone}% · MOMENTUM RISING`,
+            1100,
+          );
+          if (milestone >= 50) audioEngine.setTrack("energetic");
+        }
+      }
+      const missingHealthRatio = Math.max(
+        0,
+        Math.min(1, 1 - state.current.hearts / Math.max(0.5, maxHearts)),
+      );
+      let characterSpeedMultiplier = 1;
+      if (pacerRushActive) characterSpeedMultiplier *= 3;
+      if (hasCharacterAbility("runner_dash"))
+        characterSpeedMultiplier *= 1.06;
+      if (dashBoostRemainingRef.current > 0)
+        characterSpeedMultiplier *= 1.5;
+      if (blitzBoostRemainingRef.current > 0)
+        characterSpeedMultiplier *= 2;
+      if (activeCharacter === "runner_tempo")
+        characterSpeedMultiplier *= wave % 2 === 1 ? 1.15 : 0.85;
+      if (activeCharacter === "tank_reactor")
+        characterSpeedMultiplier *= 1 + missingHealthRatio * 0.4;
+      if (activeCharacter === "runner_velocity")
+        characterSpeedMultiplier *=
+          1.05 + Math.min(1, velocityChargeMsRef.current / 100000);
+      if (reviveFlyingRef.current) characterSpeedMultiplier *= 1.5;
       const obstacleSpeedMultiplier =
         currentSpeedMultiplier * characterSpeedMultiplier;
-      if (now - last.current > Math.max(330, 980 - wave * 55)) {
+      if (activeMapId === "volcano") {
+        const previousStationaryMs = volcanoStationaryMsRef.current;
+        const nextStationaryMs = previousStationaryMs + dt;
+        volcanoStationaryMsRef.current = nextStationaryMs;
+        const stationaryDamage = getNewVolcanoStationaryDamage(
+          previousStationaryMs / 1000,
+          nextStationaryMs / 1000,
+        );
+        if (stationaryDamage > 0)
+          applyDirectMapDamage(
+            stationaryDamage,
+            "VOLCANO HEAT · KEEP SWITCHING LANES",
+          );
+      }
+      if (hasCharacterAbility("tank_atlas")) {
+        atlasLaneElapsedRef.current += dt;
+        if (atlasLaneElapsedRef.current >= atlasLaneLimitRef.current) {
+          atlasLaneElapsedRef.current = 0;
+          const finalCrush =
+            state.current.hearts <= 1 && atlasLaneLimitRef.current <= 1000;
+          const nextHearts = finalCrush
+            ? 0
+            : Math.max(1, state.current.hearts - 2);
+          state.current.hearts = nextHearts;
+          setHearts(nextHearts);
+          void audioEngine.playSfx("hit");
+          setFlash("life-two");
+          setTimeout(() => setFlash(""), 240);
+          showAbilityNotice(
+            finalCrush
+              ? "WORLD BEARER · THE SKY CRUSHED ATLAS"
+              : "WORLD BEARER · SKY CRUSH · -2 HP",
+            1200,
+          );
+          if (finalCrush) {
+            setRunning(false);
+            setPaused(false);
+            setOver(true);
+            if (isOnlineVersus) {
+              setVersusSelfEliminated(true);
+              versusSelfEliminatedRef.current = true;
+              setVersusPhase("eliminated");
+            }
+          }
+        }
+      }
+      if (
+        now - last.current >
+        Math.max(330, 980 - wave * 55) /
+          activeMapRules.totalObstacleMultiplier
+      ) {
         last.current = now;
         const r = Math.random(),
           danger = Math.min(0.82, 0.59 + wave * 0.025),
@@ -2984,27 +4845,79 @@ export default function Home() {
                 (hazard) => hazard !== ambientHazardStreakRef.current.kind,
               )
             : AMBIENT_HAZARDS;
-        const randomHazard = () =>
-          hazardChoices[Math.floor(Math.random() * hazardChoices.length)];
+        const randomHazard = () => {
+          if (!isVersusRun)
+            return hazardChoices[
+              Math.floor(Math.random() * hazardChoices.length)
+            ];
+          let selected: Kind = "log";
+          for (let attempt = 0; attempt < 8; attempt += 1) {
+            const natural = chooseNaturalObstacle(activeMapId);
+            selected = natural === "spike" ? "spikes" : natural;
+            if (
+              ambientHazardStreakRef.current.count < sameHazardLimit ||
+              selected !== ambientHazardStreakRef.current.kind
+            )
+              break;
+          }
+          return selected;
+        };
         let kind: Kind;
         if (isVersusRun && r < versusCoinChance) kind = "coin";
         else if (isVersusRun && r > versusGemThreshold) kind = "gem";
         else if (r < danger || isVersusRun) kind = randomHazard();
         else if (r > gemThreshold) kind = "gem";
         else kind = randomHazard();
-        setItems((v) => {
+        if (
+          isHazardKind(kind) &&
+          phoenixFeatherActiveRef.current &&
+          phoenixFeatherReadyWaveRef.current === wave
+        ) {
+          phoenixFeatherReadyWaveRef.current = wave + 1;
+          showAbilityNotice("PHOENIX FEATHER · FIRST OBSTACLE DESTROYED", 900);
+        } else setItems((v) => {
+          const reservedAttackSafeLanes = new Set(
+            v
+              .filter(
+                (item) =>
+                  item.attackGroup !== undefined && item.y < 91,
+              )
+              .flatMap((item) =>
+                item.attackSafeLanes
+                  ? [...item.attackSafeLanes]
+                  : Number.isInteger(item.attackEscapeLane)
+                    ? [Number(item.attackEscapeLane)]
+                    : [],
+              ),
+          );
           const hazardLanes = new Set(
             v
-              .filter((item) => isHazardKind(item.kind))
+              .filter(
+                (item) => isHazardKind(item.kind) && item.y < 18,
+              )
               .map((item) => item.lane),
           );
           if (
             isHazardKind(kind) &&
-            hazardLanes.size >= modeRules.hazardLaneLimit
+            hazardLanes.size >=
+              (isVersusRun
+                ? Math.max(1, activeLaneCount - 1)
+                : modeRules.hazardLaneLimit)
           )
             return v;
-          const blocked = new Set(v.map((x) => x.lane));
-          const lanes = TRACK_LANES.filter((l) => !blocked.has(l));
+          const blocked = new Set(
+            v.filter((item) => item.y < 18).map((item) => item.lane),
+          );
+          const spawnableLanes =
+            kind === "current" && activeMapId === "skyway"
+              ? [...CURRENT_RULES.allowedLaneIndexes]
+              : getTrackLanes(activeLaneCount);
+          const lanes = spawnableLanes.filter(
+            (lane) =>
+              !blocked.has(lane) &&
+              (!isHazardKind(kind) ||
+                !reservedAttackSafeLanes.has(lane)),
+          );
           if (!lanes.length) return v;
           const spawnLane = lanes[Math.floor(Math.random() * lanes.length)];
           if (isHazardKind(kind)) {
@@ -3020,11 +4933,14 @@ export default function Home() {
       setItems((old) => {
         let clearRecoveryZone = false;
         let clearDamagedLane = false;
+        let relayDischarge = false;
         const advanced = old.flatMap((item) => {
-          const isHazard = item.kind !== "gem" && item.kind !== "coin";
+          const isHazard = isHazardKind(item.kind);
           let speedFactor =
             item.kind === "barrel"
               ? 1.75
+              : item.kind === "current"
+                ? 1.75 * CURRENT_RULES.barrelSpeedMultiplier
               : item.kind === "car"
                 ? 1.28
                 : item.kind === "log"
@@ -3032,6 +4948,15 @@ export default function Home() {
                   : item.kind === "rock"
                   ? 0.3
                   : 1;
+          if (isHazard) {
+            speedFactor *= permanentObstacleSlowRef.current;
+            if (beaconActiveRef.current) speedFactor *= 0.5;
+          }
+          if (isHazard && activeMapId === "factory")
+            speedFactor *= getFactoryObstacleSpeedMultiplier(
+              item.lane,
+              factoryConveyorRef.current,
+            );
           if (
             activeCharacter === "tank_drag" &&
             (item.kind === "barrel" || item.kind === "log")
@@ -3093,6 +5018,11 @@ export default function Home() {
             wildcardBuffRef.current === "slow"
           )
             speedFactor *= 0.85;
+          // Multi-hazard opponent formations must arrive as one readable wall.
+          // Per-obstacle and conveyor speeds would otherwise split the wall,
+          // destroying its rotating safe route (or making that route unfair).
+          if (item.formationSpeed !== undefined)
+            speedFactor = item.formationSpeed;
           const n = {
             ...item,
             y:
@@ -3102,6 +5032,8 @@ export default function Home() {
                 speedFactor *
                 dt,
           };
+          if (pendingKatanaReflectionIdsRef.current.has(n.id))
+            return [{ ...n, y: 65 }];
           const crossedRunnerBand = item.y < 91 && n.y >= 65;
           const abilityGraze =
             (activeCharacter === "trickster_rogue" ||
@@ -3149,30 +5081,279 @@ export default function Home() {
             Math.abs(n.lane - state.current.lane) <= 1;
           const rangerPulled =
             rangerPickup && n.lane !== state.current.lane;
+          const currentInteraction =
+            n.kind === "current" && activeMapId === "skyway"
+              ? resolveCurrentInteraction(state.current.lane, n.lane)
+              : null;
+          const currentContact =
+            currentInteraction !== null && currentInteraction.kind !== "none";
           if (
             !damageLockedRef.current &&
-            (n.lane === state.current.lane || rangerPickup) &&
+            (n.lane === state.current.lane || rangerPickup || currentContact) &&
             crossedRunnerBand
           ) {
+            if (isHazard) {
+              collisionWaveRef.current = wave;
+              if (activeCharacter === "medic_oracle")
+                oracleHitCountRef.current += 1;
+              if (activeCharacter === "runner_velocity") {
+                velocityChargeMsRef.current = 0;
+                velocityMilestoneRef.current = 0;
+                setAbilityStateVersion((value) => value + 1);
+                showAbilityNotice("FULL VELOCITY · MOMENTUM RESET", 800);
+              }
+            }
             if (rangerPulled)
               showAbilityNotice("PICKUP MAGNET · ADJACENT PICKUP");
-            if (n.kind === "gem" || n.kind === "coin") {
+            if (
+              n.kind === "gem" ||
+              n.kind === "coin" ||
+              n.kind === "mushroom"
+            ) {
               if (processedPickupIdsRef.current.has(n.id)) return [];
               processedPickupIdsRef.current.add(n.id);
-              if (activeCharacter === "runner_courier") {
+              if (hasCharacterAbility("runner_courier")) {
                 courierBoostRemainingRef.current = 4000;
                 showAbilityNotice("SPECIAL DELIVERY · SCORE ×1.25", 900);
               }
-              if (
-                activeCharacter === "medic_tonic" &&
-                tonicCollectibleWaveRef.current !== wave
-              ) {
-                tonicCollectibleWaveRef.current = wave;
-                setHearts((value) => Math.min(maxHearts, value + 1));
-                showAbilityNotice("FIRST TONIC · +1 HP", 850);
+            }
+            if (
+              isHazard &&
+              lifelineImmuneKindsRef.current.has(n.kind)
+            ) {
+              void audioEngine.playSfx("shield");
+              showAbilityNotice(`LIFELINE · ${n.kind.toUpperCase()} IMMUNE`, 850);
+              return [];
+            }
+            if (
+              isHazard &&
+              beaconActiveRef.current &&
+              n.kind === "spikes"
+            ) {
+              void audioEngine.playSfx("shield");
+              showAbilityNotice("BEACON · SPIKES DEACTIVATED", 850);
+              return [];
+            }
+            if (
+              isHazard &&
+              reviveFlyingRef.current &&
+              (n.kind === "log" || n.kind === "spikes")
+            ) {
+              showAbilityNotice("FLIGHT · OBSTACLE CLEARED", 750);
+              return [];
+            }
+            if (
+              isHazard &&
+              hasCharacterAbility("medic_seraph") &&
+              seraphTeleportChanceRef.current > 0 &&
+              Math.random() * 100 < seraphTeleportChanceRef.current
+            ) {
+              const occupiedLanes = new Set(
+                old
+                  .filter(
+                    (candidate) =>
+                      candidate.id !== n.id &&
+                      isHazardKind(candidate.kind) &&
+                      candidate.y >= 48 &&
+                      candidate.y <= 102,
+                  )
+                  .map((candidate) => candidate.lane),
+              );
+              const emptyLanes = getTrackLanes(activeLaneCount).filter(
+                (candidateLane) =>
+                  candidateLane !== state.current.lane &&
+                  !occupiedLanes.has(candidateLane),
+              );
+              if (emptyLanes.length > 0) {
+                const destination =
+                  emptyLanes[Math.floor(Math.random() * emptyLanes.length)];
+                state.current.lane = destination;
+                setLane(destination);
+                seraphTeleportChanceRef.current = Math.max(
+                  0,
+                  seraphTeleportChanceRef.current - 5,
+                );
+                setAbilityStateVersion((value) => value + 1);
+                if (isOnlineVersus && versusMatchRef.current)
+                  void supabase.rpc("update_1v1_position", {
+                    p_match_id: versusMatchRef.current,
+                    p_lane_index: destination,
+                  });
+                showAbilityNotice(
+                  `SERAPHIC SHIFT · ${seraphTeleportChanceRef.current}% REMAINS`,
+                  1000,
+                );
+                void audioEngine.playSfx("shield");
+                return [];
               }
             }
-            if (n.kind === "gem") {
+            if (
+              isHazard &&
+              hasCharacterAbility("runner_vector") &&
+              (state.current.lane === 0 ||
+                state.current.lane === activeLaneCount - 1) &&
+              vectorBlockWaveRef.current !== wave
+            ) {
+              vectorBlockWaveRef.current = wave;
+              showAbilityNotice("EDGE VECTOR · FIRST EDGE HIT BLOCKED", 900);
+              void audioEngine.playSfx("shield");
+              return [];
+            }
+            if (
+              isHazard &&
+              activeCharacter === "medic_oracle" &&
+              oracleInvincibleWaveRef.current === wave
+            ) {
+              showAbilityNotice("NO-HIT PROPHECY · INVINCIBLE", 800);
+              return [];
+            }
+            if (isHazard && activeMapId === "pitch") {
+              const attackKind: AttackId =
+                n.kind === "spikes" ? "spike" : (n.kind as AttackId);
+              const katanaCollision = resolvePitchKatanaCollision(
+                pitchKatanaRef.current,
+                attackKind,
+                Date.now(),
+              );
+              if (katanaCollision.kind !== "inactive") {
+                pitchKatanaRef.current = katanaCollision.state;
+                setPitchKatanaVersion((value) => value + 1);
+                const reflectionId = `katana:${versusPickupNonceRef.current}:${n.attackToken ?? n.id}`;
+                if (isOnlineVersus && versusMatchRef.current) {
+                  const matchId = versusMatchRef.current;
+                  const waitsForServer =
+                    katanaCollision.kind === "deflected";
+                  if (waitsForServer)
+                    pendingKatanaReflectionIdsRef.current.add(n.id);
+                  const reflectionArgs = n.attackToken
+                    ? {
+                        p_match_id: matchId,
+                        p_reflection_id: reflectionId,
+                        p_obstacle_type: attackKind,
+                        p_source_attack_id: n.attackToken,
+                      }
+                    : {
+                        p_match_id: matchId,
+                        p_reflection_id: reflectionId,
+                        p_obstacle_type: attackKind,
+                      };
+                  void supabase
+                    .rpc("reflect_1v1_attack", reflectionArgs)
+                    .then(({ data, error }) => {
+                      pendingKatanaReflectionIdsRef.current.delete(n.id);
+                      if (versusMatchRef.current !== matchId) return;
+                      if (error) {
+                        setVersusResult(error.message);
+                        if (waitsForServer) {
+                          pitchKatanaRef.current = {
+                            ...pitchKatanaRef.current,
+                            activeUntilMs: 0,
+                            hitDuringActivation: true,
+                            whiffSettled: true,
+                          };
+                          setPitchKatanaVersion((value) => value + 1);
+                          showAbilityNotice(
+                            "KATANA REFLECTION REJECTED",
+                            1100,
+                          );
+                        }
+                        return;
+                      }
+                      const cooldownValue =
+                        data?.katana_cooldown_until ??
+                        data?.katana_cooldown_ends_at;
+                      const cooldown =
+                        typeof cooldownValue === "string"
+                          ? Date.parse(cooldownValue)
+                          : NaN;
+                      pitchKatanaRef.current = {
+                        ...pitchKatanaRef.current,
+                        broken:
+                          pitchKatanaRef.current.broken ||
+                          Boolean(data?.katana_broken),
+                        activeUntilMs: data?.katana_broken
+                          ? 0
+                          : pitchKatanaRef.current.activeUntilMs,
+                        cooldownUntilMs: Number.isFinite(cooldown)
+                          ? cooldown
+                          : pitchKatanaRef.current.cooldownUntilMs,
+                      };
+                      setPitchKatanaVersion((value) => value + 1);
+                      if (waitsForServer) {
+                        setItems((current) =>
+                          current.filter((candidate) => candidate.id !== n.id),
+                        );
+                        void audioEngine.playSfx("shield");
+                        setFlash("shield");
+                        setTimeout(() => setFlash(""), 150);
+                        showAbilityNotice(
+                          `${attackKind.toUpperCase()} REFLECTED`,
+                          900,
+                        );
+                      }
+                    });
+                  if (waitsForServer) return [{ ...n, y: 65 }];
+                } else if (
+                  isBotPractice &&
+                  katanaCollision.sendToOpponent
+                )
+                  playerAttacksAgainstBotRef.current.push(attackKind);
+                if (
+                  katanaCollision.kind === "deflected" &&
+                  !isOnlineVersus
+                ) {
+                  void audioEngine.playSfx("shield");
+                  setFlash("shield");
+                  setTimeout(() => setFlash(""), 150);
+                  showAbilityNotice(
+                    `${attackKind.toUpperCase()} REFLECTED`,
+                    900,
+                  );
+                  return [];
+                }
+                showAbilityNotice("ROCK SHATTERED YOUR KATANA", 1300);
+              }
+            }
+            if (n.kind === "mushroom") {
+              void audioEngine.playSfx("gem");
+              scoreRef.current += GROVE_RULES.mushroomScore;
+              setScore(scoreRef.current);
+              setVersusSelfMushrooms((value) => value + 1);
+              showAbilityNotice(
+                `MUSHROOM · +${GROVE_RULES.mushroomScore} SCORE`,
+                900,
+              );
+              const matchId = versusMatchRef.current;
+              if (isOnlineVersus && matchId)
+                void supabase
+                  .rpc("award_1v1_mushroom", {
+                    p_match_id: matchId,
+                    p_wave: wave,
+                    p_pickup_id: `mushroom:${versusPickupNonceRef.current}:${n.id}`,
+                  })
+                  .then(({ data, error }) => {
+                    if (error || versusMatchRef.current !== matchId) {
+                      if (error) setVersusResult(error.message);
+                      return;
+                    }
+                    const authoritativeScore = Number(data?.score);
+                    if (Number.isFinite(authoritativeScore)) {
+                      scoreRef.current = Math.max(
+                        scoreRef.current,
+                        Math.max(0, authoritativeScore),
+                      );
+                      setScore(scoreRef.current);
+                    }
+                    const authoritativeMushrooms = Number(
+                      data?.current_wave_mushrooms ?? data?.wave_mushrooms,
+                    );
+                    if (Number.isFinite(authoritativeMushrooms))
+                      setVersusSelfMushrooms(
+                        Math.max(0, authoritativeMushrooms),
+                      );
+                    applyAuthoritativeVersusPoints(data?.obstacle_points);
+                  });
+            } else if (n.kind === "gem") {
               void audioEngine.playSfx("gem");
               if (!isBotPractice) {
                 const total = gemsRef.current + 1;
@@ -3187,47 +5368,59 @@ export default function Home() {
                 showAbilityNotice("CRYSTAL CHARGE · SCORE ×1.50", 900);
               }
               if (
-                activeCharacter === "medic_bloom" &&
+                healingEnabled &&
+                hasCharacterAbility("medic_bloom") &&
+                !reviveFlyingRef.current &&
                 bloomGemWaveRef.current !== wave
               ) {
                 bloomGemWaveRef.current = wave;
-                setHearts((value) => Math.min(maxHearts, value + 0.5));
+                setHearts((value) => {
+                  const healed = Math.min(maxHearts, value + 0.5);
+                  state.current.hearts = healed;
+                  return healed;
+                });
                 showAbilityNotice("HEALING BLOOM · +0.5 HP", 850);
               }
-              if (activeCharacter === "medic_pulse") {
-                pulseGemCountRef.current += 1;
-                if (pulseGemCountRef.current % 3 === 0) {
-                  setHearts((value) => Math.min(maxHearts, value + 1));
-                  showAbilityNotice("VITAL PULSE · +1 HP", 850);
-                }
+              if (hasCharacterAbility("medic_tonic")) {
+                setTonicIngredients((value) => value + 1);
+                showAbilityNotice("FIELD ALCHEMY · +1 INGREDIENT", 750);
               }
-              if (activeCharacter === "medic_sprout") {
-                sproutGemCountRef.current += 1;
-                if (sproutGemCountRef.current % 2 === 0) {
-                  setHearts((value) => Math.min(maxHearts, value + 0.5));
-                  showAbilityNotice("GROWTH CYCLE · +0.5 HP", 850);
-                }
+              if (
+                healingEnabled &&
+                activeCharacter === "medic_seraph" &&
+                !reviveFlyingRef.current &&
+                Math.random() < 0.1
+              ) {
+                setHearts((value) => {
+                  const healed = Math.min(maxHearts, value + 1);
+                  state.current.hearts = healed;
+                  return healed;
+                });
+                showAbilityNotice("HALO STAFF · +1 HP", 900);
               }
               if (activeCharacter === "medic_vial") {
                 grantInvincibility(2000);
                 showAbilityNotice("CRYSTAL TONIC · 2 SECOND SHIELD", 1200);
               }
               const gemContextId = progressionRunIdRef.current;
-              if (!isBotPractice && userIdRef.current && gemContextId)
+              const gemRequestUserId = userIdRef.current;
+              if (!isBotPractice && gemRequestUserId && gemContextId)
                 void supabase
                   .rpc("claim_player_gem", {
                     p_context_id: gemContextId,
                     p_pickup_id: String(n.id),
                   })
                   .then(({ data, error }) => {
+                    if (userIdRef.current !== gemRequestUserId) return;
                     if (error) {
                       console.error("Could not save gem:", error.message);
                       void supabase
                         .from("player_stats")
                         .select("total_gems")
-                        .eq("user_id", userIdRef.current)
+                        .eq("user_id", gemRequestUserId)
                         .maybeSingle()
                         .then(({ data: stats }) => {
+                          if (userIdRef.current !== gemRequestUserId) return;
                           const savedGems = Number(stats?.total_gems);
                           if (!Number.isFinite(savedGems)) return;
                           gemsRef.current = Math.max(0, savedGems);
@@ -3240,26 +5433,51 @@ export default function Home() {
                       gemsRef.current = totalGems;
                       setGems(totalGems);
                     }
-                    applyProgressionPayload(data?.progression);
+                    applyProgressionPayload(
+                      data?.progression,
+                      gemRequestUserId,
+                    );
                   });
             } else if (n.kind === "coin") {
               void audioEngine.playSfx("gem");
               if (isBotPractice) {
-                versusPointsRef.current += 2;
+                versusPointsRef.current +=
+                  getAttackPointsForCoin(activeMapId) *
+                  currentCoinMultiplierRef.current;
                 setVersusPoints(versusPointsRef.current);
               } else if (isOnlineVersus && versusMatchRef.current) {
                 queueOnlineCoinAward(versusMatchRef.current, n.id);
               }
+            } else if (
+              n.kind === "current" &&
+              currentInteraction?.kind === "push"
+            ) {
+              state.current.lane = currentInteraction.nextLane;
+              setLane(currentInteraction.nextLane);
+              if (isOnlineVersus && versusMatchRef.current)
+                void supabase.rpc("update_1v1_position", {
+                  p_match_id: versusMatchRef.current,
+                  p_lane_index: currentInteraction.nextLane,
+                });
+              void audioEngine.playSfx("move");
+              showAbilityNotice("CURRENT · FORCED LANE PUSH", 850);
+              return [];
             } else if (n.kind === "snowflake") {
               if (
-                activeCharacter === "medic_remedy" &&
+                healingEnabled &&
+                hasCharacterAbility("medic_remedy") &&
+                !reviveFlyingRef.current &&
                 remedySnowflakeWaveRef.current !== wave
               ) {
                 remedySnowflakeWaveRef.current = wave;
-                setHearts((value) => Math.min(maxHearts, value + 0.5));
-                showAbilityNotice("COLD REMEDY · +0.5 HP", 900);
+                setHearts((value) => {
+                  const healed = Math.min(maxHearts, value + 1);
+                  state.current.hearts = healed;
+                  return healed;
+                });
+                showAbilityNotice("COLD REMEDY · +1 HP", 900);
               }
-              if (activeCharacter === "tank_glacier") {
+              if (hasCharacterAbility("tank_glacier")) {
                 void audioEngine.playSfx("shield");
                 clearFreezeEffect();
                 showAbilityNotice("FROST ARMOR · FREEZE BLOCKED");
@@ -3356,11 +5574,12 @@ export default function Home() {
               }
               if (activeCharacter === "runner_flare")
                 flareDamageWaveRef.current = wave;
-              if (activeCharacter === "medic_mender")
-                menderChargeRemainingRef.current = 12000;
               const rawDamage =
                 mode === "impossible"
                   ? 1
+                  : n.kind === "current"
+                    ? currentInteraction?.damage ??
+                      CURRENT_RULES.directHitDamage
                   : n.kind === "rock"
                     ? 2
                     : n.kind === "barrel"
@@ -3435,6 +5654,33 @@ export default function Home() {
                 );
                 showAbilityNotice("HOLD GROUND · 0.5 HP ARMOR USED", 1100);
               }
+              if (
+                n.seededUntilWave !== undefined &&
+                n.seededUntilWave >= wave &&
+                n.kind !== "barrel"
+              ) {
+                abilityAdjustedDamage = Math.max(
+                  0,
+                  abilityAdjustedDamage - 0.5,
+                );
+                showAbilityNotice("SEED WARD · 0.5 HP BLOCKED", 900);
+              }
+              if (
+                hasCharacterAbility("tank_atlas") &&
+                Date.now() - lastLaneChangeAtRef.current <= 2000
+              ) {
+                abilityAdjustedDamage *= 0.5;
+                showAbilityNotice("WORLD MAUL · DAMAGE HALVED", 900);
+              }
+              if (activeCharacter === "medic_oracle") {
+                if (oracleHitCountRef.current === 1) {
+                  abilityAdjustedDamage = 0;
+                  showAbilityNotice("FATE SENSOR · FIRST HIT BLOCKED", 900);
+                } else if (oracleHitCountRef.current === 2) {
+                  abilityAdjustedDamage *= 0.5;
+                  showAbilityNotice("FATE SENSOR · SECOND HIT HALVED", 900);
+                }
+              }
               const damage = abilityAdjustedDamage;
               if (damage === 0) {
                 void audioEngine.playSfx("shield");
@@ -3446,7 +5692,31 @@ export default function Home() {
                 return [];
               }
               void audioEngine.playSfx("hit");
+              damageTakenWaveRef.current = wave;
+              if (hasCharacterAbility("medic_mender"))
+                menderChargeRemainingRef.current = 20000;
+              if (hasCharacterAbility("medic_revive")) {
+                phoenixFeatherActiveRef.current = true;
+                phoenixFeatherReadyWaveRef.current = Math.max(
+                  phoenixFeatherReadyWaveRef.current,
+                  wave + 1,
+                );
+              }
               let nextHearts = state.current.hearts - damage;
+              if (hasCharacterAbility("tank_atlas")) {
+                if (state.current.hearts <= 1) {
+                  atlasLaneLimitRef.current = Math.max(
+                    1000,
+                    atlasLaneLimitRef.current - 500,
+                  );
+                  setAbilityStateVersion((value) => value + 1);
+                  showAbilityNotice(
+                    `WORLD BEARER · SKY TIMER ${(atlasLaneLimitRef.current / 1000).toFixed(1)}s`,
+                    1100,
+                  );
+                }
+                nextHearts = Math.max(1, nextHearts);
+              }
               if (
                 nextHearts <= 0 &&
                 activeCharacter === "tank_sentinel" &&
@@ -3458,24 +5728,85 @@ export default function Home() {
               }
               if (
                 nextHearts <= 0 &&
-                activeCharacter === "medic_revive" &&
+                hasCharacterAbility("medic_lifeline") &&
+                !lifelineUsedRef.current
+              ) {
+                lifelineUsedRef.current = true;
+                lifelineImmuneKindsRef.current.add(n.kind);
+                nextHearts = maxHearts;
+                showAbilityNotice(
+                  `LIFELINE · FULL HP · ${n.kind.toUpperCase()} IMMUNITY`,
+                  1600,
+                );
+              }
+              if (
+                nextHearts <= 0 &&
+                hasCharacterAbility("medic_halo") &&
+                haloPartsRef.current >= 3
+              ) {
+                haloPartsRef.current -= 3;
+                nextHearts = 1;
+                setAbilityStateVersion((value) => value + 1);
+                showAbilityNotice("HALO RESTORED · REVIVED AT 1 HP", 1500);
+              }
+              if (
+                nextHearts <= 0 &&
+                hasCharacterAbility("medic_revive") &&
                 !reviveUsedRef.current
               ) {
                 reviveUsedRef.current = true;
+                reviveFlyingRef.current = true;
                 nextHearts = 0.5;
-                showAbilityNotice("PHOENIX REVIVE · SURVIVED AT 0.5 HP", 1400);
+                setAbilityStateVersion((value) => value + 1);
+                showAbilityNotice(
+                  "PHOENIX REVIVE · 0.5 HP · FLIGHT ACTIVE",
+                  1500,
+                );
               }
-              const triggerLifelineHeal =
+              const triggerPacerPass =
+                nextHearts <= 0 &&
+                activeCharacter === "runner_pacer" &&
+                !pacerRevivalUsedRef.current;
+              if (triggerPacerPass) {
+                pacerRevivalUsedRef.current = true;
+                nextHearts = 0.5;
+                setAbilityChoice({ kind: "pacer-character" });
+                showAbilityNotice("PASS THE BATON · CHOOSE A NON-RUNNER", 1500);
+              }
+              const triggerPulseRescue =
+                nextHearts <= 0 &&
+                hasCharacterAbility("medic_pulse") &&
+                !pulseUsedRef.current;
+              if (triggerPulseRescue) {
+                pulseUsedRef.current = true;
+                nextHearts = 0.5;
+                setPulseGame({
+                  hits: 0,
+                  prompt: "A",
+                  endsAt: Date.now() + 10000,
+                  remaining: 10000,
+                });
+                showAbilityNotice("LAST PULSE · FOLLOW THE KEYS", 1200);
+              }
+              if (
+                relayChargesRef.current > 0 &&
+                nextHearts < state.current.hearts
+              ) {
+                relayChargesRef.current -= 1;
+                relayDischarge = true;
+                setAbilityStateVersion((value) => value + 1);
+                showAbilityNotice("OVERCHARGE RELAY · ALL LANES DISCHARGED", 1200);
+              }
+              if (
                 nextHearts > 0 &&
                 nextHearts <= 1 &&
-                activeCharacter === "medic_lifeline" &&
-                !lifelineUsedRef.current;
-              if (triggerLifelineHeal) lifelineUsedRef.current = true;
-              const triggerReserveHeal =
-                nextHearts > 0 &&
-                activeCharacter === "medic_reserve" &&
-                reserveHealStoredRef.current;
-              if (triggerReserveHeal) reserveHealStoredRef.current = false;
+                hasCharacterAbility("medic_beacon") &&
+                !beaconActiveRef.current
+              ) {
+                beaconActiveRef.current = true;
+                setAbilityStateVersion((value) => value + 1);
+                showAbilityNotice("BEACON LIT · SPIKES OFF · HAZARDS 50% SLOWER", 1500);
+              }
               if (nextHearts > 0 && activeCharacter === "tank_plow") {
                 clearDamagedLane = true;
                 showAbilityNotice("LANE PLOW · LANE CLEARED", 1000);
@@ -3484,7 +5815,8 @@ export default function Home() {
                 smokeSlowRemainingRef.current = 2500;
                 showAbilityNotice("SMOKE SCREEN · HAZARDS 35% SLOWER", 1100);
               }
-              setHearts(Math.max(0, nextHearts));
+              state.current.hearts = Math.max(0, nextHearts);
+              setHearts(state.current.hearts);
               if (nextHearts <= 0) {
                 setRunning(false);
                 setPauseMenuOpen(false);
@@ -3493,6 +5825,12 @@ export default function Home() {
                   setVersusResult("PRACTICE DEFEAT");
                   setVersusPhase("finished");
                   setVersusIntermissionReady(false);
+                } else if (isOnlineVersus) {
+                  setVersusSelfEliminated(true);
+                  versusSelfEliminatedRef.current = true;
+                  setVersusPhase("eliminated");
+                  setVersusIntermissionReady(false);
+                  setVersusResult("RUN COMPLETE · RIVAL STILL RUNNING");
                 } else if (guest) {
                   setGems(0);
                   gemsRef.current = 0;
@@ -3515,16 +5853,9 @@ export default function Home() {
               );
               setTimeout(() => {
                 setFlash("");
-                setPaused(false);
+                if (!triggerPacerPass && !triggerPulseRescue)
+                  setPaused(false);
                 damageLockedRef.current = false;
-                if (triggerLifelineHeal) {
-                  setHearts((value) => Math.min(maxHearts, value + 1.5));
-                  showAbilityNotice("LIFELINE · +1.5 HP", 1200);
-                }
-                if (triggerReserveHeal) {
-                  setHearts((value) => Math.min(maxHearts, value + 0.5));
-                  showAbilityNotice("RESERVE DOSE · +0.5 HP", 1200);
-                }
               }, 480);
               return [];
             }
@@ -3557,96 +5888,125 @@ export default function Home() {
               (item) =>
                 item.lane !== state.current.lane ||
                 item.kind === "gem" ||
-                item.kind === "coin",
+                item.kind === "coin" ||
+                item.kind === "mushroom",
             )
           : recoveryRetained;
-        const retainedIds = new Set(retained.map((item) => item.id));
+        let relayRetained = retained;
+        if (relayDischarge) {
+          const closestByLane = new Map<number, Item>();
+          retained.forEach((item) => {
+            if (!isHazardKind(item.kind) || item.y >= 91) return;
+            const closest = closestByLane.get(item.lane);
+            if (!closest || item.y > closest.y)
+              closestByLane.set(item.lane, item);
+          });
+          const discharged = [...closestByLane.values()];
+          const dischargedIds = new Set(discharged.map((item) => item.id));
+          relayRetained = retained.filter(
+            (item) => !dischargedIds.has(item.id),
+          );
+          discharged.forEach((item) => {
+            const attackKind: AttackId =
+              item.kind === "spikes" ? "spike" : (item.kind as AttackId);
+            if (isBotPractice) {
+              playerAttacksAgainstBotRef.current.push(attackKind);
+            } else if (isOnlineVersus && versusMatchRef.current) {
+              void supabase.rpc("reflect_1v1_attack", {
+                p_match_id: versusMatchRef.current,
+                p_reflection_id: `relay:${versusPickupNonceRef.current}:${wave}:${item.id}`,
+                p_obstacle_type: attackKind,
+              });
+            }
+          });
+        }
+        const retainedIds = new Set(relayRetained.map((item) => item.id));
         rogueGrazedItemIdsRef.current.forEach((itemId) => {
           if (!retainedIds.has(itemId))
             rogueGrazedItemIdsRef.current.delete(itemId);
         });
-        return retained;
+        return relayRetained;
       });
       const rawProgressGain = (dt / 12) * (1 + wave * 0.01);
       const waveProgressGain = Math.max(1, Math.round(rawProgressGain));
       let characterScoreMultiplier = 1;
-      if (activeCharacter === "runner_ace")
-        characterScoreMultiplier = 1.1;
-      else if (
-        activeCharacter === "runner_stride" &&
-        state.current.lane >= 1 &&
-        state.current.lane <= 3
-      )
-        characterScoreMultiplier = 1.12;
-      else if (
-        activeCharacter === "runner_courier" &&
+      if (hasCharacterAbility("runner_ace"))
+        characterScoreMultiplier *= 1.1;
+      if (hasCharacterAbility("runner_dash"))
+        characterScoreMultiplier *= 1.06;
+      if (
+        hasCharacterAbility("runner_courier") &&
         courierBoostRemainingRef.current > 0
       )
-        characterScoreMultiplier = 1.25;
-      else if (activeCharacter === "runner_tempo" && wave % 2 === 0)
-        characterScoreMultiplier = 1.18;
-      else if (
-        activeCharacter === "runner_vector" &&
-        (state.current.lane === 0 || state.current.lane === 4)
+        characterScoreMultiplier *= 1.25;
+      if (activeCharacter === "runner_tempo")
+        characterScoreMultiplier *= wave % 2 === 1 ? 1.15 : 0.85;
+      if (
+        hasCharacterAbility("runner_vector") &&
+        (state.current.lane === 0 ||
+          state.current.lane === activeLaneCount - 1)
       )
-        characterScoreMultiplier = 1.25;
-      else if (activeCharacter === "runner_horizon" && wave >= 10)
-        characterScoreMultiplier = 1.3;
-      else if (activeCharacter === "runner_zenith")
-        characterScoreMultiplier =
+        characterScoreMultiplier *= 1.12;
+      if (activeCharacter === "runner_zenith")
+        characterScoreMultiplier *=
           1 + Math.min(0.6, Math.max(0, wave - 1) * 0.02);
-      else if (pacerRushActive) characterScoreMultiplier = 2;
-      else if (
+      if (pacerRushActive) characterScoreMultiplier *= 5;
+      if (
         activeCharacter === "runner_drift" &&
         driftBoostRemainingRef.current > 0
       )
-        characterScoreMultiplier = 1.15;
-      else if (
+        characterScoreMultiplier *= 1.15;
+      if (
         activeCharacter === "runner_spark" &&
         sparkBoostRemainingRef.current > 0
       )
-        characterScoreMultiplier = 1.5;
-      else if (
+        characterScoreMultiplier *= 1.5;
+      if (
         activeCharacter === "runner_flare" &&
         flareBoostWaveRef.current === wave
       )
-        characterScoreMultiplier = 1.5;
-      else if (activeCharacter === "runner_relay")
-        characterScoreMultiplier =
-          1 + Math.min(0.2, Math.max(0, wave - 1) * 0.02);
-      else if (
+        characterScoreMultiplier *= 1.5;
+      if (
         activeCharacter === "runner_comet" &&
         cometChargedRef.current
       )
-        characterScoreMultiplier = 1.5;
-      else if (
-        activeCharacter === "medic_halo" &&
+        characterScoreMultiplier *= 1.5;
+      if (
+        hasCharacterAbility("medic_halo") &&
         state.current.hearts >= maxHearts
       )
-        characterScoreMultiplier = 1.15;
-      else if (
+        characterScoreMultiplier *= 1.15;
+      if (
         activeCharacter === "tank_reactor" &&
-        state.current.hearts <= 2
+        missingHealthRatio > 0
       )
-        characterScoreMultiplier = 1.25;
-      else if (
+        characterScoreMultiplier *= 1 + missingHealthRatio * 0.3;
+      if (activeCharacter === "runner_velocity")
+        characterScoreMultiplier *=
+          1 + Math.min(2, velocityChargeMsRef.current / 50000);
+      if (reviveFlyingRef.current)
+        characterScoreMultiplier *= 1.5;
+      if (activeCharacter === "medic_oracle" && oracleCompleted > 0)
+        characterScoreMultiplier *= 1 + oracleCompleted * 0.05;
+      if (
         activeCharacter === "trickster_gambit" &&
         gambitBoostRemainingRef.current > 0
       )
-        characterScoreMultiplier = 1.75;
-      else if (
+        characterScoreMultiplier *= 1.75;
+      if (
         activeCharacter === "trickster_wildcard" &&
         wildcardBuffRef.current === "score"
       )
-        characterScoreMultiplier = 1.15;
+        characterScoreMultiplier *= 1.15;
       const totalScoreMultiplier =
+        modeMultiplier *
         classScoreMultiplier *
         characterScoreMultiplier *
         activeWeaponScoreMultiplier;
+      currentCoinMultiplierRef.current = totalScoreMultiplier;
       scoreCarryRef.current +=
         rawProgressGain *
         obstacleSpeedMultiplier *
-        modeMultiplier *
         totalScoreMultiplier;
       const scoreGain = Math.floor(scoreCarryRef.current);
       scoreCarryRef.current -= scoreGain;
@@ -3659,6 +6019,26 @@ export default function Home() {
         courierBoostRemainingRef.current = Math.max(
           0,
           courierBoostRemainingRef.current - dt,
+        );
+      if (dashBoostRemainingRef.current > 0)
+        dashBoostRemainingRef.current = Math.max(
+          0,
+          dashBoostRemainingRef.current - dt,
+        );
+      if (dashCooldownRemainingRef.current > 0)
+        dashCooldownRemainingRef.current = Math.max(
+          0,
+          dashCooldownRemainingRef.current - dt,
+        );
+      if (blitzBoostRemainingRef.current > 0)
+        blitzBoostRemainingRef.current = Math.max(
+          0,
+          blitzBoostRemainingRef.current - dt,
+        );
+      if (blitzCooldownRemainingRef.current > 0)
+        blitzCooldownRemainingRef.current = Math.max(
+          0,
+          blitzCooldownRemainingRef.current - dt,
         );
       if (driftBoostRemainingRef.current > 0)
         driftBoostRemainingRef.current = Math.max(
@@ -3709,7 +6089,9 @@ export default function Home() {
         }
       }
       if (
-        activeCharacter === "medic_mender" &&
+        healingEnabled &&
+        hasCharacterAbility("medic_mender") &&
+        !reviveFlyingRef.current &&
         menderHealedWaveRef.current !== wave
       ) {
         menderChargeRemainingRef.current = Math.max(
@@ -3751,6 +6133,10 @@ export default function Home() {
     wave,
     guest,
     mode,
+    activeLaneCount,
+    activeMapId,
+    activeMapRules,
+    healingEnabled,
     maxHearts,
     activeClass,
     activeCharacter,
@@ -3762,12 +6148,16 @@ export default function Home() {
     modeRules.hazardLaneLimit,
     classScoreMultiplier,
     activeWeaponScoreMultiplier,
+    hasCharacterAbility,
+    oracleCompleted,
     grantInvincibility,
     applyFreezeEffect,
     clearFreezeEffect,
     showAbilityNotice,
     queueOnlineCoinAward,
+    applyAuthoritativeVersusPoints,
     applyProgressionPayload,
+    applyDirectMapDamage,
     activeAbility.name,
   ]);
   useEffect(() => {
@@ -3776,6 +6166,19 @@ export default function Home() {
     if (next !== wave) {
       const completedWave = next - 1;
       setWave(next);
+      volcanoStationaryMsRef.current = 0;
+      if (activeMapId === "pitch") {
+        pitchKatanaRef.current = resetPitchKatanaAtWaveEnd(
+          pitchKatanaRef.current,
+          Date.now(),
+        );
+        setPitchKatanaVersion((value) => value + 1);
+      }
+      if (activeMapId === "factory" && !isOnlineVersus) {
+        const nextConveyor = createFactoryConveyorState();
+        factoryConveyorRef.current = nextConveyor;
+        setFactoryConveyor(nextConveyor);
+      }
       wildcardBuffRef.current = null;
       if (activeCharacter === "runner_flare") {
         const cleanWave = flareDamageWaveRef.current !== completedWave;
@@ -3783,62 +6186,92 @@ export default function Home() {
         if (cleanWave)
           showAbilityNotice("CLEAN RUN · NEXT WAVE SCORE ×1.50", 1200);
       }
-      if (activeCharacter === "medic_mender") {
-        menderChargeRemainingRef.current = 12000;
+      if (hasCharacterAbility("medic_mender")) {
+        menderChargeRemainingRef.current = 20000;
         menderHealedWaveRef.current = 0;
       }
       if (
+        hasCharacterAbility("medic_halo") &&
+        collisionWaveRef.current !== completedWave
+      ) {
+        haloPartsRef.current = Math.min(3, haloPartsRef.current + 1);
+        setAbilityStateVersion((value) => value + 1);
+        showAbilityNotice(
+          `HALO FORGED · ${haloPartsRef.current}/3 HIT-LESS WAVES`,
+          1200,
+        );
+      }
+      if (
+        hasCharacterAbility("runner_relay") &&
+        completedWave % 2 === 0
+      ) {
+        relayChargesRef.current = Math.min(
+          Math.ceil(maxHearts),
+          relayChargesRef.current + 1,
+        );
+        setAbilityStateVersion((value) => value + 1);
+        showAbilityNotice(
+          `OVERCHARGE RELAY · ${relayChargesRef.current} HEART${relayChargesRef.current === 1 ? "" : "S"} READY`,
+          1200,
+        );
+      }
+      if (
         mode === "normal" &&
-        activeCharacter === "medic_reserve" &&
+        healingEnabled &&
+        hasCharacterAbility("medic_reserve") &&
         state.current.hearts >= maxHearts &&
         !reserveHealStoredRef.current
       ) {
         reserveHealStoredRef.current = true;
         showAbilityNotice("RESERVE DOSE · 0.5 HP STORED", 1100);
       }
-      if (mode === "normal") {
+      const waveEndHearts = state.current.hearts;
+      if (mode === "normal" && healingEnabled) {
         const sutureFullRestore =
-          activeCharacter === "medic_suture" && completedWave % 3 === 0;
+          hasCharacterAbility("medic_suture") && completedWave % 3 === 0;
         const healAmount =
           activeCharacter === "medic_patch"
             ? 1.5
-            : activeCharacter === "medic_salve" &&
-                state.current.hearts <= 2
-              ? 2
-              : activeCharacter === "medic_oracle" &&
-                  completedWave % 3 === 0
-                ? 2
-            : activeCharacter === "medic_seraph"
-              ? 1.5
-              : activeCharacter === "tank_atlas"
+            : hasCharacterAbility("medic_salve")
+              ? state.current.hearts <= 1
+                ? 1.5
+                : 0
+            : hasCharacterAbility("medic_tonic")
+              ? 0.5
+            : hasCharacterAbility("medic_suture")
+              ? completedWave % 2 === 0
                 ? 1
-                : activeClass === "tank"
-                  ? 0.5
-                  : 1;
+                : 0
+            : hasCharacterAbility("medic_seraph")
+              ? seraphTeleportChanceRef.current <= 0
+                ? 1.5
+                : 0
+            : reviveFlyingRef.current
+              ? 0
+            : activeCharacter === "tank_atlas"
+              ? 1
+            : activeClass === "tank"
+              ? 0.5
+              : 1;
         if (
           activeCharacter === "medic_patch" &&
           state.current.hearts < maxHearts
         )
           showAbilityNotice("FIELD DRESSING · +1.5 HP", 1200);
         if (
-          activeCharacter === "medic_salve" &&
-          state.current.hearts <= 2 &&
+          hasCharacterAbility("medic_salve") &&
+          state.current.hearts <= 1 &&
           state.current.hearts < maxHearts
         )
-          showAbilityNotice("DEEP SALVE · +2 HP", 1200);
-        if (
-          activeCharacter === "medic_oracle" &&
-          completedWave % 3 === 0 &&
-          state.current.hearts < maxHearts
-        )
-          showAbilityNotice("THIRD OMEN · +2 HP", 1200);
+          showAbilityNotice("DEEP SALVE · +1.5 HP", 1200);
         if (
           sutureFullRestore &&
           state.current.hearts < maxHearts
         )
           showAbilityNotice("TRIAGE CYCLE · HP RESTORED TO 5", 1200);
         if (
-          activeCharacter === "medic_seraph" &&
+          hasCharacterAbility("medic_seraph") &&
+          seraphTeleportChanceRef.current <= 0 &&
           state.current.hearts < maxHearts
         )
           showAbilityNotice("DIVINE RECOVERY · +1.5 HP", 1200);
@@ -3847,11 +6280,93 @@ export default function Home() {
           state.current.hearts < maxHearts
         )
           showAbilityNotice("WORLD BEARER · +1 HP", 1200);
-        setHearts((value) =>
-          sutureFullRestore
-            ? maxHearts
-            : Math.min(maxHearts, value + healAmount),
+        const healedHearts = sutureFullRestore
+          ? maxHearts
+          : Math.min(maxHearts, state.current.hearts + healAmount);
+        state.current.hearts = healedHearts;
+        setHearts(healedHearts);
+      }
+      if (
+        activeCharacter === "medic_oracle" &&
+        oracleProphecies.length > 0
+      ) {
+        let passiveChoiceOpened = false;
+        const fulfilled = oracleProphecies.filter((prophecy) =>
+          prophecy === "no-hit"
+            ? collisionWaveRef.current !== completedWave
+            : prophecy === "completion"
+              ? collisionWaveRef.current === completedWave && waveEndHearts > 1
+              : waveEndHearts <= 1,
         );
+        if (fulfilled.length === 0) {
+          state.current.hearts = Math.max(0, state.current.hearts - 1);
+          setHearts(state.current.hearts);
+          showAbilityNotice("PROPHECY FAILED · -1 HP", 1400);
+          if (state.current.hearts <= 0) {
+            setRunning(false);
+            setPaused(false);
+            setOver(true);
+            if (isBotPractice) {
+              setVersusResult("PRACTICE DEFEAT");
+              setVersusPhase("finished");
+            } else if (isOnlineVersus) {
+              setVersusSelfEliminated(true);
+              versusSelfEliminatedRef.current = true;
+              setVersusPhase("eliminated");
+              setVersusResult("PROPHECY FAILED · RIVAL STILL RUNNING");
+            }
+            return;
+          }
+        } else {
+          const normalReward = fulfilled[0];
+          const reducedRewards = oracleProphecies.filter(
+            (prophecy) => prophecy !== normalReward,
+          );
+          setOracleCompleted((value) => value + 1);
+          if (normalReward === "no-hit")
+            oracleInvincibleWaveRef.current = next;
+          if (normalReward === "completion") {
+            state.current.hearts = maxHearts;
+            setHearts(maxHearts);
+          }
+          const healerPool = CLASS_CHARACTERS.medic
+            .map((character) => character.key as CharacterKey)
+            .filter(
+              (character) =>
+                character !== "medic_oracle" &&
+                !oracleBorrowedAbilitiesRef.current.has(character),
+            )
+            .sort(() => Math.random() - 0.5);
+          if (normalReward === "near-death" && healerPool.length > 0) {
+            passiveChoiceOpened = true;
+            setAbilityChoice({
+              kind: "oracle-passive",
+              options: healerPool.slice(0, 2),
+            });
+          }
+          reducedRewards.forEach((prophecy) => {
+            if (prophecy === "no-hit") oracleShieldWaveRef.current = next;
+            if (prophecy === "completion") {
+              state.current.hearts = Math.min(
+                maxHearts,
+                state.current.hearts + 2,
+              );
+              setHearts(state.current.hearts);
+            }
+            if (prophecy === "near-death" && healerPool.length > 0) {
+              oracleBorrowedAbilitiesRef.current.add(healerPool[0]);
+              setAbilityStateVersion((value) => value + 1);
+            }
+          });
+          showAbilityNotice(
+            `PROPHECY COMPLETE · SCORE +${(oracleCompleted + 1) * 5}%`,
+            1500,
+          );
+        }
+        setOracleProphecies([]);
+        setPaused(true);
+        if (!passiveChoiceOpened)
+          setAbilityChoice({ kind: "oracle-prophecy" });
       }
       if (isBotPractice) {
         const queuedAttacks = playerAttacksAgainstBotRef.current;
@@ -3871,9 +6386,16 @@ export default function Home() {
           setOver(true);
           return;
         }
-        const simulatedBotCoinPickups = Math.floor(Math.random() * 3) * 2;
-        botAttackPointsRef.current += 3 + simulatedBotCoinPickups;
-        versusPointsRef.current += 3;
+        const waveReward =
+          activeMapRules.waveAttackReward.kind === "fixed"
+            ? activeMapRules.waveAttackReward.points
+            : activeMapRules.waveAttackReward.tiedPlayerPoints;
+        const simulatedBotCoinPickups =
+          Math.floor(Math.random() * 3) *
+          getAttackPointsForCoin(activeMapId);
+        botAttackPointsRef.current += waveReward + simulatedBotCoinPickups;
+        versusPointsRef.current +=
+          waveReward * currentCoinMultiplierRef.current;
         setVersusPoints(versusPointsRef.current);
         setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
         setVersusPhase("intermission");
@@ -3904,9 +6426,15 @@ export default function Home() {
     wave,
     announceWave,
     mode,
+    activeMapId,
+    activeMapRules,
+    healingEnabled,
     maxHearts,
     activeClass,
     activeCharacter,
+    hasCharacterAbility,
+    oracleCompleted,
+    oracleProphecies,
     playScope,
     isBotPractice,
     isOnlineVersus,
@@ -3921,9 +6449,12 @@ export default function Home() {
         let botBudget = botAttackPointsRef.current;
         const botAttacks: VersusAttackKind[] = [];
         const attackLimit = Math.min(6, 1 + Math.ceil(wave / 3));
-        while (botBudget >= 2 && botAttacks.length < attackLimit) {
+        const availableAttackIds = getAvailableAttacks(activeMapId);
+        while (botBudget >= 6 && botAttacks.length < attackLimit) {
           const affordable = VERSUS_ATTACKS.filter(
-            (attack) => attack.cost <= botBudget,
+            (attack) =>
+              availableAttackIds.includes(attack.kind) &&
+              attack.cost <= botBudget,
           );
           if (affordable.length === 0) break;
           const chosen = affordable[Math.floor(Math.random() * affordable.length)];
@@ -3939,7 +6470,9 @@ export default function Home() {
                 attack === "spike" ? "spikes" : attack,
               ),
               () => id.current++,
-              18,
+              getAttackGroupSpacing(wave),
+              state.current.lane,
+              activeLaneCount,
             ),
           );
         setVersusResult(
@@ -3969,7 +6502,7 @@ export default function Home() {
           if (versusMatchRef.current !== matchId) return;
           const { data, error } = await supabase.rpc("update_1v1_state", {
             p_match_id: matchId,
-            p_hearts: normalizeVersusHearts(state.current.hearts),
+            p_hearts: normalizeVersusHeartsForServer(state.current.hearts),
             p_wave: wave,
             p_score: scoreRef.current,
             p_status: "playing",
@@ -3982,6 +6515,18 @@ export default function Home() {
             return;
           }
           applyAuthoritativeVersusPoints(data?.self?.obstacle_points);
+          const authoritativeConveyor =
+            activeMapId === "factory"
+              ? readFactoryConveyorFromWaveRules(
+                  data?.wave_rules,
+                  activeLaneCount,
+                  wave,
+                )
+              : null;
+          if (authoritativeConveyor) {
+            factoryConveyorRef.current = authoritativeConveyor;
+            setFactoryConveyor(authoritativeConveyor);
+          }
           const serverStatus = String(data?.match?.status ?? "playing");
           if (serverStatus !== "playing") {
             const remaining = secondsUntil(data?.match?.intermission_ends_at, 1);
@@ -4001,12 +6546,39 @@ export default function Home() {
           const serverPending = (data?.pending_attacks ?? []) as Array<{
             id?: string;
             obstacle_type?: string;
+            lane_index?: number | null;
+            lane_group?: number | null;
+            lane_position?: number | null;
+            escape_lane_index?: number | null;
           }>;
           serverPending.forEach((attack) => {
             const kind = normalizeVersusObstacle(attack.obstacle_type);
             if (attack.id && spawnedAttackIdsRef.current.has(attack.id)) return;
             if (attack.id && kind)
-              pending.set(attack.id, { id: attack.id, kind });
+              pending.set(attack.id, {
+                id: attack.id,
+                kind,
+                lane:
+                  Number.isInteger(attack.lane_index) &&
+                  attack.lane_index !== null
+                    ? Number(attack.lane_index)
+                    : undefined,
+                laneGroup:
+                  Number.isInteger(attack.lane_group) &&
+                  attack.lane_group !== null
+                    ? Number(attack.lane_group)
+                    : undefined,
+                lanePosition:
+                  Number.isInteger(attack.lane_position) &&
+                  attack.lane_position !== null
+                    ? Number(attack.lane_position)
+                    : undefined,
+                escapeLane:
+                  Number.isInteger(attack.escape_lane_index) &&
+                  attack.escape_lane_index !== null
+                    ? Number(attack.escape_lane_index)
+                    : undefined,
+              });
           });
           const attacks = Array.from(pending.values());
           incomingAttacksRef.current = [];
@@ -4014,14 +6586,30 @@ export default function Home() {
             attacks.forEach((attack) => {
               spawnedAttackIdsRef.current.add(attack.id);
             });
-            setItems((current) =>
-              appendSafeAttackWave(
-                current,
-                attacks.map((attack) => attack.kind),
-                () => id.current++,
-                9,
-              ),
-            );
+            setItems((current) => {
+              const hasServerFormation = attacks.every(
+                (attack) =>
+                  Number.isInteger(attack.lane) &&
+                  Number.isInteger(attack.laneGroup),
+              );
+              return hasServerFormation
+                ? appendServerAttackGroups(
+                    current,
+                    attacks,
+                    () => id.current++,
+                    activeLaneCount,
+                    state.current.lane,
+                    getAttackGroupSpacing(wave),
+                  )
+                : appendSafeAttackWave(
+                    current,
+                    attacks.map((attack) => attack.kind),
+                    () => id.current++,
+                    getAttackGroupSpacing(wave),
+                    state.current.lane,
+                    activeLaneCount,
+                  );
+            });
           }
           setVersusResult("");
           setVersusPhase("playing");
@@ -4044,6 +6632,8 @@ export default function Home() {
     versusCountdown,
     announceWave,
     wave,
+    activeLaneCount,
+    activeMapId,
     isBotPractice,
     isOnlineVersus,
     versusIntermissionReady,
@@ -4073,12 +6663,35 @@ export default function Home() {
     };
   }, [playScope, versusPhase, versusIntermissionReady]);
   useEffect(() => {
+    if (playScope !== "versus" || versusPhase !== "eliminated") return;
+    const matchId = versusMatchRef.current;
+    if (!matchId) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const pollResult = async () => {
+      await hydrateVersusStateRef.current?.(matchId, true);
+      if (
+        stopped ||
+        versusMatchRef.current !== matchId ||
+        versusFinishedRef.current
+      )
+        return;
+      timer = setTimeout(() => void pollResult(), 2000);
+    };
+    timer = setTimeout(() => void pollResult(), 1200);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [playScope, versusPhase]);
+  useEffect(() => {
     if (
       playScope !== "versus" ||
       !versusMatchRef.current ||
       !versusRunHydratedRef.current ||
       (versusPhase !== "playing" &&
         versusPhase !== "intermission" &&
+        versusPhase !== "eliminated" &&
         versusPhase !== "finished")
     )
       return;
@@ -4110,7 +6723,7 @@ export default function Home() {
         try {
           const response = await supabase.rpc("update_1v1_state", {
             p_match_id: matchId,
-            p_hearts: normalizeVersusHearts(hearts),
+            p_hearts: normalizeVersusHeartsForServer(hearts),
             p_wave: wave,
             p_score: scoreRef.current,
             p_status: nextStatus,
@@ -4144,13 +6757,31 @@ export default function Home() {
         if (serverStatus === "finished") {
           versusFinishedRef.current = true;
           setVersusResult(
-            data?.match?.winner_user_id === userIdRef.current
-              ? "VICTORY"
-              : "DEFEAT",
+            data?.match?.is_draw ||
+              String(data?.outcome ?? data?.match?.outcome).toLowerCase() ===
+                "draw"
+              ? "DRAW"
+              : data?.match?.winner_user_id === userIdRef.current ||
+                  String(
+                    data?.outcome ?? data?.match?.outcome,
+                  ).toLowerCase() === "win"
+                ? "VICTORY"
+                : "DEFEAT",
           );
           setVersusPhase("finished");
           setVersusIntermissionReady(false);
           setRunning(false);
+          setOver(true);
+          return;
+        }
+        if (nextStatus === "eliminated") {
+          setVersusSelfEliminated(true);
+          versusSelfEliminatedRef.current = true;
+          setVersusPhase("eliminated");
+          setVersusIntermissionReady(false);
+          setVersusResult("RUN COMPLETE · RIVAL STILL RUNNING");
+          setRunning(false);
+          setPaused(false);
           setOver(true);
           return;
         }
@@ -4222,7 +6853,19 @@ export default function Home() {
       >["data"]["session"],
     ) => {
       const user = session?.user ?? null;
-      userIdRef.current = user?.id ?? null;
+      const nextUserId = user?.id ?? null;
+      if (userIdRef.current !== nextUserId) {
+        progressionOwnerUserIdRef.current = null;
+        setPlayerProgression({
+          level: 1,
+          xp: 0,
+          xp_required: 100,
+          lifetime_xp: 0,
+          completed_runs: 0,
+          ranked_unlocked: false,
+        });
+      }
+      userIdRef.current = nextUserId;
       if (user) {
         setPlayerAccess(null);
         setPlayerAccessError("");
@@ -4291,12 +6934,11 @@ export default function Home() {
         const ownedItems = (owned ?? []) as Unlock[];
         const safeLoadout = normalizeOwnedLoadout(ownedItems, loadout);
         setUnlocks(ownedItems);
-        setPlayerClass(safeLoadout.classKey);
         setSelectedCharacter(safeLoadout.characterKey);
         setPlayerCosmetic(safeLoadout.playerCosmetic);
         setObstacleCosmetic(safeLoadout.obstacleCosmetic);
         setEnvironmentCosmetic(safeLoadout.environmentCosmetic);
-        applyProgressionPayload(progression);
+        applyProgressionPayload(progression, sessionUserId);
       } else {
         setPlayerAccess(null);
         setPlayerAccessError("");
@@ -4306,7 +6948,6 @@ export default function Home() {
         setIsAdmin(false);
         setAdminRole(null);
         setUnlocks([]);
-        setPlayerClass("runner");
         setSelectedCharacter("runner_ace");
         setInventoryCharacter({
           classKey: "runner",
@@ -4315,6 +6956,7 @@ export default function Home() {
         setPlayerCosmetic("");
         setObstacleCosmetic("");
         setEnvironmentCosmetic("");
+        progressionOwnerUserIdRef.current = null;
         setPlayerProgression({
           level: 1,
           xp: 0,
@@ -4399,10 +7041,25 @@ export default function Home() {
     );
   };
   const signOut = async () => {
+    const signingOutUserId = userIdRef.current;
+    cancelPendingProgressionStart();
+    progressionStartIntentRef.current += 1;
+    progressionRunIdRef.current = null;
+    progressionAwardedRunIdRef.current = null;
     const shouldLeaveVersus = Boolean(
-      userIdRef.current &&
+      signingOutUserId &&
         (versusSearchingRef.current || versusMatchRef.current),
     );
+    userIdRef.current = null;
+    progressionOwnerUserIdRef.current = null;
+    setPlayerProgression({
+      level: 1,
+      xp: 0,
+      xp_required: 100,
+      lifetime_xp: 0,
+      completed_runs: 0,
+      ranked_unlocked: false,
+    });
     invalidateVersusSearch();
     resetVersusClientSync();
     closeVersusChannel();
@@ -4454,6 +7111,7 @@ export default function Home() {
     setOver(false);
     setScore(0);
     setWaveProgress(0);
+    setLastRunXpBreakdown(null);
     setSettingsOpen(false);
     setReportOpen(false);
     setAdminOpen(false);
@@ -4471,13 +7129,11 @@ export default function Home() {
     setAdminAppealStatus("");
     setAdminAppealNotes({});
     setUnlocks([]);
-    setPlayerClass("runner");
     setSelectedCharacter("runner_ace");
     setInventoryCharacter({
       classKey: "runner",
       characterKey: "runner_ace",
     });
-    userIdRef.current = null;
     audioEngine.stop();
     if (shouldLeaveVersus) await supabase.rpc("leave_1v1");
     if (userEmail) {
@@ -4498,7 +7154,6 @@ export default function Home() {
     void audioEngine.playSfx("click");
     setGuest(true);
     setUnlocks([]);
-    setPlayerClass("runner");
     setSelectedCharacter("runner_ace");
     setInventoryCharacter({
       classKey: "runner",
@@ -4570,6 +7225,7 @@ export default function Home() {
     setAppealBusy(false);
   };
   const openReportForm = () => {
+    cancelPendingProgressionStart();
     reportPreviousPausedRef.current = state.current.paused;
     setReportStatus("");
     setPauseMenuOpen(false);
@@ -4607,6 +7263,7 @@ export default function Home() {
     }
   };
   const loadReports = async () => {
+    cancelPendingProgressionStart();
     const { data, error } = await supabase.rpc("get_admin_reports");
     if (error) {
       setReports([]);
@@ -4749,7 +7406,6 @@ export default function Home() {
     const ownedItems = (owned ?? []) as Unlock[];
     const safeLoadout = normalizeOwnedLoadout(ownedItems, loadout);
     setUnlocks(ownedItems);
-    setPlayerClass(safeLoadout.classKey);
     setSelectedCharacter(safeLoadout.characterKey);
     setPlayerCosmetic(safeLoadout.playerCosmetic);
     setObstacleCosmetic(safeLoadout.obstacleCosmetic);
@@ -4883,15 +7539,12 @@ export default function Home() {
       setInventoryStatus("Healer and Tank cannot be used in Hardcore mode.");
       return;
     }
-    const owned = guest
-      ? isStarterCharacter(characterKey)
-      : isCharacterOwned(unlocks, characterKey);
+    const owned = isCharacterOwned(unlocks, characterKey);
     if (!owned) {
       setInventoryStatus("That character is locked. Extract it in the Shop first.");
       return;
     }
     if (guest) {
-      setPlayerClass(classKey);
       setSelectedCharacter(characterKey);
       setInventoryStatus("Starter equipped for this guest session.");
       return;
@@ -4913,7 +7566,6 @@ export default function Home() {
       setInventoryStatus(characterError.message);
       return;
     }
-    setPlayerClass(classKey);
     setSelectedCharacter(characterKey);
     setInventoryStatus(
       `${characterKey.replaceAll("_", " ").toUpperCase()} equipped.`,
@@ -4941,6 +7593,7 @@ export default function Home() {
     );
   };
   const loadLeaderboard = async () => {
+    cancelPendingProgressionStart();
     const { data } = await supabase.rpc("get_leaderboard");
     setLeaders((data ?? []) as Leader[]);
     setLeaderboardOpen(true);
@@ -4982,17 +7635,154 @@ export default function Home() {
     inventoryCharacter.classKey
   ].find((character) => character.key === inventoryCharacter.characterKey);
   const focusedCharacterOwned = Boolean(
-    focusedCharacter &&
-      (guest
-        ? isStarterCharacter(focusedCharacter.key)
-        : isCharacterOwned(unlocks, focusedCharacter.key)),
+    focusedCharacter && isCharacterOwned(unlocks, focusedCharacter.key),
   );
   const focusedCharacterAbility = focusedCharacter
     ? CHARACTER_ABILITIES[focusedCharacter.key as CharacterKey]
     : null;
   const focusedWeaponScoreLabel = focusedCharacter
-    ? getWeaponScoreLabel(focusedCharacter.rarity)
+    ? getCharacterWeaponLabel(
+        focusedCharacter.key as CharacterKey,
+        focusedCharacter.rarity,
+      )
     : "";
+  const pacerCharacterOptions = CHARACTER_ROSTER.filter(
+    (character) =>
+      getCharacterClassKey(character.key) !== "runner" &&
+      isCharacterOwned(unlocks, character.key),
+  );
+  const brewTonic = (strength: 1 | 2 | 3) => {
+    const cost = strength * 5;
+    if (tonicPotion > 0 || tonicIngredients < cost) return;
+    setTonicIngredients((value) => value - cost);
+    setTonicPotion(strength);
+    showAbilityNotice(`${strength} HP POTION BREWED · PRESS E`, 1100);
+    void audioEngine.playSfx("click");
+  };
+  const chooseLifelineLane = (destination: number) => {
+    if (
+      abilityChoice?.kind !== "lifeline-lane" ||
+      destination === state.current.lane
+    )
+      return;
+    lifelineHookUsesRef.current += 1;
+    completeMove(destination, Math.sign(destination - state.current.lane));
+    setAbilityStateVersion((value) => value + 1);
+    setAbilityChoice(null);
+    setPaused(false);
+    showAbilityNotice(
+      `RESCUE HOOK · ${3 - lifelineHookUsesRef.current} USES LEFT`,
+      1000,
+    );
+  };
+  const choosePacerCharacter = (characterKey: CharacterKey) => {
+    if (
+      abilityChoice?.kind !== "pacer-character" ||
+      getCharacterClassKey(characterKey) === "runner" ||
+      !isCharacterOwned(unlocks, characterKey)
+    )
+      return;
+    setRunCharacterOverride(characterKey);
+    setAbilityChoice(null);
+    setPaused(false);
+    setRunning(true);
+    showAbilityNotice(
+      `BATON PASSED · ${getCharacterDefinition(characterKey).name.toUpperCase()}`,
+      1500,
+    );
+  };
+  const chooseOraclePassive = (characterKey: CharacterKey) => {
+    if (
+      abilityChoice?.kind !== "oracle-passive" ||
+      !abilityChoice.options.includes(characterKey)
+    )
+      return;
+    oracleBorrowedAbilitiesRef.current.add(characterKey);
+    setAbilityStateVersion((value) => value + 1);
+    setAbilityChoice({ kind: "oracle-prophecy" });
+    showAbilityNotice(
+      `ORACLE LEARNED · ${CHARACTER_ABILITIES[characterKey].name}`,
+      1400,
+    );
+  };
+  const oracleChoiceSets: OracleProphecy[][] =
+    oracleCompleted >= 20
+      ? [["no-hit", "completion", "near-death"]]
+      : oracleCompleted >= 5
+        ? [
+            ["no-hit", "completion"],
+            ["no-hit", "near-death"],
+            ["completion", "near-death"],
+          ]
+        : [["no-hit"], ["completion"], ["near-death"]];
+  const chooseOracleProphecy = (prophecies: OracleProphecy[]) => {
+    if (abilityChoice?.kind !== "oracle-prophecy") return;
+    setOracleProphecies(prophecies);
+    setAbilityChoice(null);
+    setPaused(isVersusRun && versusPhase === "intermission");
+    showAbilityNotice(
+      `PROPHECY SET · ${prophecies.map((value) => value.replace("-", " ").toUpperCase()).join(" + ")}`,
+      1400,
+    );
+  };
+  const abilityAction = (() => {
+    if (
+      activeCharacter === "runner_zenith" &&
+      wave >= 15 &&
+      !timeStopUsedRef.current
+    )
+      return { label: "TIME STOP", status: "READY · ONCE PER RUN", ready: true };
+    if (activeCharacter === "runner_blitz")
+      return {
+        label: "VOLT CLEAVE",
+        status:
+          blitzCooldownRemainingRef.current > 0
+            ? `${Math.ceil(blitzCooldownRemainingRef.current / 1000)}s COOLDOWN`
+            : "READY · CLEARS FIRST NON-ROCK",
+        ready: blitzCooldownRemainingRef.current <= 0,
+      };
+    if (hasCharacterAbility("runner_dash"))
+      return {
+        label: "JET DASH",
+        status:
+          dashCooldownRemainingRef.current > 0
+            ? `${Math.ceil(dashCooldownRemainingRef.current / 1000)}s COOLDOWN`
+            : "READY · BURST + SHIELD",
+        ready: dashCooldownRemainingRef.current <= 0,
+      };
+    if (activeCharacter === "medic_lifeline")
+      return {
+        label: "RESCUE HOOK",
+        status: `${Math.max(0, 3 - lifelineHookUsesRef.current)} USES LEFT`,
+        ready: lifelineHookUsesRef.current < 3,
+      };
+    if (hasCharacterAbility("medic_reserve"))
+      return {
+        label: "RESERVE DOSE",
+        status: reserveHealStoredRef.current ? "READY · +0.5 HP" : "NO DOSE STORED",
+        ready: reserveHealStoredRef.current,
+      };
+    if (hasCharacterAbility("medic_tonic"))
+      return {
+        label: "DRINK POTION",
+        status: tonicPotion > 0 ? `READY · +${tonicPotion} HP` : "BREW FROM THE MENU",
+        ready: tonicPotion > 0,
+      };
+    if (hasCharacterAbility("medic_sprout"))
+      return {
+        label: "SEED WARD",
+        status:
+          sproutSeedWaveRef.current === wave
+            ? "PLANTED THIS WAVE"
+            : "READY · CHOOSES NEAREST",
+        ready: sproutSeedWaveRef.current !== wave,
+      };
+    return null;
+  })();
+  const atlasTimerRemaining = Math.max(
+    0,
+    atlasLaneLimitRef.current - atlasLaneElapsedRef.current,
+  );
   const newExtractResults = extractResults
     .filter((item) => item.is_new)
     .sort(
@@ -5251,6 +8041,16 @@ export default function Home() {
         </section>
       </main>
     );
+  const renderedKatanaState = pitchKatanaRef.current;
+  const katanaCooldownSeconds = Math.max(
+    0,
+    Math.ceil((renderedKatanaState.cooldownUntilMs - Date.now()) / 1000),
+  );
+  const katanaActive = renderedKatanaState.activeUntilMs > Date.now();
+  const waitingForVersusResult =
+    isOnlineVersus &&
+    versusSelfEliminated &&
+    versusPhase !== "finished";
   return (
     <main className={`game-shell mode-${mode} ${flash}`}>
       <div
@@ -5260,26 +8060,44 @@ export default function Home() {
           <div className="report-utility-bar">
             <div
               className="player-level-card"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
               aria-label={`Level ${playerProgression.level}, ${playerProgression.xp} of ${playerProgression.xp_required} XP`}
             >
-              <span>
-                <b>LVL {playerProgression.level}</b>
-                <small>
-                  {playerProgression.xp.toLocaleString()} /{" "}
-                  {playerProgression.xp_required.toLocaleString()} XP
-                </small>
+              <span className="player-level-number">
+                <small>LEVEL</small>
+                <b>{playerProgression.level}</b>
               </span>
-              <i aria-hidden="true">
-                <u
-                  style={{
-                    width: `${Math.min(
-                      100,
-                      (playerProgression.xp / playerProgression.xp_required) *
+              <span className="player-xp-meter">
+                <span>
+                  <b>XP</b>
+                  <small>
+                    {playerProgression.xp.toLocaleString()} /{" "}
+                    {playerProgression.xp_required.toLocaleString()}
+                  </small>
+                </span>
+                <i aria-hidden="true">
+                  <u
+                    style={{
+                      width: `${Math.min(
                         100,
-                    )}%`,
-                  }}
-                />
-              </i>
+                        (playerProgression.xp /
+                          playerProgression.xp_required) *
+                          100,
+                      )}%`,
+                    }}
+                  />
+                </i>
+                <small className="player-xp-sources">
+                  GEM +20 · COIN +3 · WAVE +10 · 10s +1
+                </small>
+                <em>
+                  {playerProgression.ranked_unlocked
+                    ? "RANKED 1V1 UNLOCKED"
+                    : `${Math.max(0, 25 - playerProgression.level)} LEVELS TO RANKED`}
+                </em>
+              </span>
             </div>
             <button
               className="top-report-button"
@@ -5364,6 +8182,7 @@ export default function Home() {
             className="action-shop"
             disabled={isVersusRun}
             onClick={() => {
+              cancelPendingProgressionStart();
               setShopOpen(true);
               setPauseMenuOpen(false);
               setPaused(true);
@@ -5383,6 +8202,7 @@ export default function Home() {
             className="action-inventory"
             disabled={isVersusRun}
             onClick={() => {
+              cancelPendingProgressionStart();
               setInventoryOpen(true);
               setPauseMenuOpen(false);
               setPaused(true);
@@ -5407,6 +8227,7 @@ export default function Home() {
             <button
               className="action-settings"
               onClick={() => {
+                cancelPendingProgressionStart();
                 setSettingsOpen(true);
                 setPauseMenuOpen(false);
                 setPaused(true);
@@ -5563,21 +8384,110 @@ export default function Home() {
                 </section>
 
                 <section
+                  className="versus-hub-panel versus-map-priority-panel"
+                  aria-labelledby="versus-map-priority-title"
+                >
+                  <header>
+                    <span>02</span>
+                    <div>
+                      <small>YOUR MATCHMAKING PREFERENCE</small>
+                      <h3 id="versus-map-priority-title">MAP PRIORITY</h3>
+                    </div>
+                  </header>
+                  <p className="versus-map-priority-note">
+                    Rank every Arena map from favorite to least favorite. The
+                    match combines both players&apos; lists; an unsaved list is
+                    treated as random.
+                  </p>
+                  {guest ? (
+                    <div className="versus-hub-empty">
+                      Sign in to save your map priority.
+                    </div>
+                  ) : (
+                    <>
+                      <ol className="versus-map-priority-list">
+                        {mapPriority.map((mapId, index) => (
+                          <li key={mapId}>
+                            <strong>{index + 1}</strong>
+                            <span>
+                              <b>{MAP_RULES[mapId].name}</b>
+                              <small>{MAP_SUMMARIES[mapId]}</small>
+                            </span>
+                            <div>
+                              <button
+                                type="button"
+                                aria-label={`Move ${MAP_RULES[mapId].name} higher`}
+                                disabled={
+                                  mapPriorityBusy ||
+                                  versusPhase === "searching" ||
+                                  index === 0
+                                }
+                                onClick={() => moveMapPriority(index, -1)}
+                              >
+                                ↑
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`Move ${MAP_RULES[mapId].name} lower`}
+                                disabled={
+                                  mapPriorityBusy ||
+                                  versusPhase === "searching" ||
+                                  index === mapPriority.length - 1
+                                }
+                                onClick={() => moveMapPriority(index, 1)}
+                              >
+                                ↓
+                              </button>
+                            </div>
+                          </li>
+                        ))}
+                      </ol>
+                      <button
+                        type="button"
+                        className="versus-save-priority"
+                        disabled={mapPriorityBusy || versusPhase === "searching"}
+                        onClick={() => void saveMapPriority()}
+                      >
+                        {mapPriorityBusy ? "SAVING…" : "SAVE MAP PRIORITY"}
+                      </button>
+                      <small
+                        className={`versus-priority-status${mapPriorityConfigured ? " saved" : ""}`}
+                        role="status"
+                      >
+                        {mapPriorityStatus ||
+                          (mapPriorityConfigured
+                            ? "SAVED TO THIS ACCOUNT"
+                            : "NOT SAVED · RANDOM PRIORITY WILL BE USED")}
+                      </small>
+                    </>
+                  )}
+                </section>
+
+                <section
                   className="versus-hub-panel versus-rules-panel"
                   aria-labelledby="versus-rules-title"
                 >
                   <header>
-                    <span>02</span>
+                    <span>03</span>
                     <div>
                       <small>HOW IT WORKS</small>
                       <h3 id="versus-rules-title">1V1 RULES</h3>
                     </div>
                   </header>
                   <ol className="versus-rule-list">
-                    <li>Both runners play separate live five-lane courses.</li>
-                    <li>The runner who survives longest wins the match.</li>
-                    <li>Each track coin pickup adds <b>2 attack coins</b>.</li>
-                    <li>Each completed wave adds <b>3 attack coins</b>.</li>
+                    <li>Both runners play the same selected Arena map.</li>
+                    <li>
+                      When one runner falls, the other keeps playing until
+                      their run ends too.
+                    </li>
+                    <li>
+                      The second runner to fall receives <b>+75 score</b>, then
+                      the higher final score wins. Equal scores are a draw.
+                    </li>
+                    <li>
+                      Coins and completed waves award map-specific attack
+                      points.
+                    </li>
                     <li>
                       Spend attack coins during the 10-second intermission to
                       send hazards into your rival&apos;s next wave.
@@ -5588,7 +8498,8 @@ export default function Home() {
                     </li>
                     <li>
                       Casual never shows or changes Elo. Ranked unlocks at level
-                      25 and records Elo.
+                      25, starts every player at 1500 Elo, and displays ratings
+                      as whole numbers.
                     </li>
                   </ol>
                 </section>
@@ -5598,15 +8509,17 @@ export default function Home() {
                   aria-labelledby="versus-armory-title"
                 >
                   <header>
-                    <span>03</span>
+                    <span>04</span>
                     <div>
                       <small>INTERMISSION SHOP</small>
                       <h3 id="versus-armory-title">ATTACK COIN ARMORY</h3>
                     </div>
                   </header>
                   <p className="versus-armory-note">
-                    These prices use match-only attack coins—not permanent gems.
-                    Purchases unlock during each intermission.
+                    These prices use match-only attack points—not permanent
+                    gems. Every formation targets where the rival is standing,
+                    then rotates its safe lane so camping does not work. Map
+                    restrictions still apply.
                   </p>
                   <div className="versus-attack-catalog">
                     {VERSUS_ATTACKS.map((attack) => (
@@ -5628,7 +8541,7 @@ export default function Home() {
                   aria-labelledby="versus-leaderboard-title"
                 >
                   <header>
-                    <span>04</span>
+                    <span>05</span>
                     <div>
                       <small>RANKED RECORDS</small>
                       <h3 id="versus-leaderboard-title">1V1 LEADERBOARD</h3>
@@ -5659,6 +8572,10 @@ export default function Home() {
                     <ol className="versus-leader-list">
                       {versusLeaders.map((entry) => {
                         const winRate = Number(entry.win_rate);
+                        const rating = Number(entry.rating);
+                        const roundedRating = Number.isFinite(rating)
+                          ? Math.round(rating)
+                          : 1500;
                         return (
                           <li
                             key={`${entry.rank}-${entry.username}`}
@@ -5674,7 +8591,7 @@ export default function Home() {
                               </small>
                             </span>
                             <span>
-                              <strong>{Number(entry.rating)} RATING</strong>
+                              <strong>{roundedRating} RATING</strong>
                               <small>
                                 {Number(entry.wins)}W–{Number(entry.losses)}L · BEST WAVE {Number(entry.best_wave)}
                               </small>
@@ -5722,7 +8639,7 @@ export default function Home() {
             </div>
           </header>
           <div
-            className={`playfield${environmentCosmetic ? ` environment-${environmentCosmetic}` : ""}`}
+            className={`playfield map-${activeMapId}${environmentCosmetic ? ` environment-${environmentCosmetic}` : ""}`}
           >
             <div className="sky" aria-hidden="true">
               <i />
@@ -5738,22 +8655,37 @@ export default function Home() {
               <div className="versus-hud">
                 <div>
                   <small>YOU</small>
-                  <b>{hearts} HP</b>
+                  <b>{getDisplayedHearts(hearts)} HP · {score.toLocaleString()}</b>
                 </div>
                 <strong>⚔</strong>
                 <div>
                   <small>{versusOpponent}</small>
-                  <b>{versusOpponentHearts} HP</b>
+                  <b>
+                    {getDisplayedHearts(versusOpponentHearts)} HP · {versusOpponentScore.toLocaleString()}
+                  </b>
                 </div>
-                <em aria-label={`${versusPoints} attack coins`}>
-                  ◉ {versusPoints}
+                <em aria-label={`${getDisplayedAttackPoints(versusPoints)} attack coins`}>
+                  ◉ {getDisplayedAttackPoints(versusPoints)}
                 </em>
+              </div>
+            )}
+            {isVersusRun && (
+              <div className="arena-map-badge">
+                <small>ARENA MAP</small>
+                <b>{activeMapRules.name.toUpperCase()}</b>
+                <span>{activeLaneCount} LANES</span>
+                {activeMapId === "grove" && (
+                  <em>
+                    🍄 {versusSelfMushrooms} — {versusOpponentMushrooms} 🍄
+                  </em>
+                )}
               </div>
             )}
             {isVersusRun &&
               versusResult &&
               !over &&
-              versusPhase !== "intermission" && (
+              (versusPhase !== "intermission" ||
+                !versusIntermissionReady) && (
                 <div
                   className="versus-live-message"
                   role="status"
@@ -5770,8 +8702,8 @@ export default function Home() {
             )}
             <div
               className="active-ability-chip"
-              title={`${activeAbility.description} ${activeCharacterDefinition.weapon} adds ${Math.round(activeWeaponScoreBonus * 100)}% distance score.`}
-              aria-label={`Passive ability: ${activeAbility.name}. ${activeAbility.description} Weapon: ${activeCharacterDefinition.weapon}. ${getWeaponScoreLabel(activeCharacterDefinition.rarity)}.`}
+              title={`${activeAbility.description} ${activeCharacterDefinition.weapon}: ${activeWeaponLabel}. Running score is the score earned continuously while surviving and moving forward.`}
+              aria-label={`Passive ability: ${activeAbility.name}. ${activeAbility.description} Weapon: ${activeCharacterDefinition.weapon}. ${activeWeaponLabel}.`}
             >
               <small>PASSIVE</small>
               <b>{activeAbility.name}</b>
@@ -5779,18 +8711,97 @@ export default function Home() {
               <div className="active-weapon-readout">
                 <small>WEAPON</small>
                 <b>{activeCharacterDefinition.weapon}</b>
-                <em>{getWeaponScoreLabel(activeCharacterDefinition.rarity)}</em>
+                <em>{activeWeaponLabel}</em>
               </div>
+              <small className="running-score-help">
+                DISTANCE / RUNNING SCORE = SCORE EARNED CONTINUOUSLY WHILE YOU SURVIVE
+              </small>
             </div>
+            {running && abilityAction && (
+              <button
+                type="button"
+                className={`ability-action-button ${abilityAction.ready ? "ready" : "cooldown"}`}
+                disabled={!abilityAction.ready || paused || wavePause}
+                onClick={triggerCharacterAction}
+                data-ability-version={abilityStateVersion}
+              >
+                <kbd className="ability-action-key">E</kbd>
+                <span className="ability-action-copy">
+                  <small>ACTIVE ABILITY</small>
+                  <b>{abilityAction.label}</b>
+                  <em>{abilityAction.status}</em>
+                </span>
+              </button>
+            )}
+            {running &&
+              (hasCharacterAbility("medic_tonic") ||
+                waveForecast.length > 0 ||
+                activeCharacter === "runner_velocity" ||
+                hasCharacterAbility("medic_halo") ||
+                hasCharacterAbility("runner_relay") ||
+                hasCharacterAbility("medic_seraph")) && (
+                <aside className="ability-side-panel" data-ability-version={abilityStateVersion}>
+                  <header>
+                    <div><small>LIVE KIT</small><b>ABILITY STATUS</b></div>
+                  </header>
+                  <div className="ability-panel-body">
+                    {hasCharacterAbility("medic_tonic") && (
+                      <>
+                        <p className="ability-panel-note">
+                          {tonicIngredients} INGREDIENTS · {tonicPotion > 0 ? `${tonicPotion} HP POTION READY` : "NO POTION BREWED"}
+                        </p>
+                        <div className="ability-option-grid">
+                          {([1, 2, 3] as const).map((strength) => (
+                            <button key={strength} className="ability-option" disabled={tonicPotion > 0 || tonicIngredients < strength * 5} onClick={() => brewTonic(strength)}>
+                              <span>{strength}</span><span><b>+{strength} HP</b><small>{strength * 5} INGREDIENTS</small></span>
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {activeCharacter === "runner_velocity" && (
+                      <div className="ability-meter"><div className="ability-meter-label"><b>VELOCITY</b><span>{Math.floor(velocityChargeMsRef.current / 1000)}%</span></div><span className="ability-meter-track"><i className="ability-meter-fill" style={{ width: `${Math.min(100, velocityChargeMsRef.current / 1000)}%` }} /></span></div>
+                    )}
+                    {hasCharacterAbility("medic_halo") && (
+                      <div className="ability-meter"><div className="ability-meter-label"><b>HALO REVIVE</b><span>{haloPartsRef.current}/3</span></div><div className="ability-pips">{[1, 2, 3].map((part) => <i key={part} className={haloPartsRef.current >= part ? "filled" : ""} />)}</div></div>
+                    )}
+                    {hasCharacterAbility("runner_relay") && <p className="ability-panel-note">OVERCHARGED HEARTS · {relayChargesRef.current}</p>}
+                    {hasCharacterAbility("medic_seraph") && <p className="ability-panel-note">TELEPORT CHANCE · {seraphTeleportChanceRef.current}%</p>}
+                    {waveForecast.length > 0 && (
+                      <><p className="ability-panel-note">HORIZON FORECAST · projected natural counts; rival purchases are exact.</p><div className="ability-preview-grid">{waveForecast.map((entry) => <div className="ability-preview-card" key={entry}><small>{entry}</small></div>)}</div></>
+                    )}
+                  </div>
+                </aside>
+              )}
+            {running && hasCharacterAbility("tank_atlas") && (
+              <div className={`ability-timer ${atlasTimerRemaining <= 1000 ? "danger" : ""}`}><small>SWITCH LANES BEFORE SKY CRUSH</small><b>{(atlasTimerRemaining / 1000).toFixed(1)}s</b></div>
+            )}
+            {running && hasCharacterAbility("tank_atlas") && atlasTimerRemaining <= 1000 && <div className="ability-danger-vignette" />}
             {abilityNotice && (
               <div className="ability-proc" role="status" aria-live="polite">
                 {abilityNotice}
               </div>
             )}
-            <div className="road">
-              {[0, 1, 2, 3].map((n) => (
-                <i className={`line l${n}`} key={n} />
+            <div className={`road road-${activeMapId}`}>
+              {Array.from({ length: activeLaneCount - 1 }, (_, n) => (
+                <i
+                  className="line lane-divider"
+                  style={{ left: `${((n + 1) / activeLaneCount) * 100}%` }}
+                  key={n}
+                />
               ))}
+              {activeMapId === "factory" && (
+                <div
+                  className={`factory-conveyor ${factoryConveyor.speedMultiplier > 1 ? "fast" : "slow"}`}
+                  style={{
+                    left: `${(factoryConveyor.lane / activeLaneCount) * 100}%`,
+                    width: `${100 / activeLaneCount}%`,
+                  }}
+                  aria-label={`Conveyor lane ${factoryConveyor.lane + 1} at ${factoryConveyor.speedMultiplier} times speed`}
+                >
+                  <span>CONVEYOR ×{factoryConveyor.speedMultiplier}</span>
+                </div>
+              )}
               <div className="wave-chip">
                 WAVE {wave}
                 <small>
@@ -5804,20 +8815,26 @@ export default function Home() {
                 <div
                   key={x.id}
                   className={`item ${x.kind}${
-                    obstacleCosmetic && x.kind !== "gem" && x.kind !== "coin"
+                    obstacleCosmetic && isHazardKind(x.kind)
                       ? ` obstacle-${obstacleCosmetic}`
                       : ""
-                  }`}
-                  style={{ left: `${(x.lane + 0.5) * 20}%`, top: `${x.y}%` }}
+                  }${(x.seededUntilWave ?? 0) >= wave ? " seeded" : ""}`}
+                  style={{
+                    left: `${((x.lane + 0.5) / activeLaneCount) * 100}%`,
+                    top: `${x.y}%`,
+                  }}
                   aria-label={x.kind}
                 >
                   <Obstacle kind={x.kind} />
                 </div>
               ))}
               <div
-                className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}`}
-                style={{ left: `${(lane + 0.5) * 20}%` }}
+                className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}${beaconActiveRef.current ? " beacon-active" : ""}${reviveFlyingRef.current ? " flight-active" : ""}${haloPartsRef.current >= 3 ? " halo-ready" : ""}`}
+                style={{ left: `${((lane + 0.5) / activeLaneCount) * 100}%` }}
               >
+                {hasCharacterAbility("medic_halo") && haloPartsRef.current > 0 && <i className="runner-halo" data-pieces={haloPartsRef.current} />}
+                {beaconActiveRef.current && <i className="runner-beacon" />}
+                {reviveFlyingRef.current && <i className="flight-wings" />}
                 <div className="head" />
                 <div className="body" />
                 <i className="arm a1" />
@@ -5827,17 +8844,98 @@ export default function Home() {
                 <em />
                 <span className="character-weapon" aria-hidden="true" />
               </div>
+              {activeMapId === "pitch" && isVersusRun && (
+                <button
+                  type="button"
+                  className={`pitch-katana${katanaActive ? " active" : ""}${renderedKatanaState.broken ? " broken" : ""}`}
+                  data-version={pitchKatanaVersion}
+                  disabled={
+                    !running ||
+                    paused ||
+                    renderedKatanaState.broken ||
+                    katanaCooldownSeconds > 0
+                  }
+                  onClick={triggerPitchKatana}
+                >
+                  <span aria-hidden="true">刀</span>
+                  <b>KATANA</b>
+                  <small>
+                    {renderedKatanaState.broken
+                      ? "BROKEN"
+                      : katanaActive
+                        ? "GUARDING"
+                        : katanaCooldownSeconds > 0
+                          ? `${katanaCooldownSeconds}s`
+                          : "READY"}
+                  </small>
+                </button>
+              )}
             </div>
+            {abilityChoice?.kind === "lifeline-lane" && (
+              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose a Rescue Hook lane">
+                <section className="ability-panel healer-panel">
+                  <header><div><small>TIME STOPPED</small><b>RESCUE HOOK</b></div></header>
+                  <div className="ability-panel-body"><p className="ability-panel-note">Choose any lane except your current lane. This zip is immune to collisions.</p><div className="ability-lane-grid" style={{ "--lane-count": activeLaneCount } as CSSProperties}>{getTrackLanes(activeLaneCount).map((targetLane) => <button key={targetLane} className={`ability-option ${targetLane === lane ? "current-lane" : ""}`} disabled={targetLane === lane} onClick={() => chooseLifelineLane(targetLane)}><span>{targetLane + 1}</span><b>LANE {targetLane + 1}</b></button>)}</div></div>
+                </section>
+              </div>
+            )}
+            {abilityChoice?.kind === "pacer-character" && (
+              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Pass the baton">
+                <section className="ability-panel runner-panel"><header><div><small>ONE LAST RELAY</small><b>PASS THE BATON</b></div></header><div className="ability-panel-body"><p className="ability-panel-note">Continue from this wave as any owned non-Runner character.</p><div className="ability-option-grid">{pacerCharacterOptions.map((character) => <button key={character.key} className="ability-option" onClick={() => choosePacerCharacter(character.key as CharacterKey)}><span>↗</span><span><b>{character.name}</b><small>{getCharacterClassKey(character.key).toUpperCase()} · {character.rarity.toUpperCase()}</small></span></button>)}</div></div></section>
+              </div>
+            )}
+            {abilityChoice?.kind === "oracle-prophecy" && (
+              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose an Oracle prophecy">
+                <section className="ability-panel mythic-panel"><header><div><small>{oracleCompleted} COMPLETED</small><b>CHOOSE THE NEXT PROPHECY</b></div></header><div className="ability-panel-body"><p className="ability-panel-note">Success adds a permanent 5% score bonus. Failure costs 1 HP and can be lethal.</p><div className="ability-option-grid">{oracleChoiceSets.map((choice) => <button key={choice.join("-")} className="ability-option reward" onClick={() => chooseOracleProphecy(choice)}><span>✦</span><span><b>{choice.map((value) => value.replace("-", " ").toUpperCase()).join(" + ")}</b><small>{choice.length > 1 ? "MERGED · ONE CONDITION REQUIRED" : choice[0] === "no-hit" ? "FINISH WITHOUT CONTACT" : choice[0] === "completion" ? "GET HIT · FINISH ABOVE 1 HP" : "FINISH AT 1 HP OR LESS"}</small></span></button>)}</div></div></section>
+              </div>
+            )}
+            {abilityChoice?.kind === "oracle-passive" && (
+              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose a Healer passive">
+                <section className="ability-panel mythic-panel"><header><div><small>NEAR-DEATH REWARD</small><b>TAKE A HEALER PASSIVE</b></div></header><div className="ability-panel-body"><div className="ability-option-grid">{abilityChoice.options.map((characterKey) => { const definition = getCharacterDefinition(characterKey); return <button key={characterKey} className="ability-option reward" onClick={() => chooseOraclePassive(characterKey)}><span>+</span><span><b>{definition.name}</b><small>{CHARACTER_ABILITIES[characterKey].name}</small><em>KEEP FOR THIS RUN</em></span></button>; })}</div></div></section>
+              </div>
+            )}
+            {pulseGame && (
+              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Last Pulse timed key challenge">
+                <section className="ability-panel healer-panel"><header><div><small>{(pulseGame.remaining / 1000).toFixed(1)} SECONDS LEFT</small><b>LAST PULSE · {pulseGame.hits} HITS</b></div></header><div className="ability-panel-body"><p className="ability-panel-note">Press or tap the highlighted key. 10 = 1 HP · 20 = 2 HP · 30 = FULL HP.</p><div className="ability-key-sequence">{(["A", "S", "D", "F"] as const).map((key) => <button key={key} className={`ability-option ${pulseGame.prompt === key ? "selected" : ""}`} onClick={() => { if (pulseGame.prompt !== key) return; setPulseGame((current) => current ? { ...current, hits: current.hits + 1, prompt: (["A", "S", "D", "F"] as const).filter((nextKey) => nextKey !== key)[Math.floor(Math.random() * 3)] } : current); }}><kbd>{key}</kbd></button>)}</div></div></section>
+              </div>
+            )}
             {!running && (
               <div className="overlay">
-                <p>{over ? "RUN OVER" : "FIVE LANES. NO BRAKES."}</p>
+                <p>
+                  {waitingForVersusResult
+                    ? "YOUR RUN IS COMPLETE"
+                    : over
+                      ? "RUN OVER"
+                      : "FIVE LANES. NO BRAKES."}
+                </p>
                 <h1>
-                  {over && isVersusRun && versusResult
+                  {waitingForVersusResult
+                    ? "RIVAL STILL RUNNING"
+                    : over && isVersusRun && versusResult
                     ? versusResult
                     : over
                       ? `${score.toLocaleString()} POINTS`
                       : "DODGE. DASH. SURVIVE."}
                 </h1>
+                {isOnlineVersus &&
+                  (waitingForVersusResult || versusPhase === "finished") && (
+                  <div className="versus-final-scoreboard" role="status">
+                    <span>
+                      <small>YOUR FINAL SCORE</small>
+                      <b>{score.toLocaleString()}</b>
+                    </span>
+                    <strong>VS</strong>
+                    <span>
+                      <small>{versusOpponent}</small>
+                      <b>{versusOpponentScore.toLocaleString()}</b>
+                    </span>
+                    <em>
+                      {waitingForVersusResult
+                        ? "The second runner to finish receives +75, then the final scores decide the match."
+                        : "Final scores include the +75 second-finish bonus. Equal scores finish as a draw."}
+                    </em>
+                  </div>
+                )}
                 {!over && (
                   <div className="mode-select">
                     <button
@@ -5871,73 +8969,98 @@ export default function Home() {
                     </button>
                   </div>
                 )}
-                <button
-                  onClick={
-                    isVersusRun
-                      ? backToMenu
-                      : () => reset()
-                  }
-                >
-                  {isVersusRun
-                    ? "RETURN TO 1V1 HUB"
-                    : over
-                      ? "RUN AGAIN"
-                      : "START RUN"}{" "}
-                  <span>→</span>
-                </button>
-                {over && (
+                {over && !guest && lastRunXpBreakdown && (
+                  <div className="run-xp-summary" aria-label="Run XP earned">
+                    <strong>+{lastRunXpBreakdown.total} XP</strong>
+                    <small>
+                      FINISH +{lastRunXpBreakdown.finish} · SCORE +
+                      {lastRunXpBreakdown.score} · WAVES +
+                      {lastRunXpBreakdown.waves} · PLAYTIME +
+                      {lastRunXpBreakdown.playtime}
+                    </small>
+                  </div>
+                )}
+                {!waitingForVersusResult && (
+                  <button
+                    onClick={isVersusRun ? backToMenu : () => reset()}
+                  >
+                    {isVersusRun
+                      ? "RETURN TO 1V1 HUB"
+                      : over
+                        ? "RUN AGAIN"
+                        : "START RUN"}{" "}
+                    <span>→</span>
+                  </button>
+                )}
+                {over && !isVersusRun && (
                   <button className="back-menu" onClick={backToMenu}>
                     BACK TO MENU
                   </button>
                 )}
-                <small>← → / A D &nbsp; TO SWITCH LANES</small>
-              </div>
-            )}
-            {versusPhase === "intermission" && (
-              <div
-                className="overlay versus-intermission"
-                aria-busy={
-                  !versusIntermissionReady || versusCountdown <= 0
-                }
-              >
-                <p>NEXT WAVE IN</p>
-                <h1>{versusCountdown}</h1>
-                <strong>ATTACK COINS: ◉ {versusPoints}</strong>
-                <span className="versus-shop-state" role="status" aria-live="polite">
-                  {versusCountdown <= 0
-                    ? "LOCKING NEXT WAVE…"
-                    : versusIntermissionReady
-                      ? "ARMORY OPEN"
-                      : "SYNCING ATTACK COINS…"}
-                </span>
-                <div className="attack-grid">
-                  {VERSUS_ATTACKS.map((attack) => (
-                    <button
-                      key={attack.kind}
-                      disabled={
-                        !versusIntermissionReady ||
-                        versusCountdown <= 0 ||
-                        versusAttackBusy ||
-                        versusPoints < attack.cost
-                      }
-                      onClick={() => void sendVersusAttack(attack.kind)}
-                      aria-label={`Send ${attack.label} for ${attack.cost} attack coins`}
-                    >
-                      <span aria-hidden="true">{attack.icon}</span>
-                      {attack.label} <small>{attack.cost} COINS</small>
-                    </button>
-                  ))}
-                </div>
-                <small>
-                  Each track coin adds 2 attack coins. Purchased obstacles attack {versusOpponent} next wave.
-                </small>
-                {versusResult && (
-                  <div className="versus-message" role="status" aria-live="polite">
-                    {versusResult}
-                  </div>
+                {!waitingForVersusResult && (
+                  <small>← → / A D &nbsp; TO SWITCH LANES</small>
                 )}
               </div>
             )}
+            {versusPhase === "intermission" &&
+              versusIntermissionReady && (
+                <div
+                  className="overlay versus-intermission"
+                  aria-busy={versusCountdown <= 0}
+                >
+                  <p>NEXT WAVE IN</p>
+                  <h1>{versusCountdown}</h1>
+                  <strong>
+                    ATTACK COINS: ◉ {getDisplayedAttackPoints(versusPoints)}
+                  </strong>
+                  <span
+                    className="versus-shop-state"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {versusCountdown <= 0
+                      ? "STARTING NEXT WAVE…"
+                      : "ARMORY OPEN"}
+                  </span>
+                  <div className="attack-grid">
+                    {VERSUS_ATTACKS.filter((attack) =>
+                      getAvailableAttacks(activeMapId).includes(attack.kind),
+                    ).map((attack) => (
+                      <button
+                        key={attack.kind}
+                        disabled={
+                          !versusIntermissionReady ||
+                          versusCountdown <= 0 ||
+                          versusAttackBusy ||
+                          versusPoints < attack.cost
+                        }
+                        onClick={() => void sendVersusAttack(attack.kind)}
+                        aria-label={`Send ${attack.label} for ${attack.cost} attack coins`}
+                      >
+                        <span aria-hidden="true">{attack.icon}</span>
+                        {attack.label} <small>{attack.cost} COINS</small>
+                      </button>
+                    ))}
+                  </div>
+                  <small>
+                    Each track coin adds {getAttackPointsForCoin(activeMapId)} attack
+                    points. {activeMapRules.waveAttackReward.kind === "fixed"
+                      ? `Completing the wave adds ${activeMapRules.waveAttackReward.points}.`
+                      : "The mushroom winner gets 14; a tie gives both players 7."}{" "}
+                    Purchased formations target {versusOpponent}&apos;s lane and
+                    rotate the opening next wave.
+                  </small>
+                  {versusResult && (
+                    <div
+                      className="versus-message"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      {versusResult}
+                    </div>
+                  )}
+                </div>
+              )}
             {running && paused && pauseMenuOpen && !isOnlineVersus && (
               <div
                 className="overlay compact pause-overlay"
@@ -6032,14 +9155,18 @@ export default function Home() {
             </button>
             <div
               className={`health ${mode !== "normal" ? "glass" : ""}`}
-              aria-label={`${hearts} hearts`}
+              aria-label={`${getDisplayedHearts(hearts)} displayed hearts`}
             >
               {Array.from({ length: Math.ceil(maxHearts) }, (_, n) => n).map(
                 (n) => (
                   <span
                     key={n}
                     className={
-                      hearts - n >= 1 ? "" : hearts - n > 0 ? "partial" : "lost"
+                      getDisplayedHearts(hearts) - n >= 1
+                        ? ""
+                        : getDisplayedHearts(hearts) - n > 0
+                          ? "partial"
+                          : "lost"
                     }
                   >
                     ♥
@@ -6712,9 +9839,10 @@ export default function Home() {
                         </p>
                         <div className="inventory-roster">
                           {roster.map((character) => {
-                            const owned = guest
-                              ? isStarterCharacter(character.key)
-                              : isCharacterOwned(unlocks, character.key);
+                            const owned = isCharacterOwned(
+                              unlocks,
+                              character.key,
+                            );
                             const focused =
                               sectionFocused &&
                               inventoryCharacter.characterKey === character.key;
@@ -6762,7 +9890,9 @@ export default function Home() {
                                         character.key as CharacterKey
                                       ].name
                                     }
-                                    {" · SELECT · PASSIVE BELOW"}
+                                    {owned
+                                      ? " · SELECT · PASSIVE BELOW"
+                                      : " · PREVIEW PASSIVE BELOW"}
                                   </em>
                                 </span>
                                 <small

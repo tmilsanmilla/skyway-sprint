@@ -108,9 +108,73 @@ create table if not exists public.player_progression_runs(
   completed_at timestamptz,
   claimed_score bigint,
   credited_score bigint,
+  active_seconds bigint not null default 0,
+  verified_wave integer not null default 1,
+  last_heartbeat_at timestamptz,
+  heartbeat_active boolean not null default false,
   check(claimed_score is null or claimed_score>=0),
   check(credited_score is null or credited_score>=0)
 );
+alter table public.player_progression_runs
+  add column if not exists active_seconds bigint not null default 0,
+  add column if not exists verified_wave integer not null default 1,
+  add column if not exists last_heartbeat_at timestamptz,
+  add column if not exists heartbeat_active boolean not null default false;
+alter table public.player_progression_runs
+  drop constraint if exists player_progression_runs_active_seconds_check,
+  drop constraint if exists player_progression_runs_verified_wave_check;
+alter table public.player_progression_runs
+  add constraint player_progression_runs_active_seconds_check
+    check(active_seconds between 0 and 21600) not valid,
+  add constraint player_progression_runs_verified_wave_check
+    check(verified_wave between 1 and 100000) not valid;
+alter table public.player_progression_runs
+  validate constraint player_progression_runs_active_seconds_check;
+alter table public.player_progression_runs
+  validate constraint player_progression_runs_verified_wave_check;
+create table if not exists public.player_progression_1v1_activity(
+  match_id uuid not null references public.multiplayer_matches(id)
+    on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  active_seconds bigint not null default 0
+    check(active_seconds between 0 and 21600),
+  verified_wave integer not null default 1
+    check(verified_wave between 1 and 100000),
+  last_heartbeat_at timestamptz,
+  heartbeat_active boolean not null default false,
+  primary key(match_id,user_id)
+);
+alter table public.player_progression_1v1_activity
+  add column if not exists active_seconds bigint not null default 0,
+  add column if not exists verified_wave integer not null default 1,
+  add column if not exists last_heartbeat_at timestamptz,
+  add column if not exists heartbeat_active boolean not null default false;
+update public.player_progression_1v1_activity
+set active_seconds=least(21600::bigint,greatest(0::bigint,
+      coalesce(active_seconds,0))),
+    verified_wave=least(100000,greatest(1,coalesce(verified_wave,1))),
+    heartbeat_active=coalesce(heartbeat_active,false);
+alter table public.player_progression_1v1_activity
+  alter column active_seconds set default 0,
+  alter column active_seconds set not null,
+  alter column verified_wave set default 1,
+  alter column verified_wave set not null,
+  alter column heartbeat_active set default false,
+  alter column heartbeat_active set not null;
+alter table public.player_progression_1v1_activity
+  drop constraint if exists player_progression_1v1_activity_active_seconds_check,
+  drop constraint if exists player_progression_1v1_activity_verified_wave_check;
+alter table public.player_progression_1v1_activity
+  add constraint player_progression_1v1_activity_active_seconds_check
+    check(active_seconds between 0 and 21600) not valid,
+  add constraint player_progression_1v1_activity_verified_wave_check
+    check(verified_wave between 1 and 100000) not valid;
+alter table public.player_progression_1v1_activity
+  validate constraint player_progression_1v1_activity_active_seconds_check;
+alter table public.player_progression_1v1_activity
+  validate constraint player_progression_1v1_activity_verified_wave_check;
+create unique index if not exists player_progression_1v1_activity_identity_idx
+  on public.player_progression_1v1_activity(match_id,user_id);
 create index if not exists player_progression_events_user_created_idx
   on public.player_progression_events(user_id,created_at desc);
 create index if not exists player_progression_gem_context_idx
@@ -133,9 +197,12 @@ create unique index if not exists player_progression_runs_one_open_idx
   on public.player_progression_runs(user_id) where completed_at is null;
 alter table public.player_progression_events enable row level security;
 alter table public.player_progression_runs enable row level security;
+alter table public.player_progression_1v1_activity enable row level security;
 revoke all on table public.player_progression_events
   from public,anon,authenticated;
 revoke all on table public.player_progression_runs
+  from public,anon,authenticated;
+revoke all on table public.player_progression_1v1_activity
   from public,anon,authenticated;
 
 create or replace function app_private.xp_required_for_level(p_level integer)
@@ -190,6 +257,107 @@ begin
 end;
 $$;
 
+create or replace function public.sync_1v1_progression(
+  p_match_id uuid,p_wave integer,p_active boolean
+)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare
+  v_uid uuid:=auth.uid(); v_status text; v_player_status text;
+  v_now timestamptz;
+  v_last_heartbeat timestamptz; v_active_seconds bigint;
+  v_verified_wave integer; v_was_active boolean;
+  v_effective_active boolean; v_increment bigint; v_max_wave integer;
+begin
+  if v_uid is null then raise exception 'Sign in required'; end if;
+  if p_match_id is null then raise exception 'Match ID is required'; end if;
+  if p_wave is null or p_wave<1 or p_wave>100000 then
+    raise exception 'Invalid match wave';
+  end if;
+  if p_active is null then raise exception 'Match activity state is required'; end if;
+  select match_row.status,player.status into v_status,v_player_status
+  from public.multiplayer_matches match_row
+  join public.multiplayer_players player
+    on player.match_id=match_row.id and player.user_id=v_uid
+  where match_row.id=p_match_id
+    and match_row.status in('countdown','playing','intermission')
+    and match_row.started_at>now()-interval '6 hours'
+  for update of match_row;
+  if v_status is null then raise exception 'Active 1v1 membership not found'; end if;
+  insert into public.player_progression_1v1_activity(match_id,user_id)
+  values(p_match_id,v_uid) on conflict(match_id,user_id) do nothing;
+  select last_heartbeat_at,active_seconds,verified_wave,heartbeat_active
+  into v_last_heartbeat,v_active_seconds,v_verified_wave,v_was_active
+  from public.player_progression_1v1_activity
+  where match_id=p_match_id and user_id=v_uid for update;
+  v_now:=clock_timestamp();
+  v_effective_active:=p_active and v_status='playing'
+    and v_player_status='playing';
+  v_increment:=case when v_was_active and v_status='playing'
+    and v_player_status='playing'
+    then least(6::bigint,greatest(0,floor(extract(epoch from(
+      v_now-coalesce(v_last_heartbeat,v_now))))::bigint)) else 0 end;
+  v_active_seconds:=least(21600::bigint,v_active_seconds+v_increment);
+  v_max_wave:=least(100000,
+    1+floor(v_active_seconds::numeric/15)::integer);
+  v_verified_wave:=least(greatest(v_verified_wave,p_wave),
+    v_verified_wave+1,v_max_wave);
+  update public.player_progression_1v1_activity
+  set active_seconds=v_active_seconds,verified_wave=v_verified_wave,
+    last_heartbeat_at=v_now,heartbeat_active=v_effective_active
+  where match_id=p_match_id and user_id=v_uid;
+  return jsonb_build_object('active_seconds',v_active_seconds,
+    'verified_wave',v_verified_wave,'active',v_effective_active);
+end;
+$$;
+
+-- Capture the last short slice of active play at the authoritative player
+-- phase transition. The client heartbeat that follows an intermission cannot
+-- add intermission time because this transition also marks the receipt idle.
+create or replace function app_private.flush_1v1_progression_on_phase_exit()
+returns trigger language plpgsql security definer set search_path='' as $$
+declare
+  v_now timestamptz; v_match_status text;
+  v_last_heartbeat timestamptz; v_active_seconds bigint;
+  v_verified_wave integer; v_heartbeat_active boolean;
+  v_increment bigint:=0; v_max_wave integer;
+begin
+  if old.status is distinct from 'playing'
+     or new.status is not distinct from 'playing' then return new; end if;
+  select status into v_match_status from public.multiplayer_matches
+  where id=old.match_id;
+  select active_seconds,verified_wave,last_heartbeat_at,heartbeat_active
+  into v_active_seconds,v_verified_wave,v_last_heartbeat,v_heartbeat_active
+  from public.player_progression_1v1_activity
+  where match_id=old.match_id and user_id=old.user_id for update;
+  if not found then return new; end if;
+  v_now:=clock_timestamp();
+  if coalesce(v_heartbeat_active,false) and v_match_status='playing' then
+    v_increment:=least(6::bigint,greatest(0::bigint,
+      floor(extract(epoch from(
+        v_now-coalesce(v_last_heartbeat,v_now))))::bigint));
+  end if;
+  v_active_seconds:=least(21600::bigint,
+    greatest(0::bigint,coalesce(v_active_seconds,0))+v_increment);
+  v_max_wave:=least(100000,
+    1+floor(v_active_seconds::numeric/15)::integer);
+  v_verified_wave:=least(
+    greatest(coalesce(v_verified_wave,1),coalesce(new.wave,1)),
+    coalesce(v_verified_wave,1)+1,v_max_wave);
+  update public.player_progression_1v1_activity
+  set active_seconds=v_active_seconds,verified_wave=v_verified_wave,
+    last_heartbeat_at=v_now,heartbeat_active=false
+  where match_id=old.match_id and user_id=old.user_id;
+  return new;
+end;
+$$;
+drop trigger if exists flush_1v1_progression_on_phase_exit
+  on public.multiplayer_players;
+create trigger flush_1v1_progression_on_phase_exit
+before update of status on public.multiplayer_players
+for each row when(
+  old.status='playing' and new.status is distinct from 'playing'
+) execute function app_private.flush_1v1_progression_on_phase_exit();
+
 create or replace function public.get_player_progression()
 returns jsonb language plpgsql security definer set search_path='' as $$
 declare v_uid uuid:=auth.uid(); v_stats public.player_stats%rowtype;
@@ -216,15 +384,51 @@ begin
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text,0));
   update public.player_progression_runs set completed_at=now(),
     claimed_score=0,credited_score=0
-  where user_id=v_uid and completed_at is null
-    and started_at<now()-interval '6 hours';
-  select run.run_id into v_run_id from public.player_progression_runs run
-  where run.user_id=v_uid and run.completed_at is null
-  order by run.started_at desc limit 1;
-  if v_run_id is not null then return v_run_id; end if;
-  insert into public.player_progression_runs(user_id)
-  values(v_uid) returning run_id into v_run_id;
+  where user_id=v_uid and completed_at is null;
+  insert into public.player_progression_runs(
+    user_id,active_seconds,verified_wave,last_heartbeat_at,heartbeat_active
+  ) values(v_uid,0,1,clock_timestamp(),false) returning run_id into v_run_id;
   return v_run_id;
+end;
+$$;
+
+drop function if exists public.sync_progression_run(uuid,integer);
+create or replace function public.sync_progression_run(
+  p_run_id uuid,p_wave integer,p_active boolean
+)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare
+  v_uid uuid:=auth.uid(); v_now timestamptz;
+  v_last_heartbeat timestamptz; v_active_seconds bigint;
+  v_verified_wave integer; v_was_active boolean;
+  v_increment bigint; v_max_wave integer;
+begin
+  if v_uid is null then raise exception 'Sign in required'; end if;
+  if p_run_id is null then raise exception 'Run ID is required'; end if;
+  if p_wave is null or p_wave<1 or p_wave>100000 then
+    raise exception 'Invalid run wave';
+  end if;
+  if p_active is null then raise exception 'Run activity state is required'; end if;
+  select last_heartbeat_at,active_seconds,verified_wave,heartbeat_active
+  into v_last_heartbeat,v_active_seconds,v_verified_wave,v_was_active
+  from public.player_progression_runs where run_id=p_run_id
+    and user_id=v_uid and completed_at is null for update;
+  if not found then raise exception 'Active run receipt not found'; end if;
+  v_now:=clock_timestamp();
+  v_increment:=case when v_was_active then least(6::bigint,greatest(0,
+    floor(extract(epoch from(v_now-coalesce(v_last_heartbeat,v_now))))::bigint))
+    else 0 end;
+  v_active_seconds:=least(21600::bigint,v_active_seconds+v_increment);
+  v_max_wave:=least(100000,
+    1+floor(v_active_seconds::numeric/15)::integer);
+  v_verified_wave:=least(greatest(v_verified_wave,p_wave),
+    v_verified_wave+1,v_max_wave);
+  update public.player_progression_runs set active_seconds=v_active_seconds,
+    verified_wave=v_verified_wave,last_heartbeat_at=v_now,
+    heartbeat_active=p_active
+  where run_id=p_run_id;
+  return jsonb_build_object('active_seconds',v_active_seconds,
+    'verified_wave',v_verified_wave,'active',p_active);
 end;
 $$;
 
@@ -366,9 +570,12 @@ create or replace function public.claim_player_gem(
 returns jsonb language plpgsql security definer set search_path='' as $$
 declare
   v_uid uuid:=auth.uid(); v_pickup_id text:=trim(p_pickup_id);
-  v_started_at timestamptz; v_wave integer; v_context_type text;
-  v_allowed bigint; v_claimed bigint; v_recent_claims bigint;
-  v_elapsed_seconds numeric; v_inserted uuid; v_total bigint; v_progress jsonb;
+  v_context_type text; v_match_status text; v_player_status text;
+  v_active_seconds bigint; v_verified_wave integer;
+  v_last_heartbeat timestamptz; v_heartbeat_active boolean;
+  v_time_allowance bigint; v_wave_allowance bigint; v_allowed bigint;
+  v_claimed bigint; v_recent_claims bigint; v_inserted uuid;
+  v_total bigint; v_progress jsonb; v_now timestamptz;
 begin
   if v_uid is null then raise exception 'Sign in required'; end if;
   if p_context_id is null or v_pickup_id is null
@@ -376,9 +583,6 @@ begin
     raise exception 'Valid gem context and pickup ID are required';
   end if;
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text,1));
-  insert into public.player_stats(user_id,total_gems,high_score,updated_at)
-  values(v_uid,0,0,now()) on conflict(user_id) do nothing;
-  perform user_id from public.player_stats where user_id=v_uid for update;
   if exists(select 1 from public.player_progression_events event
     where event.user_id=v_uid and event.source='gem'
       and event.source_key=p_context_id::text||':'||v_pickup_id) then
@@ -386,29 +590,57 @@ begin
     return jsonb_build_object('total_gems',coalesce(v_total,0),'is_new',false,
       'progression',public.get_player_progression());
   end if;
-  select started_at into v_started_at from public.player_progression_runs
+  select active_seconds,verified_wave,last_heartbeat_at,heartbeat_active
+  into v_active_seconds,v_verified_wave,v_last_heartbeat,v_heartbeat_active
+  from public.player_progression_runs
   where run_id=p_context_id and user_id=v_uid and completed_at is null
-    and started_at>now()-interval '6 hours';
-  if v_started_at is not null then
+    and started_at>now()-interval '6 hours' for update;
+  if found then
+    v_now:=clock_timestamp();
     v_context_type:='endless';
-    v_elapsed_seconds:=greatest(0,
-      extract(epoch from(clock_timestamp()-v_started_at)));
-    v_allowed:=2+floor(v_elapsed_seconds/0.30)::bigint;
+    if not coalesce(v_heartbeat_active,false)
+       or v_last_heartbeat is null
+       or v_last_heartbeat<v_now-interval '8 seconds' then
+      raise exception 'Gem collection requires active play';
+    end if;
   else
-    select match.started_at,player.wave into v_started_at,v_wave
-    from public.multiplayer_matches match
+    select match_row.status,player.status
+    into v_match_status,v_player_status
+    from public.multiplayer_matches match_row
     join public.multiplayer_players player
-      on player.match_id=match.id and player.user_id=v_uid
-    where match.id=p_context_id
-      and match.status in ('countdown','playing','intermission')
-      and match.started_at>now()-interval '6 hours';
-    if v_wave is null then raise exception 'Gem context is not active'; end if;
+      on player.match_id=match_row.id and player.user_id=v_uid
+    where match_row.id=p_context_id
+      and match_row.started_at>now()-interval '6 hours'
+    for update of match_row,player;
+    if not found or v_match_status<>'playing'
+       or v_player_status<>'playing' then
+      raise exception 'Gem context is not active';
+    end if;
+    select active_seconds,verified_wave,last_heartbeat_at,heartbeat_active
+    into v_active_seconds,v_verified_wave,v_last_heartbeat,v_heartbeat_active
+    from public.player_progression_1v1_activity
+    where match_id=p_context_id and user_id=v_uid for update;
+    if not found then
+      raise exception 'Gem collection requires active 1v1 play';
+    end if;
+    v_now:=clock_timestamp();
+    if not coalesce(v_heartbeat_active,false)
+       or v_last_heartbeat is null
+       or v_last_heartbeat<v_now-interval '8 seconds' then
+      raise exception 'Gem collection requires active 1v1 play';
+    end if;
     v_context_type:='1v1';
-    v_elapsed_seconds:=greatest(0,
-      extract(epoch from(clock_timestamp()-v_started_at)));
-    v_allowed:=least(2+floor(v_elapsed_seconds/0.30)::bigint,
-      2+greatest(1,v_wave)::bigint*90);
   end if;
+  v_active_seconds:=least(21600::bigint,
+    greatest(0::bigint,coalesce(v_active_seconds,0)));
+  v_verified_wave:=least(100000,
+    greatest(1,coalesce(v_verified_wave,1)));
+  v_time_allowance:=2+
+    floor(v_active_seconds::numeric/0.75)::bigint;
+  v_wave_allowance:=2+v_verified_wave::bigint*60;
+  v_allowed:=least(v_time_allowance,v_wave_allowance);
+  insert into public.player_stats(user_id,total_gems,high_score,updated_at)
+  values(v_uid,0,0,now()) on conflict(user_id) do nothing;
   select count(*) into v_claimed from public.player_progression_events
   where user_id=v_uid and source='gem'
     and metadata->>'context_id'=p_context_id::text;
@@ -420,21 +652,22 @@ begin
   if v_claimed>=v_allowed then raise exception 'Gem claim limit reached'; end if;
   select count(*) into v_recent_claims from public.player_progression_events
   where user_id=v_uid and source='gem'
-    and metadata->>'context_id'=p_context_id::text
-    and created_at>clock_timestamp()-interval '1 second';
+    and created_at>v_now-interval '1 second';
   if v_context_type='1v1' then
     select v_recent_claims+count(*) into v_recent_claims
     from public.multiplayer_point_events
-    where match_id=p_context_id and user_id=v_uid
-      and created_at>clock_timestamp()-interval '1 second';
+    where user_id=v_uid
+      and created_at>v_now-interval '1 second';
   end if;
-  if v_recent_claims>=4 then raise exception 'Gem pickups arrived too quickly'; end if;
+  if v_recent_claims>=3 then raise exception 'Gem pickups arrived too quickly'; end if;
   insert into public.player_progression_events(
     user_id,source,source_key,xp_awarded,metadata
   ) values(
     v_uid,'gem',p_context_id::text||':'||v_pickup_id,20,
     jsonb_build_object('context_id',p_context_id,
-      'context_type',v_context_type,'pickup_id',v_pickup_id)
+      'context_type',v_context_type,'pickup_id',v_pickup_id,
+      'verified_active_seconds',v_active_seconds,
+      'verified_wave',v_verified_wave)
   ) on conflict(user_id,source,source_key) do nothing returning id into v_inserted;
   if v_inserted is not null then
     update public.player_stats set total_gems=total_gems+1,updated_at=now()
@@ -471,14 +704,37 @@ create or replace function app_private.enforce_1v1_score_ceiling()
 returns trigger language plpgsql security definer set search_path='' as $$
 declare
   v_started_at timestamptz; v_elapsed_seconds numeric; v_score_ceiling bigint;
+  v_mushroom_score bigint:=0; v_second_death_bonus boolean:=false;
+  v_zenith_time_stop_used boolean:=false;
 begin
   select started_at into v_started_at from public.multiplayer_matches
   where id=new.match_id;
   if v_started_at is null then raise exception '1v1 match not found'; end if;
   v_elapsed_seconds:=greatest(0,
     extract(epoch from(clock_timestamp()-v_started_at)));
+  -- MAPS MISC owns mushroom receipts, Zenith's one-use score reward, and the
+  -- second-death bonus. Keep those server-created points inside the ceiling
+  -- when this merged query is rerun, while remaining safe on a database where
+  -- MAPS MISC is not installed yet.
+  if to_regclass('public.multiplayer_mushroom_events') is not null then
+    execute 'select count(*)::bigint * 120
+      from public.multiplayer_mushroom_events
+      where match_id=$1 and user_id=$2'
+    into v_mushroom_score using new.match_id,new.user_id;
+  end if;
+  v_second_death_bonus:=coalesce(
+    (to_jsonb(new)->>'second_death_bonus_awarded')::boolean,false
+  );
+  -- Keep this merged Player 01 query rerunnable before or after MAPS MISC:
+  -- reading through JSON avoids referencing a column that may not exist yet.
+  v_zenith_time_stop_used:=coalesce(
+    (to_jsonb(new)->>'zenith_time_stop_used')::boolean,false
+  );
   v_score_ceiling:=least(10000000::bigint,
-    10000::bigint+floor(v_elapsed_seconds*25000)::bigint);
+    10000::bigint+floor(v_elapsed_seconds*25000)::bigint)
+    +coalesce(v_mushroom_score,0)
+    +case when v_zenith_time_stop_used then 15000 else 0 end
+    +case when v_second_death_bonus then 75 else 0 end;
   if new.score<0 or new.score>v_score_ceiling then
     raise exception '1v1 score exceeds the server play-time allowance';
   end if;
@@ -490,8 +746,8 @@ create trigger enforce_1v1_score_ceiling
 before insert or update of score on public.multiplayer_players
 for each row execute function app_private.enforce_1v1_score_ceiling();
 
--- Current receipt-only 1v1 coin claim. Server time, wave, and recent receipt
--- counts cap unique IDs while exact retries remain idempotent.
+-- Current receipt-only 1v1 coin claim. Verified active play, wave, and recent
+-- receipt counts cap unique IDs while exact retries remain idempotent.
 create or replace function public.award_1v1_points(
   p_match_id uuid,p_source text,p_amount integer,p_pickup_id text
 )
@@ -499,9 +755,12 @@ returns jsonb language plpgsql security definer set search_path='' as $$
 declare
   v_uid uuid:=auth.uid(); v_source text:=lower(trim(p_source));
   v_pickup_id text:=trim(p_pickup_id); v_match public.multiplayer_matches;
-  v_self public.multiplayer_players; v_inserted_id text; v_awarded integer:=0;
-  v_now timestamptz:=clock_timestamp(); v_elapsed_seconds numeric;
-  v_elapsed_allowance bigint; v_wave_allowance bigint; v_allowed bigint;
+  v_self public.multiplayer_players; v_inserted_id text; v_awarded numeric:=0;
+  v_balance_before numeric:=0; v_coin_reward numeric:=2;
+  v_map_key text:='classic';
+  v_now timestamptz; v_active_seconds bigint; v_verified_wave integer;
+  v_last_heartbeat timestamptz; v_heartbeat_active boolean;
+  v_time_allowance bigint; v_wave_allowance bigint; v_allowed bigint;
   v_claimed bigint; v_recent_claims bigint;
 begin
   if v_uid is null then raise exception 'Sign in required'; end if;
@@ -513,28 +772,60 @@ begin
   end if;
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text,1));
   select * into v_match from public.multiplayer_matches
-  where id=p_match_id and started_at>now()-interval '6 hours' for update;
+  where id=p_match_id for update;
   select * into v_self from public.multiplayer_players
   where match_id=p_match_id and user_id=v_uid for update;
   if v_match.id is null or v_self.user_id is null then
     raise exception '1v1 match not found';
   end if;
+  v_balance_before:=v_self.obstacle_points;
+  v_map_key:=coalesce(nullif(to_jsonb(v_match)->>'map_key',''),'classic');
+  -- Prefer the selected map's exact coin value once MAPS MISC exists. Dynamic
+  -- SQL avoids a circular first-install dependency between Player 01 and maps.
+  if to_regclass('app_private.one_v_one_map_rules') is not null then
+    execute 'select coin_point_reward::numeric
+      from app_private.one_v_one_map_rules where map_key=$1'
+    into v_coin_reward using v_map_key;
+    v_coin_reward:=coalesce(v_coin_reward,2);
+  end if;
   if exists(select 1 from public.multiplayer_point_events event
     where event.match_id=p_match_id and event.user_id=v_uid
       and event.pickup_id=v_pickup_id) then
-    return jsonb_build_object('match_id',p_match_id,'source','coin',
+    return jsonb_build_object('match_id',p_match_id,'map_key',v_map_key,
+      'source','coin',
       'pickup_id',v_pickup_id,'duplicate',true,'awarded',0,
+      'points_per_coin',v_coin_reward,
       'obstacle_points',v_self.obstacle_points,
       'melons_collected',v_self.melons_collected,
-      'coins_collected',v_self.melons_collected);
+      'coins_collected',v_self.melons_collected,
+      'mushrooms_collected',coalesce(
+        (to_jsonb(v_self)->>'mushrooms_collected')::integer,0));
+  end if;
+  if v_match.started_at<=now()-interval '6 hours' then
+    raise exception '1v1 match is too old for new coin receipts';
   end if;
   if v_match.status<>'playing' or v_self.status<>'playing' then
     raise exception 'Coins can only be collected during active 1v1 play';
   end if;
-  v_elapsed_seconds:=greatest(0,extract(epoch from(v_now-v_match.started_at)));
-  v_elapsed_allowance:=2+floor(v_elapsed_seconds/0.30)::bigint;
-  v_wave_allowance:=2+greatest(v_match.current_wave,v_self.wave,1)::bigint*90;
-  v_allowed:=least(v_elapsed_allowance,v_wave_allowance);
+  select active_seconds,verified_wave,last_heartbeat_at,heartbeat_active
+  into v_active_seconds,v_verified_wave,v_last_heartbeat,v_heartbeat_active
+  from public.player_progression_1v1_activity
+  where match_id=p_match_id and user_id=v_uid for update;
+  if not found then raise exception 'Coins require active 1v1 play'; end if;
+  v_now:=clock_timestamp();
+  if not coalesce(v_heartbeat_active,false)
+     or v_last_heartbeat is null
+     or v_last_heartbeat<v_now-interval '8 seconds' then
+    raise exception 'Coins require active 1v1 play';
+  end if;
+  v_active_seconds:=least(21600::bigint,
+    greatest(0::bigint,coalesce(v_active_seconds,0)));
+  v_verified_wave:=least(100000,
+    greatest(1,coalesce(v_verified_wave,1)));
+  v_time_allowance:=2+
+    floor(v_active_seconds::numeric/0.75)::bigint;
+  v_wave_allowance:=2+v_verified_wave::bigint*60;
+  v_allowed:=least(v_time_allowance,v_wave_allowance);
   select count(*) into v_claimed from public.multiplayer_point_events event
   where event.match_id=p_match_id and event.user_id=v_uid;
   select v_claimed+count(*) into v_claimed
@@ -543,22 +834,21 @@ begin
     and metadata->>'context_id'=p_match_id::text;
   if v_claimed>=v_allowed then raise exception 'Coin pickup allowance reached'; end if;
   select count(*) into v_recent_claims from public.multiplayer_point_events event
-  where event.match_id=p_match_id and event.user_id=v_uid
+  where event.user_id=v_uid
     and event.created_at>v_now-interval '1 second';
   select v_recent_claims+count(*) into v_recent_claims
   from public.player_progression_events
   where user_id=v_uid and source='gem'
-    and metadata->>'context_id'=p_match_id::text
     and created_at>v_now-interval '1 second';
-  if v_recent_claims>=4 then raise exception 'Coin pickups arrived too quickly'; end if;
+  if v_recent_claims>=3 then raise exception 'Coin pickups arrived too quickly'; end if;
   insert into public.multiplayer_point_events(
     match_id,user_id,pickup_id,source,points_awarded
-  ) values(p_match_id,v_uid,v_pickup_id,'coin',2)
+  ) values(p_match_id,v_uid,v_pickup_id,'coin',v_coin_reward)
   on conflict(match_id,user_id,pickup_id) do nothing
   returning pickup_id into v_inserted_id;
   if v_inserted_id is not null then
-    v_awarded:=2;
-    update public.multiplayer_players set obstacle_points=obstacle_points+2,
+    update public.multiplayer_players
+    set obstacle_points=obstacle_points+v_coin_reward,
       melons_collected=melons_collected+1,last_melon_at=v_now,
       last_seen_at=v_now,updated_at=v_now
     where match_id=p_match_id and user_id=v_uid;
@@ -567,11 +857,23 @@ begin
   end if;
   select * into v_self from public.multiplayer_players
   where match_id=p_match_id and user_id=v_uid;
-  return jsonb_build_object('match_id',p_match_id,'source','coin',
+  if v_inserted_id is not null then
+    -- Runner/Healer MISC can multiply this award in a server trigger. Return
+    -- the actual balance delta rather than the nominal map value.
+    v_awarded:=greatest(0,v_self.obstacle_points-v_balance_before);
+  end if;
+  return jsonb_build_object('match_id',p_match_id,'map_key',v_map_key,
+    'source','coin',
     'pickup_id',v_pickup_id,'duplicate',v_inserted_id is null,
-    'awarded',v_awarded,'obstacle_points',v_self.obstacle_points,
+    'awarded',v_awarded,
+    'points_per_coin',case when v_inserted_id is null
+      then v_coin_reward else v_awarded end,
+    'obstacle_points',v_self.obstacle_points,
     'melons_collected',v_self.melons_collected,
-    'coins_collected',v_self.melons_collected,'coin_allowance',v_allowed);
+    'coins_collected',v_self.melons_collected,
+    'mushrooms_collected',coalesce(
+      (to_jsonb(v_self)->>'mushrooms_collected')::integer,0),
+    'pickup_allowance',v_allowed,'coin_allowance',v_allowed);
 end;
 $$;
 
@@ -625,6 +927,251 @@ begin
   end if;
 end
 $$;
+
+-- Gems and 1v1 coins award XP immediately through their receipt-backed pickup
+-- functions above. A completed run adds finish, score, completed-wave, and
+-- active-playtime XP without trusting a caller-calculated total.
+create or replace function app_private.run_xp_breakdown(
+  p_score bigint,p_completed_waves integer,p_active_seconds bigint,
+  p_finish_xp bigint
+)
+returns jsonb language sql immutable strict set search_path='' as $$
+  with awards as (
+    select greatest(p_finish_xp,0)::bigint as finish_xp,
+      least(
+        floor(greatest(p_score,0)::numeric/250)::bigint,
+        greatest(p_completed_waves,1)::bigint*10
+      ) as score_xp,
+      greatest(p_completed_waves,0)::bigint*10 as wave_xp,
+      floor(greatest(p_active_seconds,0)::numeric/10)::bigint as playtime_xp
+  )
+  select jsonb_build_object(
+    'finish',finish_xp,'score',score_xp,'waves',wave_xp,
+    'playtime',playtime_xp,
+    'total',finish_xp+score_xp+wave_xp+playtime_xp
+  ) from awards;
+$$;
+
+drop function if exists public.award_completed_run_v2(
+  uuid,bigint,text,integer,integer
+);
+create or replace function public.award_completed_run_v2(
+  p_run_id uuid,p_score bigint,p_scope text
+)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare
+  v_uid uuid:=auth.uid(); v_scope text:=lower(trim(p_scope)); v_xp bigint;
+  v_inserted uuid; v_score bigint; v_started_at timestamptz;
+  v_completed_at timestamptz; v_stored_score bigint; v_high_score bigint;
+  v_match_mode text; v_match_status text; v_server_wave integer;
+  v_verified_1v1_wave integer;
+  v_completed_waves integer:=0; v_active_seconds bigint:=0;
+  v_duration_seconds numeric:=0; v_finish_xp bigint:=10;
+  v_breakdown jsonb; v_existing_breakdown jsonb; v_progress jsonb;
+  v_recent_short_award boolean:=false;
+  v_run_already_completed boolean:=false;
+begin
+  if v_uid is null then raise exception 'Sign in required'; end if;
+  if p_run_id is null then raise exception 'Run ID is required'; end if;
+  if p_score is null or p_score<0 or p_score>1000000000 then
+    raise exception 'Invalid run score';
+  end if;
+  if v_scope not in ('endless','casual_1v1','ranked_1v1') then
+    raise exception 'Invalid run type';
+  end if;
+  if v_scope='endless' then
+    select started_at,completed_at,credited_score,active_seconds,verified_wave
+    into v_started_at,v_completed_at,v_stored_score,
+      v_active_seconds,v_server_wave
+    from public.player_progression_runs
+    where run_id=p_run_id and user_id=v_uid for update;
+    if v_started_at is null then raise exception 'Run receipt not found'; end if;
+    if v_completed_at is not null then
+      v_duration_seconds:=greatest(0,
+        extract(epoch from(v_completed_at-v_started_at)));
+      v_score:=least(greatest(coalesce(v_stored_score,0),0),
+        50000000::bigint);
+      v_run_already_completed:=true;
+    else
+      v_duration_seconds:=greatest(0,
+        extract(epoch from(clock_timestamp()-v_started_at)));
+      v_active_seconds:=least(greatest(coalesce(v_active_seconds,0),0),
+        floor(v_duration_seconds)::bigint,21600::bigint);
+      v_completed_waves:=greatest(coalesce(v_server_wave,1)-1,0);
+      if v_active_seconds<10 then
+        v_finish_xp:=1;
+        v_score:=0; v_completed_waves:=0;
+        select exists(
+          select 1 from public.player_progression_events event
+          where event.user_id=v_uid and event.source='run'
+            and event.created_at>clock_timestamp()-interval '30 seconds'
+            and event.metadata->>'short_run'='true'
+        ) into v_recent_short_award;
+        update public.player_progression_runs set completed_at=now(),
+          claimed_score=p_score,credited_score=0 where run_id=p_run_id;
+      else
+        v_score:=least(p_score,floor(v_duration_seconds*2000)::bigint,
+          50000000::bigint);
+        update public.player_progression_runs set completed_at=now(),
+          claimed_score=p_score,credited_score=v_score where run_id=p_run_id;
+      end if;
+    end if;
+  else
+    select match.status,match.mode,player.score,player.wave,
+      match.started_at,match.finished_at,coalesce(activity.active_seconds,0),
+      coalesce(activity.verified_wave,1)
+    into v_match_status,v_match_mode,v_score,v_server_wave,
+      v_started_at,v_completed_at,v_active_seconds,v_verified_1v1_wave
+    from public.multiplayer_matches match
+    join public.multiplayer_players player
+      on player.match_id=match.id and player.user_id=v_uid
+    left join public.player_progression_1v1_activity activity
+      on activity.match_id=match.id and activity.user_id=v_uid
+    where match.id=p_run_id;
+    if v_match_status is null then raise exception '1v1 result not found'; end if;
+    if v_match_status<>'finished' then raise exception '1v1 is not finished'; end if;
+    if v_scope<>(v_match_mode||'_1v1') then
+      raise exception '1v1 mode does not match the finished result';
+    end if;
+    v_duration_seconds:=greatest(0,
+      extract(epoch from(coalesce(v_completed_at,now())-v_started_at)));
+    v_completed_waves:=least(
+      greatest(coalesce(v_server_wave,1)-1,0),
+      greatest(coalesce(v_verified_1v1_wave,1)-1,0)
+    );
+    v_active_seconds:=least(21600::bigint,
+      greatest(coalesce(v_active_seconds,0),0),floor(v_duration_seconds)::bigint);
+    v_score:=least(greatest(coalesce(v_score,0),0),47000::bigint,
+      5000::bigint+floor(v_duration_seconds*5000)::bigint);
+  end if;
+  insert into public.player_stats(user_id,total_gems,high_score,updated_at)
+  values(v_uid,0,v_score,now()) on conflict(user_id) do nothing;
+  update public.player_stats set high_score=greatest(high_score,v_score),
+    updated_at=now() where user_id=v_uid returning high_score into v_high_score;
+  if v_run_already_completed then
+    select metadata->'xp_breakdown' into v_existing_breakdown
+    from public.player_progression_events where user_id=v_uid
+      and source='run' and source_key=p_run_id::text;
+    return public.get_player_progression()||jsonb_build_object(
+      'xp_awarded',0,'xp_breakdown',v_existing_breakdown,
+      'high_score',v_high_score);
+  end if;
+  if v_recent_short_award then
+    return public.get_player_progression()||jsonb_build_object(
+      'xp_awarded',0,'short_run_throttled',true,'high_score',v_high_score);
+  end if;
+  v_breakdown:=app_private.run_xp_breakdown(
+    v_score,v_completed_waves,v_active_seconds,v_finish_xp);
+  v_xp:=(v_breakdown->>'total')::bigint;
+  insert into public.player_progression_events(
+    user_id,source,source_key,xp_awarded,metadata
+  ) values(v_uid,'run',p_run_id::text,v_xp,jsonb_build_object(
+    'claimed_score',p_score,'credited_score',v_score,'scope',v_scope,
+    'duration_seconds',v_duration_seconds,'active_seconds',v_active_seconds,
+    'completed_waves',v_completed_waves,'xp_breakdown',v_breakdown,
+    'short_run',v_scope='endless' and v_active_seconds<10
+  )) on conflict(user_id,source,source_key) do nothing returning id into v_inserted;
+  if v_inserted is not null then
+    v_progress:=app_private.apply_player_xp(v_uid,v_xp,true);
+    return v_progress||jsonb_build_object(
+      'xp_breakdown',v_breakdown,'high_score',v_high_score);
+  end if;
+  select metadata->'xp_breakdown' into v_existing_breakdown
+  from public.player_progression_events where user_id=v_uid
+    and source='run' and source_key=p_run_id::text;
+  return public.get_player_progression()||jsonb_build_object(
+    'xp_awarded',0,'xp_breakdown',v_existing_breakdown,
+    'high_score',v_high_score);
+end;
+$$;
+
+-- Preserve the deployed API name, but route it through the heartbeat-backed
+-- calculation so an older client cannot bypass the current XP rules.
+create or replace function public.award_completed_run(
+  p_run_id uuid,p_score bigint,p_scope text
+)
+returns jsonb language sql security invoker set search_path='' as $$
+  select public.award_completed_run_v2(p_run_id,p_score,p_scope);
+$$;
+
+-- Replace the 1v1 completion trigger with the same wave/playtime formula. The
+-- match tables provide its wave and timing values, not the browser.
+create or replace function app_private.award_finished_1v1_progression()
+returns trigger language plpgsql security definer set search_path='' as $$
+declare
+  v_player record; v_xp bigint; v_inserted uuid;
+  v_duration_seconds numeric; v_active_seconds bigint;
+  v_verified_wave integer; v_completed_waves integer; v_score_ceiling bigint;
+  v_last_heartbeat timestamptz; v_heartbeat_active boolean;
+  v_final_increment bigint; v_max_wave integer;
+  v_credited_score bigint; v_breakdown jsonb;
+begin
+  if old.status is not distinct from new.status or new.status<>'finished' then
+    return new;
+  end if;
+  v_duration_seconds:=greatest(0,
+    extract(epoch from(coalesce(new.finished_at,now())-new.started_at)));
+  v_score_ceiling:=least(47000::bigint,
+    5000::bigint+floor(v_duration_seconds*5000)::bigint);
+  for v_player in select player.user_id,player.score,player.wave
+    from public.multiplayer_players player
+    where player.match_id=new.id
+  loop
+    v_active_seconds:=0; v_verified_wave:=1;
+    v_last_heartbeat:=null; v_heartbeat_active:=false;
+    select active_seconds,verified_wave,last_heartbeat_at,heartbeat_active
+    into v_active_seconds,v_verified_wave,v_last_heartbeat,v_heartbeat_active
+    from public.player_progression_1v1_activity
+    where match_id=new.id and user_id=v_player.user_id for update;
+    v_final_increment:=case when coalesce(v_heartbeat_active,false) then
+      least(6::bigint,greatest(0,floor(extract(epoch from(
+        coalesce(new.finished_at,clock_timestamp())-
+        coalesce(v_last_heartbeat,new.started_at))))::bigint)) else 0 end;
+    v_active_seconds:=least(21600::bigint,
+      greatest(coalesce(v_active_seconds,0),0)+v_final_increment,
+      floor(v_duration_seconds)::bigint);
+    v_max_wave:=least(100000,
+      1+floor(v_active_seconds::numeric/15)::integer);
+    v_verified_wave:=least(
+      greatest(coalesce(v_verified_wave,1),coalesce(v_player.wave,1)),
+      coalesce(v_verified_wave,1)+1,v_max_wave);
+    update public.player_progression_1v1_activity
+    set active_seconds=v_active_seconds,verified_wave=v_verified_wave,
+      last_heartbeat_at=coalesce(new.finished_at,clock_timestamp()),
+      heartbeat_active=false
+    where match_id=new.id and user_id=v_player.user_id;
+    v_completed_waves:=least(
+      greatest(coalesce(v_player.wave,1)-1,0),
+      greatest(coalesce(v_verified_wave,1)-1,0)
+    );
+    v_credited_score:=least(greatest(coalesce(v_player.score,0),0),
+      v_score_ceiling);
+    v_breakdown:=app_private.run_xp_breakdown(
+      v_credited_score,v_completed_waves,v_active_seconds,10);
+    v_xp:=(v_breakdown->>'total')::bigint;
+    insert into public.player_progression_events(
+      user_id,source,source_key,xp_awarded,metadata
+    ) values(v_player.user_id,'run',new.id::text,v_xp,jsonb_build_object(
+      'claimed_score',v_player.score,'credited_score',v_credited_score,
+      'scope',new.mode||'_1v1','duration_seconds',v_duration_seconds,
+      'active_seconds',v_active_seconds,'completed_waves',v_completed_waves,
+      'xp_breakdown',v_breakdown
+    )) on conflict(user_id,source,source_key) do nothing
+    returning id into v_inserted;
+    if v_inserted is not null then
+      perform app_private.apply_player_xp(v_player.user_id,v_xp,true);
+    end if;
+    v_inserted:=null;
+  end loop;
+  return new;
+end;
+$$;
+
+drop trigger if exists award_finished_1v1_progression
+  on public.multiplayer_matches;
+create trigger award_finished_1v1_progression
+after update of status on public.multiplayer_matches
+for each row execute function app_private.award_finished_1v1_progression();
 create or replace function public.save_player_high_score(new_score bigint)
 returns bigint language sql security definer set search_path='' as $$
   insert into public.player_stats(user_id,total_gems,high_score,updated_at)
@@ -651,17 +1198,29 @@ revoke all on function public.get_player_progression()
   from public,anon,authenticated;
 revoke all on function public.start_progression_run()
   from public,anon,authenticated;
+revoke all on function public.sync_progression_run(uuid,integer,boolean)
+  from public,anon,authenticated;
+revoke all on function public.sync_1v1_progression(uuid,integer,boolean)
+  from public,anon,authenticated;
 revoke all on function public.award_completed_run(uuid,bigint,text)
   from public,anon,authenticated;
+revoke all on function public.award_completed_run_v2(
+  uuid,bigint,text
+) from public,anon,authenticated;
 revoke all on function app_private.xp_required_for_level(integer)
   from public,anon,authenticated;
 revoke all on function app_private.apply_player_xp(uuid,bigint,boolean)
   from public,anon,authenticated;
+revoke all on function app_private.run_xp_breakdown(
+  bigint,integer,bigint,bigint
+) from public,anon,authenticated;
 revoke all on function app_private.award_coin_progression()
   from public,anon,authenticated;
 revoke all on function app_private.enforce_1v1_score_ceiling()
   from public,anon,authenticated;
 revoke all on function app_private.award_finished_1v1_progression()
+  from public,anon,authenticated;
+revoke all on function app_private.flush_1v1_progression_on_phase_exit()
   from public,anon,authenticated;
 revoke all on function public.save_player_high_score(bigint)
   from public,anon,authenticated;
@@ -670,8 +1229,15 @@ grant execute on function public.award_1v1_points(uuid,text,integer,text)
   to authenticated;
 grant execute on function public.get_player_progression() to authenticated;
 grant execute on function public.start_progression_run() to authenticated;
+grant execute on function public.sync_progression_run(uuid,integer,boolean)
+  to authenticated;
+grant execute on function public.sync_1v1_progression(uuid,integer,boolean)
+  to authenticated;
 grant execute on function public.award_completed_run(uuid,bigint,text)
   to authenticated;
+grant execute on function public.award_completed_run_v2(
+  uuid,bigint,text
+) to authenticated;
 
 -- Per-account ownership and equipped loadout.
 create table if not exists public.player_unlocks (
@@ -744,7 +1310,9 @@ create table if not exists public.extraction_catalog (
   extractable boolean not null default true,
   active boolean not null default true,
   weapon_name text,
-  weapon_score_bonus numeric(6,4)
+  weapon_score_bonus numeric(6,4),
+  passive_ability text,
+  weapon_effect text
 );
 alter table public.extraction_catalog
   add column if not exists display_name text,
@@ -754,7 +1322,9 @@ alter table public.extraction_catalog
   add column if not exists extractable boolean not null default true,
   add column if not exists active boolean not null default true,
   add column if not exists weapon_name text,
-  add column if not exists weapon_score_bonus numeric(6,4);
+  add column if not exists weapon_score_bonus numeric(6,4),
+  add column if not exists passive_ability text,
+  add column if not exists weapon_effect text;
 alter table public.extraction_catalog
   drop constraint if exists extraction_catalog_item_type_check,
   drop constraint if exists extraction_catalog_rarity_check,
@@ -775,7 +1345,7 @@ insert into canonical_character_kits values
   ('runner_ace','Ace','common','runner',false,'Baton',.03),
   ('runner_dash','Dash','common','runner',true,'Jet Baton',.03),
   ('runner_stride','Stride','common','runner',true,'Pace Blades',.03),
-  ('tank_glacier','Glacier','uncommon','runner',true,'Frost Shield',.04),
+  ('tank_glacier','Glacier','rare','runner',true,'Frost Shield',.05),
   ('runner_courier','Courier','uncommon','runner',true,'Parcel Staff',.04),
   ('runner_tempo','Tempo','uncommon','runner',true,'Rhythm Rod',.04),
   ('tank_reactor','Reactor','rare','runner',true,'Core Maul',.05),
@@ -784,9 +1354,9 @@ insert into canonical_character_kits values
   ('medic_halo','Halo','epic','runner',true,'Sun Staff',.06),
   ('runner_orbit','Orbit','epic','runner',true,'Ring Blades',.06),
   ('runner_relay','Relay','epic','runner',true,'Circuit Baton',.06),
-  ('runner_horizon','Horizon','epic','runner',true,'Skyline Disc',.06),
-  ('runner_velocity','Velocity','legendary','runner',true,'Turbo Spear',.07),
-  ('runner_pacer','Pacer','mythic','runner',true,'Relay Rod',.08),
+  ('runner_horizon','Horizon','legendary','runner',true,'Skyline Disc',.07),
+  ('runner_velocity','Velocity','legendary','runner',true,'Turbo Spear',.10),
+  ('runner_pacer','Pacer','mythic','runner',true,'Relay Rod',0),
   ('runner_zenith','Zenith','mythic','runner',true,'Apex Relay',.08),
   -- HEALER (internal key medic): special healing or HP.
   ('medic_patch','Patch','common','medic',false,'Med Staff',.03),
@@ -800,11 +1370,11 @@ insert into canonical_character_kits values
   ('medic_tonic','Tonic','rare','medic',true,'Vital Flask',.05),
   ('medic_suture','Suture','epic','medic',true,'Pulse Thread',.06),
   ('medic_beacon','Beacon','epic','medic',true,'Rescue Lamp',.06),
-  ('medic_lifeline','Lifeline','legendary','medic',true,'Rescue Hook',.07),
-  ('medic_seraph','Seraph','legendary','medic',true,'Halo Staff',.07),
-  ('tank_atlas','Atlas','legendary','medic',true,'World Maul',.07),
-  ('medic_revive','Revive','legendary','medic',true,'Phoenix Needle',.07),
-  ('medic_oracle','Oracle','mythic','medic',true,'Fate Censer',.08),
+  ('medic_lifeline','Lifeline','legendary','medic',true,'Rescue Hook',0),
+  ('medic_seraph','Seraph','legendary','medic',true,'Halo Staff',0),
+  ('tank_atlas','Atlas','legendary','medic',true,'World Maul',0),
+  ('medic_revive','Revive','legendary','medic',true,'Phoenix Feather',0),
+  ('medic_oracle','Oracle','mythic','medic',true,'Fate Sensor',0),
   -- TANK: less damage or more health without healer-style recovery.
   ('tank_bulwark','Bulwark','common','tank',false,'Tower Shield',.03),
   ('runner_vault','Vault','common','tank',true,'Spring Pole',.03),
@@ -857,6 +1427,19 @@ insert into canonical_character_kits values
   ('misc_harvester','Harvester','legendary','misc',true,'Crescent Sickle',.07),
   ('misc_muse','Muse','mythic','misc',true,'Dream Harp',.08);
 
+-- Snapshot the existing Tank roster before the canonical upsert. Tank balance
+-- is still being designed, so this merged query must neither overwrite nor
+-- silently recategorize any of those 16 existing rows.
+create temporary table preserved_tank_catalog_rows(
+  item_key text primary key,
+  row_data jsonb not null
+) on commit drop;
+insert into preserved_tank_catalog_rows(item_key,row_data)
+select catalog.item_key,to_jsonb(catalog)
+from public.extraction_catalog catalog
+join canonical_character_kits kit using(item_key)
+where kit.character_class='tank';
+
 insert into public.extraction_catalog(
   item_key,display_name,item_type,rarity,character_class,extractable,active,
   weapon_name,weapon_score_bonus
@@ -869,7 +1452,54 @@ on conflict(item_key) do update set
   rarity=excluded.rarity,character_class=excluded.character_class,
   extractable=excluded.extractable,active=excluded.active,
   weapon_name=excluded.weapon_name,
-  weapon_score_bonus=excluded.weapon_score_bonus;
+  weapon_score_bonus=excluded.weapon_score_bonus
+-- Tank-category balance is intentionally frozen. Fresh installs still receive
+-- the baseline rows, but rerunning Player 01 cannot rewrite an existing Tank.
+where excluded.character_class<>'tank';
+
+-- Finished Runner/Healer rules. Tank proposals are intentionally not merged
+-- until their design is complete.
+with finished_abilities(item_key,passive_ability,weapon_effect) as (values
+  ('runner_ace','Earns 10% more score.','Adds 3% distance score.'),
+  ('runner_dash','Moves 6% faster and earns 6% more score; its E dash grants a 1-second speed burst and a brief shield.','Adds 3% distance score.'),
+  ('runner_stride','Every third lane change grants a brief dodge shield.','Adds 3% distance score.'),
+  ('tank_glacier','Ignores snowflake freeze effects.','Adds 5% distance score.'),
+  ('runner_courier','A gem or attack coin grants 25% more score for 4 seconds.','Adds 4% distance score.'),
+  ('runner_tempo','Odd waves are 15% faster with 15% more score; even waves are 15% slower with 15% less score.','Adds 4% distance score.'),
+  ('tank_reactor','Missing health gradually grants up to 40% more speed and 30% more score.','Adds 5% distance score.'),
+  ('runner_vector','Earns 12% more score in an outside lane and blocks the first outside-lane hit each wave.','Adds 5% distance score.'),
+  ('runner_blitz','Can dash and destroy the first non-rock obstacle ahead.','Adds 5% distance score.'),
+  ('medic_halo','At full health earns 15% more score; three hitless waves store a revive to 1 HP.','Adds 6% distance score.'),
+  ('runner_orbit','Can wrap between outside lanes every 3 seconds.','Adds 6% distance score.'),
+  ('runner_relay','Every two completed waves overcharges a heart; losing it clears the closest obstacle in every lane.','Adds 6% distance score.'),
+  ('runner_horizon','Previews upcoming obstacle counts; in 1v1 it reveals opponent purchases.','Adds 7% distance score.'),
+  ('runner_velocity','Each hitless second grants 1% speed and 2% score, up to 100% speed and 200% score; a hit resets it.','Adds 5% base speed and 10% score.'),
+  ('runner_pacer','Starts each wave with 3x speed and 5x score for 15 seconds; once per run can continue after death as an owned non-Runner.','Adds 10 score after every lane change.'),
+  ('runner_zenith','Gains Runner abilities at waves 5, 7, 9, 10, and 12; at wave 15 can stop time for 10 seconds, heal fully, add 15000 score, then permanently slow obstacles 25%.','Adds 8% distance score.'),
+  ('medic_patch','Heals 1.5 HP after each wave but cannot exceed 4 HP.','Adds 3% distance score.'),
+  ('medic_bloom','The first gem each wave heals 0.5 HP.','Adds 3% distance score.'),
+  ('medic_remedy','The first snowflake each wave heals 1 HP.','Adds 3% distance score.'),
+  ('medic_salve','At 1 HP or less, completing a wave heals 1.5 HP.','Adds 3% distance score.'),
+  ('medic_reserve','Completing a wave at full HP stores 0.5 HP that can be used manually.','Adds 4% distance score.'),
+  ('medic_sprout','Once per wave can seed a non-barrel obstacle so it deals 0.5 less damage for two waves; up to two seeds.','Adds 4% distance score.'),
+  ('medic_mender','Twenty hitless seconds heals 0.5 HP once per wave.','Adds 5% distance score.'),
+  ('medic_pulse','On lethal damage, a 10-second timed-key challenge can revive for 1 HP at 10 hits, 2 HP at 20, or full HP at 30.','Adds 5% distance score.'),
+  ('medic_tonic','Gems become ingredients; brew one 1, 2, or 3 HP potion for 5, 10, or 15 ingredients and use it manually. Wave healing is 0.5 HP.','Adds 5% distance score.'),
+  ('medic_suture','Restores to full every third wave; otherwise heals 1 HP only every second wave.','Adds 6% distance score.'),
+  ('medic_beacon','At 1 HP, glows, disables spikes, and slows all obstacles by 50%.','Adds 6% distance score.'),
+  ('medic_lifeline','Once per run, lethal damage restores maximum HP and makes that obstacle harmless; can pause and choose another lane three times.','Activates the three-use lane Rescue Hook.'),
+  ('medic_seraph','A hit can teleport to an empty lane; chance starts at 100% and drops 5% per activation. At 0%, Divine Recovery activates.','Each gem has a 10% chance to heal 1 HP.'),
+  ('tank_atlas','Keeps its healing passive, cannot fall below 1 HP, and must change lanes before the sky-crush timer expires.','Halves obstacle damage for 2 seconds after changing lanes.'),
+  ('medic_revive','Lethal damage leaves 0.5 HP and starts permanent flight: logs and spikes miss, speed and score rise 50%, and healing is disabled.','After taking a hit, destroys the first obstacle of every later wave.'),
+  ('medic_oracle','Chooses a prophecy each wave; successes grant its reward and 5% permanent score, while failure costs 1 HP.','Each wave, the first hit deals 0, the second half damage, and later hits full damage.')
+)
+update public.extraction_catalog catalog
+set passive_ability=ability.passive_ability,
+    weapon_effect=ability.weapon_effect
+from finished_abilities ability
+where catalog.item_key=ability.item_key
+  and catalog.item_type='character'
+  and catalog.character_class in ('runner','medic');
 
 create temporary table canonical_visual_cosmetics(
   item_key text primary key,
@@ -948,7 +1578,7 @@ alter table public.extraction_catalog
   add constraint extraction_catalog_character_kit_check check(
     (
       item_type='character' and nullif(trim(weapon_name),'') is not null
-      and weapon_score_bonus>0 and weapon_score_bonus<=1
+      and weapon_score_bonus>=0 and weapon_score_bonus<=1
     )
     or (
       item_type<>'character'
@@ -987,6 +1617,44 @@ insert into public.player_loadouts(user_id,class_key,character_key,updated_at)
 select id,'runner','runner_ace',now() from auth.users
 on conflict(user_id) do nothing;
 
+-- Keep future signups on the same four-starter rule. This function deliberately
+-- names every granted row; neither the catalog nor a saved loadout is an
+-- ownership source.
+create or replace function public.provision_player_starters()
+returns trigger language plpgsql security definer set search_path='' as $$
+begin
+  insert into public.player_stats(user_id,total_gems,high_score,updated_at)
+  values(new.id,0,0,now()) on conflict(user_id) do nothing;
+
+  insert into public.player_unlocks(
+    user_id,item_key,item_type,rarity,unlocked_at
+  )
+  select new.id,starter.item_key,starter.item_type,starter.rarity,now()
+  from (values
+    ('runner','class','common'),('medic','class','common'),
+    ('tank','class','common'),('trickster','class','common'),
+    ('runner_ace','character','common'),
+    ('medic_patch','character','common'),
+    ('tank_bulwark','character','common'),
+    ('trickster_rogue','character','uncommon')
+  ) starter(item_key,item_type,rarity)
+  on conflict(user_id,item_key) do update
+  set item_type=excluded.item_type,rarity=excluded.rarity;
+
+  insert into public.player_loadouts(
+    user_id,class_key,character_key,updated_at
+  ) values(new.id,'runner','runner_ace',now())
+  on conflict(user_id) do nothing;
+  return new;
+end;
+$$;
+revoke all on function public.provision_player_starters()
+  from public,anon,authenticated;
+drop trigger if exists provision_player_starters_after_signup on auth.users;
+create trigger provision_player_starters_after_signup
+after insert on auth.users
+for each row execute function public.provision_player_starters();
+
 -- Repair metadata without granting unrelated ownership.
 update public.player_unlocks unlock
 set item_type=catalog.item_type,rarity=catalog.rarity
@@ -1011,35 +1679,60 @@ create table if not exists app_private.player_unlock_quarantine (
 revoke all on table app_private.player_unlock_quarantine
   from public,anon,authenticated;
 
+-- Freeze ownership writes while the proof snapshot and cleanup run. Both box
+-- extraction and admin grants write player_unlocks before their receipt/audit
+-- row, so this order lets an in-flight transaction finish and prevents a new
+-- legitimate unlock from landing between verification and deletion.
+lock table public.player_unlocks in share row exclusive mode;
+lock table public.player_loadouts in share row exclusive mode;
+lock table public.extraction_transactions in share row exclusive mode;
+do $player_01_lock_admin_audit$
+begin
+  if to_regclass('public.admin_command_audit') is not null then
+    execute 'lock table public.admin_command_audit in share row exclusive mode';
+  end if;
+end
+$player_01_lock_admin_audit$;
+
 create temporary table verified_character_ownership (
   user_id uuid not null,
   item_key text not null,
   source text not null,
+  proof_at timestamptz not null,
   primary key(user_id,item_key)
 ) on commit drop;
 
-insert into verified_character_ownership(user_id,item_key,source)
-select users.id,starter.item_key,'starter'
+insert into verified_character_ownership(user_id,item_key,source,proof_at)
+select users.id,starter.item_key,'starter','infinity'::timestamptz
 from auth.users users
 cross join (values
   ('runner_ace'),('medic_patch'),('tank_bulwark'),('trickster_rogue')
 ) starter(item_key)
 on conflict(user_id,item_key) do nothing;
 
-insert into verified_character_ownership(user_id,item_key,source)
-select distinct receipt.user_id,receipt.item_key,'extraction'
+insert into verified_character_ownership(user_id,item_key,source,proof_at)
+select distinct on(receipt.user_id,receipt.item_key)
+  receipt.user_id,receipt.item_key,'extraction',receipt.created_at
 from public.extraction_transactions receipt
-join public.extraction_catalog catalog
-  on catalog.item_key=receipt.item_key and catalog.item_type='character'
+join public.extraction_catalog catalog on catalog.item_key=receipt.item_key
+  and catalog.item_type='character'
 where receipt.item_type='character' and receipt.is_new
-on conflict(user_id,item_key) do nothing;
+order by receipt.user_id,receipt.item_key,receipt.created_at desc,receipt.id desc
+on conflict(user_id,item_key) do update
+set source=excluded.source,proof_at=excluded.proof_at
+where verified_character_ownership.source<>'starter'
+  and excluded.proof_at>verified_character_ownership.proof_at;
 
 do $player_01_admin_proof$
 begin
   if to_regclass('public.admin_command_audit') is not null then
     execute $sql$
-      insert into verified_character_ownership(user_id,item_key,source)
-      select distinct audit.target_user_id,audit.result->>'item_key','admin_grant'
+      insert into verified_character_ownership(
+        user_id,item_key,source,proof_at
+      )
+      select distinct on(audit.target_user_id,audit.result->>'item_key')
+        audit.target_user_id,audit.result->>'item_key','admin_grant',
+        audit.created_at
       from public.admin_command_audit audit
       join public.extraction_catalog catalog
         on catalog.item_key=audit.result->>'item_key'
@@ -1048,17 +1741,51 @@ begin
         and audit.target_user_id is not null
         and audit.result->>'item_type'='character'
         and audit.result->>'granted'='true'
-      on conflict(user_id,item_key) do nothing
+      order by audit.target_user_id,audit.result->>'item_key',
+        audit.created_at desc,audit.id desc
+      on conflict(user_id,item_key) do update
+      set source=excluded.source,proof_at=excluded.proof_at
+      where verified_character_ownership.source<>'starter'
+        and excluded.proof_at>verified_character_ownership.proof_at
+    $sql$;
+
+    -- A later successful admin revoke cancels older extraction/grant proof.
+    -- This prevents a subsequent bad bulk backfill from resurrecting a
+    -- deliberately revoked character.
+    execute $sql$
+      delete from verified_character_ownership proof
+      using public.admin_command_audit audit
+      where proof.source<>'starter'
+        and audit.succeeded and audit.action='revoke'
+        and audit.target_user_id=proof.user_id
+        and audit.result->>'item_key'=proof.item_key
+        and audit.result->>'item_type'='character'
+        and audit.result->>'revoked'='true'
+        and audit.created_at>=proof.proof_at
     $sql$;
   end if;
 end
 $player_01_admin_proof$;
 
+-- Restore only ledger/audit-backed ownership that an earlier repair may have
+-- removed. The equipped character and catalog membership alone never grant an
+-- unlock.
+insert into public.player_unlocks(
+  user_id,item_key,item_type,rarity,unlocked_at
+)
+select proof.user_id,proof.item_key,'character',catalog.rarity,proof.proof_at
+from verified_character_ownership proof
+join public.extraction_catalog catalog on catalog.item_key=proof.item_key
+  and catalog.item_type='character'
+where proof.source<>'starter'
+on conflict(user_id,item_key) do update
+set item_type=excluded.item_type,rarity=excluded.rarity;
+
 insert into app_private.player_unlock_quarantine(
   batch_key,user_id,item_key,item_type,rarity,original_unlocked_at,reason
 )
 select
-  'player-01-unproven-character-repair-2026-09-05',
+  'player-01-character-ownership-repair-v2-2026-09-06',
   unlock.user_id,unlock.item_key,unlock.item_type,unlock.rarity,
   unlock.unlocked_at,'No starter, extraction, or admin-grant proof'
 from public.player_unlocks unlock
@@ -1070,7 +1797,27 @@ where unlock.item_type='character' and proof.item_key is null
 on conflict(batch_key,user_id,item_key) do nothing;
 
 update public.player_loadouts loadout
-set class_key='runner',character_key='runner_ace',updated_at=now()
+set class_key=case coalesce((
+      select catalog.character_class from public.extraction_catalog catalog
+      where catalog.item_key=loadout.character_key
+        and catalog.item_type='character'
+    ),loadout.class_key)
+      when 'medic' then 'medic'
+      when 'tank' then 'tank'
+      when 'trickster' then 'trickster'
+      else 'runner'
+    end,
+    character_key=case coalesce((
+      select catalog.character_class from public.extraction_catalog catalog
+      where catalog.item_key=loadout.character_key
+        and catalog.item_type='character'
+    ),loadout.class_key)
+      when 'medic' then 'medic_patch'
+      when 'tank' then 'tank_bulwark'
+      when 'trickster' then 'trickster_rogue'
+      else 'runner_ace'
+    end,
+    updated_at=now()
 where not exists (
   select 1 from verified_character_ownership proof
   where proof.user_id=loadout.user_id
@@ -1117,8 +1864,18 @@ declare v_character_class text;
 begin
   select character_class into v_character_class
   from public.extraction_catalog
-  where item_key=new.character_key and item_type='character';
-  if v_character_class is null then raise exception 'Unknown loadout character'; end if;
+  where item_key=new.character_key and item_type='character' and active;
+  if v_character_class is null then
+    raise exception 'Unknown loadout character';
+  end if;
+  if not exists(
+    select 1 from public.player_unlocks unlock
+    where unlock.user_id=new.user_id
+      and unlock.item_key=new.character_key
+      and unlock.item_type='character'
+  ) then
+    raise exception 'Loadout character is not owned';
+  end if;
   new.class_key:=v_character_class;
   return new;
 end;
@@ -1175,7 +1932,7 @@ begin
 
     if v_item='runner' then
       if v_current_class='runner' and (
-        v_current_character='runner_ace' or exists(
+        exists(
           select 1 from public.player_unlocks unlock
           join public.extraction_catalog catalog
             on catalog.item_key=unlock.item_key
@@ -1283,7 +2040,16 @@ begin
       and catalog.character_class=kit.character_class
       and catalog.weapon_name=kit.weapon_name
       and catalog.weapon_score_bonus=kit.weapon_score_bonus
-  )<>80 then raise exception 'Not all 80 character kits were installed'; end if;
+      and kit.character_class<>'tank'
+  )<>64 then
+    raise exception 'Not all 64 non-Tank character kits were installed';
+  end if;
+  if exists(
+    select 1 from preserved_tank_catalog_rows preserved
+    left join public.extraction_catalog catalog using(item_key)
+    where catalog.item_key is null
+       or to_jsonb(catalog) is distinct from preserved.row_data
+  ) then raise exception 'Player 01 attempted to modify a Tank character'; end if;
   if (
     select count(*) from canonical_character_kits kit
     join public.extraction_catalog catalog using(item_key)
@@ -1340,6 +2106,28 @@ begin
      and unlock.item_type='character'
     where unlock.item_key is null
   ) then raise exception 'A loadout uses an unowned character'; end if;
+  if exists(
+    select 1 from auth.users users
+    cross join(values
+      ('runner_ace'),('medic_patch'),('tank_bulwark'),('trickster_rogue')
+    ) starter(item_key)
+    left join public.player_unlocks unlock on unlock.user_id=users.id
+      and unlock.item_key=starter.item_key and unlock.item_type='character'
+    where unlock.item_key is null
+  ) then raise exception 'A player is missing an included starter character'; end if;
+  if to_regprocedure('public.provision_player_starters()') is null
+     or has_function_privilege(
+       'authenticated','public.provision_player_starters()','EXECUTE'
+     )
+     or has_function_privilege(
+       'anon','public.provision_player_starters()','EXECUTE'
+     )
+     or not exists(
+       select 1 from pg_trigger trigger_row
+       where trigger_row.tgrelid='auth.users'::regclass
+         and trigger_row.tgname='provision_player_starters_after_signup'
+         and not trigger_row.tgisinternal
+     ) then raise exception 'Safe signup starter provisioning is not installed'; end if;
   if to_regprocedure('public.extract_items(integer)') is not null then
     raise exception 'Obsolete one-argument extract_items is installed';
   end if;
@@ -1364,6 +2152,38 @@ begin
     'authenticated','public.save_player_high_score(bigint)','EXECUTE'
   ) then
     raise exception 'Direct client high-score saving is still enabled';
+  end if;
+  if (select count(*) from public.extraction_catalog
+      where item_type='character' and character_class in ('runner','medic')
+        and active and passive_ability is not null
+        and weapon_effect is not null)<>32 then
+    raise exception 'Runner/Healer ability metadata is incomplete';
+  end if;
+  if to_regclass('app_private.one_v_one_map_rules') is not null and (
+       position('one_v_one_map_rules' in pg_get_functiondef(
+         to_regprocedure('public.award_1v1_points(uuid,text,integer,text)')
+       ))=0
+       or position('v_balance_before' in pg_get_functiondef(
+         to_regprocedure('public.award_1v1_points(uuid,text,integer,text)')
+       ))=0
+     ) then
+    raise exception 'Player 01 did not preserve MAPS MISC coin rewards';
+  end if;
+  if to_regclass('public.multiplayer_mushroom_events') is not null and (
+       position('multiplayer_mushroom_events' in pg_get_functiondef(
+         to_regprocedure('app_private.enforce_1v1_score_ceiling()')
+       ))=0
+       or position('second_death_bonus_awarded' in pg_get_functiondef(
+         to_regprocedure('app_private.enforce_1v1_score_ceiling()')
+       ))=0
+       or position('zenith_time_stop_used' in pg_get_functiondef(
+         to_regprocedure('app_private.enforce_1v1_score_ceiling()')
+       ))=0
+       or position('then 15000' in pg_get_functiondef(
+         to_regprocedure('app_private.enforce_1v1_score_ceiling()')
+       ))=0
+     ) then
+    raise exception 'Player 01 did not preserve MAPS MISC score bonuses';
   end if;
 end
 $$;
@@ -1407,7 +2227,7 @@ select
   (select count(*)
    from app_private.player_unlock_quarantine quarantine
    where quarantine.batch_key=
-     'player-01-unproven-character-repair-2026-09-05')
+     'player-01-character-ownership-repair-v2-2026-09-06')
     as quarantined_unproven_character_unlocks,
   (select count(*) from public.player_loadouts loadout
    left join public.player_unlocks unlock
@@ -1433,8 +2253,41 @@ select
   ) as extraction_rpc_permissions_secure,
   to_regprocedure('public.get_player_progression()') is not null
     and to_regprocedure('public.start_progression_run()') is not null
+    and to_regprocedure(
+      'public.sync_progression_run(uuid,integer,boolean)'
+    ) is not null
+    and to_regprocedure(
+      'public.sync_1v1_progression(uuid,integer,boolean)'
+    ) is not null
     and to_regprocedure('public.award_completed_run(uuid,bigint,text)') is not null
+    and to_regprocedure(
+      'public.award_completed_run_v2(uuid,bigint,text)'
+    ) is not null
     as progression_rpcs_installed,
+  has_function_privilege(
+    'authenticated',
+    'public.award_completed_run_v2(uuid,bigint,text)',
+    'EXECUTE'
+  ) and not has_function_privilege(
+    'anon',
+    'public.award_completed_run_v2(uuid,bigint,text)',
+    'EXECUTE'
+  ) as xp_sources_rpc_secure,
+  position('award_completed_run_v2' in pg_get_functiondef(
+    to_regprocedure('public.award_completed_run(uuid,bigint,text)')
+  ))>0 as legacy_run_rpc_uses_secure_xp,
+  has_function_privilege(
+    'authenticated','public.sync_progression_run(uuid,integer,boolean)','EXECUTE'
+  ) and not has_function_privilege(
+    'anon','public.sync_progression_run(uuid,integer,boolean)','EXECUTE'
+  ) and to_regprocedure(
+    'public.sync_progression_run(uuid,integer)'
+  ) is null as progression_heartbeat_secure,
+  has_function_privilege(
+    'authenticated','public.sync_1v1_progression(uuid,integer,boolean)','EXECUTE'
+  ) and not has_function_privilege(
+    'anon','public.sync_1v1_progression(uuid,integer,boolean)','EXECUTE'
+  ) as versus_progression_heartbeat_secure,
   not has_function_privilege(
     'authenticated','public.save_player_high_score(bigint)','EXECUTE'
   ) and not has_function_privilege(
@@ -1458,12 +2311,63 @@ select
   position('Coin pickup allowance reached' in pg_get_functiondef(
     to_regprocedure('public.award_1v1_points(uuid,text,integer,text)')
   ))>0 as coin_rate_limits_installed,
+  (to_regclass('app_private.one_v_one_map_rules') is null or (
+    position('one_v_one_map_rules' in pg_get_functiondef(
+      to_regprocedure('public.award_1v1_points(uuid,text,integer,text)')
+    ))>0 and position('v_balance_before' in pg_get_functiondef(
+      to_regprocedure('public.award_1v1_points(uuid,text,integer,text)')
+    ))>0
+  )) as map_coin_rewards_preserved,
+  (to_regclass('public.multiplayer_mushroom_events') is null or (
+    position('multiplayer_mushroom_events' in pg_get_functiondef(
+      to_regprocedure('app_private.enforce_1v1_score_ceiling()')
+    ))>0 and position('second_death_bonus_awarded' in pg_get_functiondef(
+      to_regprocedure('app_private.enforce_1v1_score_ceiling()')
+    ))>0 and position('zenith_time_stop_used' in pg_get_functiondef(
+      to_regprocedure('app_private.enforce_1v1_score_ceiling()')
+    ))>0 and position('then 15000' in pg_get_functiondef(
+      to_regprocedure('app_private.enforce_1v1_score_ceiling()')
+    ))>0
+  )) as map_score_bonuses_preserved,
+  (select count(*) from public.extraction_catalog
+    where item_type='character' and character_class in ('runner','medic')
+      and active and passive_ability is not null
+      and weapon_effect is not null)=32
+    as runner_healer_metadata_complete,
   position('Gem pickups arrived too quickly' in pg_get_functiondef(
     to_regprocedure('public.claim_player_gem(uuid,text)')
   ))>0 as gem_spawn_envelope_installed,
+  position('heartbeat_active' in pg_get_functiondef(
+    to_regprocedure('public.claim_player_gem(uuid,text)')
+  ))>0 and position('active_seconds' in pg_get_functiondef(
+    to_regprocedure('public.claim_player_gem(uuid,text)')
+  ))>0 and position('heartbeat_active' in pg_get_functiondef(
+    to_regprocedure('public.award_1v1_points(uuid,text,integer,text)')
+  ))>0 and position('active_seconds' in pg_get_functiondef(
+    to_regprocedure('public.award_1v1_points(uuid,text,integer,text)')
+  ))>0 as pickup_xp_uses_verified_activity,
+  exists(select 1 from pg_trigger trigger_row
+    where trigger_row.tgrelid='public.multiplayer_players'::regclass
+      and trigger_row.tgname='flush_1v1_progression_on_phase_exit'
+      and not trigger_row.tgisinternal) as versus_phase_exit_flush_installed,
   position('short_run_throttled' in pg_get_functiondef(
-    to_regprocedure('public.award_completed_run(uuid,bigint,text)')
+    to_regprocedure(
+      'public.award_completed_run_v2(uuid,bigint,text)'
+    )
   ))>0 as rapid_short_run_xp_throttled,
+  position('completed_waves' in pg_get_functiondef(
+    to_regprocedure(
+      'public.award_completed_run_v2(uuid,bigint,text)'
+    )
+  ))>0 as wave_xp_installed,
+  position('active_seconds' in pg_get_functiondef(
+    to_regprocedure(
+      'public.award_completed_run_v2(uuid,bigint,text)'
+    )
+  ))>0 as active_playtime_xp_installed,
+  app_private.xp_required_for_level(2)
+    > app_private.xp_required_for_level(1)
+    as higher_levels_require_more_xp,
   position('server play-time allowance' in pg_get_functiondef(
     to_regprocedure('app_private.enforce_1v1_score_ceiling()')
   ))>0 as score_write_ceiling_installed,
@@ -1474,4 +2378,6 @@ select
     'authenticated','public.player_progression_events','SELECT'
   ) and not has_table_privilege(
     'authenticated','public.player_progression_runs','SELECT'
+  ) and not has_table_privilege(
+    'authenticated','public.player_progression_1v1_activity','SELECT'
   ) as progression_ledgers_private;
