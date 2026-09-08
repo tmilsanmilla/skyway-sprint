@@ -44,6 +44,7 @@ import {
 type Kind =
   | "gem"
   | "coin"
+  | "melon"
   | "mushroom"
   | "car"
   | "log"
@@ -186,6 +187,11 @@ type ExtractionResult = Unlock & {
   display_name?: string;
   pull_number?: number;
   draw_profile?: "regular" | "legendary";
+  duplicate_refund?: number;
+};
+type CatalogItem = Unlock & {
+  display_name?: string;
+  extractable?: boolean;
 };
 type StoredLoadout = {
   class_key?: string | null;
@@ -210,10 +216,9 @@ type PlayerProgression = {
 };
 type RunXpBreakdown = {
   total: number;
-  finish: number;
   score: number;
-  waves: number;
-  playtime: number;
+  gems: number;
+  gem_count: number;
 };
 const normalizeRunXpBreakdown = (value: unknown): RunXpBreakdown | null => {
   if (!value || typeof value !== "object") return null;
@@ -224,10 +229,9 @@ const normalizeRunXpBreakdown = (value: unknown): RunXpBreakdown | null => {
   };
   return {
     total: read("total"),
-    finish: read("finish"),
     score: read("score"),
-    waves: read("waves"),
-    playtime: read("playtime"),
+    gems: read("gems"),
+    gem_count: read("gem_count"),
   };
 };
 type VersusAttackKind = AttackId;
@@ -363,7 +367,10 @@ const AMBIENT_HAZARDS: ReadonlyArray<Kind> = [
 const MAX_HAZARD_LANES = TRACK_LANES.length - 1;
 const MAX_SAME_HAZARD_STREAK = 4;
 const isHazardKind = (kind: Kind) =>
-  kind !== "gem" && kind !== "coin" && kind !== "mushroom";
+  kind !== "gem" &&
+  kind !== "coin" &&
+  kind !== "melon" &&
+  kind !== "mushroom";
 const appendSafeAttackWave = (
   current: Item[],
   hazards: readonly Kind[],
@@ -965,7 +972,7 @@ const CHARACTER_ABILITIES = {
   },
   runner_courier: {
     name: "SPECIAL DELIVERY",
-    description: "Earns 25% more running score for 4 seconds after collecting a gem or coin.",
+    description: "Earns 25% more running score for 4 seconds after collecting a gem, Melon, or 1v1 coin.",
   },
   runner_tempo: {
     name: "SWING TEMPO",
@@ -1003,7 +1010,7 @@ const CHARACTER_ABILITIES = {
   },
   runner_ranger: {
     name: "PICKUP MAGNET",
-    description: "Can collect gems and coins from either neighboring lane.",
+    description: "Can collect gems, Melons, and 1v1 coins from either neighboring lane.",
   },
   runner_fortune: {
     name: "FORTUNE FINDER",
@@ -1194,7 +1201,7 @@ const CHARACTER_ABILITIES = {
   trickster_rogue: {
     name: "SHADOWSTEP",
     description:
-      "Can gain 0.45 seconds of invincibility by grazing an adjacent hazard. Cooldown: 1.25 seconds.",
+      "Can gain 0.45 seconds of invincibility by grazing an adjacent hazard. Cannot change lanes while invincible. Cooldown: 2.5 seconds.",
   },
   trickster_echo: {
     name: "ECHO GRAZE",
@@ -1262,7 +1269,7 @@ const CHARACTER_ABILITIES = {
   },
   misc_broker: {
     name: "BETTER MARKET",
-    description: "Can make gems and 1v1 coins appear 25% more often.",
+    description: "Can make Endless Melons and 1v1 coins appear 25% more often, alongside its gem bonus.",
   },
   misc_prospector: {
     name: "GEM SURVEY",
@@ -1286,11 +1293,11 @@ const CHARACTER_ABILITIES = {
   },
   misc_catalyst: {
     name: "FLUX FIELD",
-    description: "Can make gems and coins move 25% slower.",
+    description: "Can make gems, Melons, and 1v1 coins move 25% slower.",
   },
   misc_harvester: {
     name: "CAREFUL HARVEST",
-    description: "Can make gems and coins move 45% slower.",
+    description: "Can make gems, Melons, and 1v1 coins move 45% slower.",
   },
   misc_muse: {
     name: "DREAM CONTROL",
@@ -1439,6 +1446,8 @@ const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
   };
 };
 const BASE_ITEM_SPEED = 0.0452;
+const ATTACK_COIN_SPAWN_CHANCE = 0.27;
+const MELON_BASE_SCORE = 200;
 const WAVE_SPEED_STEP = 0.25;
 const getWaveSpeedMultiplier = (waveNumber: number) =>
   1 + Math.max(0, waveNumber - 1) * WAVE_SPEED_STEP;
@@ -1462,6 +1471,20 @@ const GAME_MODE_RULES = {
   GameMode,
   { scoreMultiplier: number; hazardLaneLimit: number }
 >;
+const RANKED_UNLOCK_LEVEL = 20;
+const LEVEL_XP_BASE = 5_000_000;
+const getCumulativeXpForLevel = (level: number) => {
+  const normalizedLevel = Math.max(0, Math.floor(level));
+  return LEVEL_XP_BASE * normalizedLevel * (normalizedLevel + 1);
+};
+const createEmptyPlayerProgression = (): PlayerProgression => ({
+  level: 0,
+  xp: 0,
+  xp_required: getCumulativeXpForLevel(1),
+  lifetime_xp: 0,
+  completed_runs: 0,
+  ranked_unlocked: false,
+});
 const INVENTORY_CLASSES: ReadonlyArray<{
   key: keyof typeof CLASS_CHARACTERS;
   label: string;
@@ -1493,8 +1516,24 @@ const INVENTORY_CLASSES: ReadonlyArray<{
     description: "Everything else.",
   },
 ];
-const EXTRACTION_UNIT_COST = 4;
+const EXTRACTION_UNIT_COST = 3;
 const EXTRACTION_MAX_QUANTITY = 100;
+const DIRECT_UNLOCK_COSTS: Readonly<Record<Rarity, number>> = {
+  common: 5,
+  uncommon: 10,
+  rare: 15,
+  epic: 25,
+  legendary: 300,
+  mythic: 2000,
+};
+const DUPLICATE_REFUNDS: Readonly<Record<Rarity, number>> = {
+  common: 1,
+  uncommon: 1,
+  rare: 1,
+  epic: 1,
+  legendary: 2,
+  mythic: 3,
+};
 const EXTRACTION_BOXES = {
   regular: {
     name: "NORMAL BOX",
@@ -1504,7 +1543,7 @@ const EXTRACTION_BOXES = {
     mix: "5% CHARACTER + WEAPON · 95% COSMETIC",
     oddsLabel: "NORMAL PULL ODDS",
     note:
-      "DUPLICATES AWARD NOTHING · EVERY 10TH ITEM IN ONE MULTI-OPEN USES THE 10× BONUS ODDS",
+      "DUPLICATES REFUND BY RARITY · EVERY 10TH ITEM IN ONE MULTI-OPEN USES THE 10× BONUS ODDS",
     odds: [
       ["common", "45.75%"],
       ["uncommon", "30.2%"],
@@ -1521,7 +1560,7 @@ const EXTRACTION_BOXES = {
     icon: "◇×10",
     mix: "9 NORMAL PULLS · 1 LEGENDARY-ODDS PULL",
     oddsLabel: "10TH: 20% CHARACTER + WEAPON · 80% COSMETIC",
-    note: "DUPLICATES AWARD NOTHING · THE 10TH PULL IS NOT GUARANTEED NEW",
+    note: "DUPLICATES REFUND BY RARITY · THE 10TH PULL IS NOT GUARANTEED NEW",
     odds: [
       ["common", "3%"],
       ["uncommon", "12%"],
@@ -1551,6 +1590,7 @@ const supabase = createBrowserClient(
 function Obstacle({ kind }: { kind: Kind }) {
   if (kind === "gem") return <span>♦</span>;
   if (kind === "coin") return <span>●</span>;
+  if (kind === "melon") return <span aria-hidden="true">🍉</span>;
   if (kind === "mushroom") return <span aria-hidden="true">🍄</span>;
   if (kind === "current") return <span aria-hidden="true">≈</span>;
 
@@ -1623,6 +1663,8 @@ export default function Home() {
     [abilityNotice, setAbilityNotice] = useState(""),
     [shopOpen, setShopOpen] = useState(false),
     [shopStatus, setShopStatus] = useState(""),
+    [directPurchaseKey, setDirectPurchaseKey] = useState(""),
+    [directPurchaseBusy, setDirectPurchaseBusy] = useState(false),
     [inventoryOpen, setInventoryOpen] = useState(false),
     [inventoryStatus, setInventoryStatus] = useState(""),
     [extractBusy, setExtractBusy] = useState(false),
@@ -1651,6 +1693,9 @@ export default function Home() {
     last = useRef(0),
     userIdRef = useRef<string | null>(null),
     gemsRef = useRef(0),
+    gemStreakRef = useRef(0),
+    gemStreakResetPendingRef = useRef(false),
+    gemClaimQueueRef = useRef<Promise<void>>(Promise.resolve()),
     scoreRef = useRef(0),
     waveRef = useRef(1),
     highScoreRef = useRef(0),
@@ -1685,7 +1730,6 @@ export default function Home() {
     invincibleUntilRef = useRef(0),
     invincibilityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     abilityNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
-    reportPreviousPausedRef = useRef(false),
     waveAnnouncementTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
       null,
     ),
@@ -1890,7 +1934,6 @@ export default function Home() {
     [authBusy, setAuthBusy] = useState(false),
     [authMessage, setAuthMessage] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false),
-    [reportOpen, setReportOpen] = useState(false),
     [adminOpen, setAdminOpen] = useState(false),
     [isAdmin, setIsAdmin] = useState(false),
     [adminRole, setAdminRole] = useState<string | null>(null),
@@ -1927,14 +1970,8 @@ export default function Home() {
     [passwordStatus, setPasswordStatus] = useState("");
   const [editUsername, setEditUsername] = useState(false),
     [editPassword, setEditPassword] = useState(false);
-  const [playerProgression, setPlayerProgression] = useState<PlayerProgression>({
-    level: 1,
-    xp: 0,
-    xp_required: 100,
-    lifetime_xp: 0,
-    completed_runs: 0,
-    ranked_unlocked: false,
-  }),
+  const [playerProgression, setPlayerProgression] =
+      useState<PlayerProgression>(createEmptyPlayerProgression),
     [progressionRunVersion, setProgressionRunVersion] = useState(0),
     [lastRunXpBreakdown, setLastRunXpBreakdown] =
       useState<RunXpBreakdown | null>(null);
@@ -1983,11 +2020,14 @@ export default function Home() {
       if (userIdRef.current !== requestUserId) return;
       if (!value || typeof value !== "object") return;
       const payload = value as Partial<PlayerProgression>;
-      const level = Math.max(1, Math.floor(Number(payload.level) || 1));
+      const level = Math.max(0, Math.floor(Number(payload.level) || 0));
       const xp = Math.max(0, Math.floor(Number(payload.xp) || 0));
+      const levelXpRequired =
+        getCumulativeXpForLevel(level + 1) -
+        getCumulativeXpForLevel(level);
       const xpRequired = Math.max(
         1,
-        Math.floor(Number(payload.xp_required) || 100),
+        Math.floor(Number(payload.xp_required) || levelXpRequired),
       );
       const nextProgression: PlayerProgression = {
         level,
@@ -2001,7 +2041,8 @@ export default function Home() {
           0,
           Math.floor(Number(payload.completed_runs) || 0),
         ),
-        ranked_unlocked: payload.ranked_unlocked === true || level >= 25,
+        ranked_unlocked:
+          payload.ranked_unlocked === true || level >= RANKED_UNLOCK_LEVEL,
         xp_awarded:
           payload.xp_awarded === undefined
             ? undefined
@@ -2372,6 +2413,7 @@ export default function Home() {
     [obstacleCosmetic, setObstacleCosmetic] = useState(""),
     [environmentCosmetic, setEnvironmentCosmetic] = useState(""),
     [unlocks, setUnlocks] = useState<Unlock[]>([]),
+    [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]),
     [extractResults, setExtractResults] = useState<ExtractionResult[]>([]);
   // Treat the four included starter kits as the only client-side defaults.
   // Every other character must have a matching account unlock before it can
@@ -2465,7 +2507,7 @@ export default function Home() {
       !over ||
       guest ||
       !awardUserId ||
-      playScope === "practice" ||
+      playScope !== "single" ||
       !progressionRunIdRef.current ||
       progressionAwardedRunIdRef.current === progressionRunIdRef.current
     )
@@ -2474,16 +2516,20 @@ export default function Home() {
     const runId = progressionRunIdRef.current;
     progressionAwardedRunIdRef.current = runId;
     const awardRun = async () => {
+      await gemClaimQueueRef.current.catch(() => undefined);
+      if (
+        userIdRef.current !== awardUserId ||
+        progressionRunIdRef.current !== runId
+      )
+        return;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         if (userIdRef.current !== awardUserId) return;
-        const scope =
-          playScope === "versus" ? `${versusMode}_1v1` : "endless";
-        if (scope === "endless")
-          await supabase.rpc("sync_progression_run", {
-            p_run_id: runId,
-            p_wave: waveRef.current,
-            p_active: false,
-          });
+        const scope = "endless";
+        await supabase.rpc("sync_progression_run", {
+          p_run_id: runId,
+          p_wave: waveRef.current,
+          p_active: false,
+        });
         if (userIdRef.current !== awardUserId) return;
         let result = await supabase.rpc("award_completed_run_v2", {
           p_run_id: runId,
@@ -2544,7 +2590,6 @@ export default function Home() {
     over,
     playScope,
     progressionRunVersion,
-    versusMode,
   ]);
   useEffect(() => {
     if (mainView === "endless" && !running && !over)
@@ -2660,6 +2705,128 @@ export default function Home() {
     },
     [],
   );
+  const queueGemClaim = useCallback(
+    (contextId: string, pickupId: number, requestUserId: string) => {
+      const claim = async () => {
+        if (userIdRef.current !== requestUserId) return;
+        if (
+          gemStreakResetPendingRef.current &&
+          progressionRunIdRef.current === contextId
+        ) {
+          const { error: resetError } = await supabase.rpc(
+            "reset_endless_gem_streak",
+            { p_run_id: contextId },
+          );
+          if (resetError) {
+            console.error(
+              "Could not reset gem streak before pickup:",
+              resetError.message,
+            );
+            const { data: stats } = await supabase
+              .from("player_stats")
+              .select("total_gems")
+              .eq("user_id", requestUserId)
+              .maybeSingle();
+            if (userIdRef.current !== requestUserId) return;
+            const savedGems = Number(stats?.total_gems);
+            if (Number.isFinite(savedGems)) {
+              gemsRef.current = Math.max(0, savedGems);
+              setGems(gemsRef.current);
+            }
+            return;
+          }
+          gemStreakResetPendingRef.current = false;
+        }
+        const { data, error } = await supabase.rpc("claim_player_gem", {
+          p_context_id: contextId,
+          p_pickup_id: String(pickupId),
+        });
+        if (userIdRef.current !== requestUserId) return;
+        if (error) {
+          console.error("Could not save gem:", error.message);
+          const { data: stats } = await supabase
+            .from("player_stats")
+            .select("total_gems")
+            .eq("user_id", requestUserId)
+            .maybeSingle();
+          if (userIdRef.current !== requestUserId) return;
+          const savedGems = Number(stats?.total_gems);
+          if (!Number.isFinite(savedGems)) return;
+          gemsRef.current = Math.max(0, savedGems);
+          setGems(gemsRef.current);
+          return;
+        }
+        const totalGems = Number(data?.total_gems);
+        if (Number.isFinite(totalGems)) {
+          gemsRef.current = Math.max(0, totalGems);
+          setGems(gemsRef.current);
+        }
+        const awarded = Number(data?.gems_awarded);
+        const authoritativeStreak = Number(data?.streak);
+        if (Number.isFinite(authoritativeStreak))
+          gemStreakRef.current = Math.max(0, Math.floor(authoritativeStreak));
+        if (Number.isFinite(awarded) && awarded > 1)
+          showAbilityNotice(
+            `GEM STREAK ×${Math.floor(awarded)} · +${Math.floor(awarded)} GEMS`,
+            950,
+          );
+        applyProgressionPayload(data?.progression, requestUserId);
+      };
+      const queued = gemClaimQueueRef.current.then(claim, claim);
+      gemClaimQueueRef.current = queued.catch(() => undefined);
+    },
+    [applyProgressionPayload, showAbilityNotice],
+  );
+  const queueEndlessGemStreakReset = useCallback(
+    (nextWave?: number) => {
+      gemStreakRef.current = 0;
+      const runId = progressionRunIdRef.current;
+      const requestUserId = userIdRef.current;
+      if (!runId || !requestUserId) return;
+      gemStreakResetPendingRef.current = true;
+      const resetStreak = async () => {
+        if (
+          userIdRef.current !== requestUserId ||
+          progressionRunIdRef.current !== runId
+        ) {
+          gemStreakResetPendingRef.current = false;
+          return;
+        }
+        let lastError = "";
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const { error: syncError } = await supabase.rpc(
+            "sync_progression_run",
+            {
+              p_run_id: runId,
+              p_wave: nextWave ?? waveRef.current,
+              p_active: true,
+            },
+          );
+          const { error } = await supabase.rpc("reset_endless_gem_streak", {
+            p_run_id: runId,
+          });
+          if (!error) {
+            gemStreakResetPendingRef.current = false;
+            return;
+          }
+          lastError = error.message;
+          if (syncError)
+            console.error(
+              "Could not sync gem streak wave:",
+              syncError.message,
+            );
+          if (attempt < 2)
+            await new Promise<void>((resolve) =>
+              window.setTimeout(resolve, 200 * (attempt + 1)),
+            );
+        }
+        console.error("Could not reset gem streak:", lastError);
+      };
+      const queued = gemClaimQueueRef.current.then(resetStreak, resetStreak);
+      gemClaimQueueRef.current = queued.catch(() => undefined);
+    },
+    [],
+  );
   const applyVersusTimeStopState = useCallback(
     (
       payload: {
@@ -2752,6 +2919,10 @@ export default function Home() {
       }
     }, durationMs + 25);
   }, []);
+  const preserveFreezeThroughHit = useCallback((recoveryMs = 500) => {
+    const remaining = frozenUntilRef.current - Date.now();
+    if (remaining > 0) applyFreezeEffect(remaining + recoveryMs);
+  }, [applyFreezeEffect]);
   const resetCharacterAbilityState = useCallback(
     (restoredWave?: number) => {
       const restoring = restoredWave !== undefined;
@@ -2786,10 +2957,12 @@ export default function Home() {
       sparkBoostRemainingRef.current = 0;
       flareDamageWaveRef.current = restoring ? restoredWave : 0;
       flareBoostWaveRef.current = 0;
+      gemStreakRef.current = 0;
+      gemStreakResetPendingRef.current = false;
       orbitCooldownRemainingRef.current = restoring ? 3000 : 0;
       cometChargeRemainingRef.current = 8000;
       cometChargedRef.current = false;
-      rogueGrazeCooldownUntilRef.current = restoring ? now + 1250 : 0;
+      rogueGrazeCooldownUntilRef.current = restoring ? now + 2500 : 0;
       rogueGrazedItemIdsRef.current.clear();
       bloomGemWaveRef.current = restoring ? restoredWave : 0;
       sproutSeedWaveRef.current = restoring ? restoredWave : 0;
@@ -3144,6 +3317,8 @@ export default function Home() {
       )
         return;
       damageLockedRef.current = true;
+      preserveFreezeThroughHit(260);
+      if (playScope === "single") queueEndlessGemStreakReset();
       const nextHearts = Math.max(0, state.current.hearts - damage);
       state.current.hearts = nextHearts;
       setHearts(nextHearts);
@@ -3178,7 +3353,15 @@ export default function Home() {
         damageLockedRef.current = false;
       }, 240);
     },
-    [guest, isBotPractice, isOnlineVersus, showAbilityNotice],
+    [
+      guest,
+      isBotPractice,
+      isOnlineVersus,
+      playScope,
+      preserveFreezeThroughHit,
+      queueEndlessGemStreakReset,
+      showAbilityNotice,
+    ],
   );
   const triggerPitchKatana = useCallback(() => {
     if (
@@ -3349,6 +3532,7 @@ export default function Home() {
                   item.y < 91 &&
                   item.kind !== "gem" &&
                   item.kind !== "coin" &&
+                  item.kind !== "melon" &&
                   item.kind !== "snowflake",
               )
               .sort((left, right) => right.y - left.y)[0];
@@ -3386,6 +3570,8 @@ export default function Home() {
         state.current.paused ||
         state.current.wavePause ||
         turnLockedRef.current ||
+        (activeCharacter === "trickster_rogue" &&
+          invincibleUntilRef.current > Date.now()) ||
         (activeMapId === "pitch" &&
           isPitchKatanaMovementLocked(pitchKatanaRef.current, Date.now()))
       )
@@ -3418,7 +3604,11 @@ export default function Home() {
             if (
               state.current.running &&
               !state.current.paused &&
-              !state.current.wavePause
+              !state.current.wavePause &&
+              !(
+                activeCharacter === "trickster_rogue" &&
+                invincibleUntilRef.current > Date.now()
+              )
             )
               finishMove();
             turnLockedRef.current = false;
@@ -3434,7 +3624,11 @@ export default function Home() {
           if (
             state.current.running &&
             !state.current.paused &&
-            !state.current.wavePause
+            !state.current.wavePause &&
+            !(
+              activeCharacter === "trickster_rogue" &&
+              invincibleUntilRef.current > Date.now()
+            )
           )
             finishMove();
           turnLockedRef.current = false;
@@ -3446,6 +3640,7 @@ export default function Home() {
     },
     [
       activeLaneCount,
+      activeCharacter,
       activeMapId,
       completeMove,
       hasCharacterAbility,
@@ -4271,7 +4466,9 @@ export default function Home() {
       return;
     }
     if (versusMode === "ranked" && !playerProgression.ranked_unlocked) {
-      setVersusResult("RANKED 1V1 UNLOCKS AT LEVEL 25");
+      setVersusResult(
+        `RANKED 1V1 UNLOCKS AT LEVEL ${RANKED_UNLOCK_LEVEL}`,
+      );
       return;
     }
     if (versusSearchingRef.current || versusLeaving) return;
@@ -4603,7 +4800,6 @@ export default function Home() {
         !shopOpen &&
         !inventoryOpen &&
         !leaderboardOpen &&
-        !reportOpen &&
         !adminOpen &&
         !usernameRequired
       )
@@ -4621,7 +4817,6 @@ export default function Home() {
     mainView,
     move,
     pulseGame,
-    reportOpen,
     reset,
     settingsOpen,
     shopOpen,
@@ -4831,8 +5026,10 @@ export default function Home() {
           ),
           gemThreshold = 1 - gemChance,
           versusGemThreshold = 1 - 0.025 * characterGemMultiplier,
-          versusCoinChance =
-            activeCharacter === "misc_broker" ? 0.27 * 1.25 : 0.27,
+          attackPickupChance =
+            activeCharacter === "misc_broker"
+              ? ATTACK_COIN_SPAWN_CHANCE * 1.25
+              : ATTACK_COIN_SPAWN_CHANCE,
           sameHazardLimit =
             activeCharacter === "misc_muse"
               ? 2
@@ -4863,7 +5060,8 @@ export default function Home() {
           return selected;
         };
         let kind: Kind;
-        if (isVersusRun && r < versusCoinChance) kind = "coin";
+        if (isVersusRun && r < attackPickupChance) kind = "coin";
+        else if (!isVersusRun && r < attackPickupChance) kind = "melon";
         else if (isVersusRun && r > versusGemThreshold) kind = "gem";
         else if (r < danger || isVersusRun) kind = randomHazard();
         else if (r > gemThreshold) kind = "gem";
@@ -4983,18 +5181,24 @@ export default function Home() {
           )
             speedFactor *= 0.82;
           if (
-            (item.kind === "gem" || item.kind === "coin") &&
+            (item.kind === "gem" ||
+              item.kind === "coin" ||
+              item.kind === "melon") &&
             activeCharacter === "misc_mimic" &&
             mimicPhase === 2
           )
             speedFactor *= 0.65;
           if (
-            (item.kind === "gem" || item.kind === "coin") &&
+            (item.kind === "gem" ||
+              item.kind === "coin" ||
+              item.kind === "melon") &&
             activeCharacter === "misc_catalyst"
           )
             speedFactor *= 0.75;
           if (
-            (item.kind === "gem" || item.kind === "coin") &&
+            (item.kind === "gem" ||
+              item.kind === "coin" ||
+              item.kind === "melon") &&
             activeCharacter === "misc_harvester"
           )
             speedFactor *= 0.55;
@@ -5049,7 +5253,7 @@ export default function Home() {
               activeCharacter === "trickster_rogue" &&
               rogueGrazeCooldownUntilRef.current <= Date.now()
             ) {
-              rogueGrazeCooldownUntilRef.current = Date.now() + 1250;
+              rogueGrazeCooldownUntilRef.current = Date.now() + 2500;
               grantInvincibility(450);
               showAbilityNotice("SHADOWSTEP · GRAZE SHIELD");
             }
@@ -5077,7 +5281,9 @@ export default function Home() {
           }
           const rangerPickup =
             activeCharacter === "runner_ranger" &&
-            (n.kind === "gem" || n.kind === "coin") &&
+            (n.kind === "gem" ||
+              n.kind === "coin" ||
+              n.kind === "melon") &&
             Math.abs(n.lane - state.current.lane) <= 1;
           const rangerPulled =
             rangerPickup && n.lane !== state.current.lane;
@@ -5108,6 +5314,7 @@ export default function Home() {
             if (
               n.kind === "gem" ||
               n.kind === "coin" ||
+              n.kind === "melon" ||
               n.kind === "mushroom"
             ) {
               if (processedPickupIdsRef.current.has(n.id)) return [];
@@ -5356,12 +5563,20 @@ export default function Home() {
             } else if (n.kind === "gem") {
               void audioEngine.playSfx("gem");
               if (!isBotPractice) {
-                const total = gemsRef.current + 1;
+                const gemAward = isVersusRun
+                  ? 1
+                  : (gemStreakRef.current += 1);
+                const total = gemsRef.current + gemAward;
                 gemsRef.current = total;
                 setGems(total);
                 setGemBump(false);
                 requestAnimationFrame(() => setGemBump(true));
                 setTimeout(() => setGemBump(false), 500);
+                if (guest && gemAward > 1)
+                  showAbilityNotice(
+                    `GEM STREAK ×${gemAward} · +${gemAward} GEMS`,
+                    950,
+                  );
               }
               if (activeCharacter === "runner_spark") {
                 sparkBoostRemainingRef.current = 10000;
@@ -5405,39 +5620,16 @@ export default function Home() {
               const gemContextId = progressionRunIdRef.current;
               const gemRequestUserId = userIdRef.current;
               if (!isBotPractice && gemRequestUserId && gemContextId)
-                void supabase
-                  .rpc("claim_player_gem", {
-                    p_context_id: gemContextId,
-                    p_pickup_id: String(n.id),
-                  })
-                  .then(({ data, error }) => {
-                    if (userIdRef.current !== gemRequestUserId) return;
-                    if (error) {
-                      console.error("Could not save gem:", error.message);
-                      void supabase
-                        .from("player_stats")
-                        .select("total_gems")
-                        .eq("user_id", gemRequestUserId)
-                        .maybeSingle()
-                        .then(({ data: stats }) => {
-                          if (userIdRef.current !== gemRequestUserId) return;
-                          const savedGems = Number(stats?.total_gems);
-                          if (!Number.isFinite(savedGems)) return;
-                          gemsRef.current = Math.max(0, savedGems);
-                          setGems(Math.max(0, savedGems));
-                        });
-                      return;
-                    }
-                    const totalGems = Number(data?.total_gems);
-                    if (Number.isFinite(totalGems)) {
-                      gemsRef.current = totalGems;
-                      setGems(totalGems);
-                    }
-                    applyProgressionPayload(
-                      data?.progression,
-                      gemRequestUserId,
-                    );
-                  });
+                queueGemClaim(gemContextId, n.id, gemRequestUserId);
+            } else if (n.kind === "melon") {
+              void audioEngine.playSfx("gem");
+              const melonScore = Math.max(
+                0,
+                Math.floor(MELON_BASE_SCORE * currentCoinMultiplierRef.current),
+              );
+              scoreRef.current += melonScore;
+              setScore(scoreRef.current);
+              showAbilityNotice(`MELON · +${melonScore} SCORE`, 900);
             } else if (n.kind === "coin") {
               void audioEngine.playSfx("gem");
               if (isBotPractice) {
@@ -5691,6 +5883,9 @@ export default function Home() {
                 }, 150);
                 return [];
               }
+              preserveFreezeThroughHit();
+              if (playScope === "single")
+                queueEndlessGemStreakReset();
               void audioEngine.playSfx("hit");
               damageTakenWaveRef.current = wave;
               if (hasCharacterAbility("medic_mender"))
@@ -5889,6 +6084,7 @@ export default function Home() {
                 item.lane !== state.current.lane ||
                 item.kind === "gem" ||
                 item.kind === "coin" ||
+                item.kind === "melon" ||
                 item.kind === "mushroom",
             )
           : recoveryRetained;
@@ -6153,7 +6349,10 @@ export default function Home() {
     grantInvincibility,
     applyFreezeEffect,
     clearFreezeEffect,
+    preserveFreezeThroughHit,
     showAbilityNotice,
+    queueGemClaim,
+    queueEndlessGemStreakReset,
     queueOnlineCoinAward,
     applyAuthoritativeVersusPoints,
     applyProgressionPayload,
@@ -6166,6 +6365,8 @@ export default function Home() {
     if (next !== wave) {
       const completedWave = next - 1;
       setWave(next);
+      if (playScope === "single") queueEndlessGemStreakReset(next);
+      else gemStreakRef.current = 0;
       volcanoStationaryMsRef.current = 0;
       if (activeMapId === "pitch") {
         pitchKatanaRef.current = resetPitchKatanaAtWaveEnd(
@@ -6441,6 +6642,7 @@ export default function Home() {
     versusOpponentHearts,
     showAbilityNotice,
     acknowledgeSpawnedVersusAttacks,
+    queueEndlessGemStreakReset,
   ]);
   useEffect(() => {
     if (versusPhase !== "intermission") return;
@@ -6856,14 +7058,7 @@ export default function Home() {
       const nextUserId = user?.id ?? null;
       if (userIdRef.current !== nextUserId) {
         progressionOwnerUserIdRef.current = null;
-        setPlayerProgression({
-          level: 1,
-          xp: 0,
-          xp_required: 100,
-          lifetime_xp: 0,
-          completed_runs: 0,
-          ranked_unlocked: false,
-        });
+        setPlayerProgression(createEmptyPlayerProgression());
       }
       userIdRef.current = nextUserId;
       if (user) {
@@ -6957,14 +7152,7 @@ export default function Home() {
         setObstacleCosmetic("");
         setEnvironmentCosmetic("");
         progressionOwnerUserIdRef.current = null;
-        setPlayerProgression({
-          level: 1,
-          xp: 0,
-          xp_required: 100,
-          lifetime_xp: 0,
-          completed_runs: 0,
-          ranked_unlocked: false,
-        });
+        setPlayerProgression(createEmptyPlayerProgression());
       }
       setAuthReady(true);
     };
@@ -7052,14 +7240,7 @@ export default function Home() {
     );
     userIdRef.current = null;
     progressionOwnerUserIdRef.current = null;
-    setPlayerProgression({
-      level: 1,
-      xp: 0,
-      xp_required: 100,
-      lifetime_xp: 0,
-      completed_runs: 0,
-      ranked_unlocked: false,
-    });
+    setPlayerProgression(createEmptyPlayerProgression());
     invalidateVersusSearch();
     resetVersusClientSync();
     closeVersusChannel();
@@ -7113,7 +7294,6 @@ export default function Home() {
     setWaveProgress(0);
     setLastRunXpBreakdown(null);
     setSettingsOpen(false);
-    setReportOpen(false);
     setAdminOpen(false);
     setShopOpen(false);
     setInventoryOpen(false);
@@ -7223,18 +7403,6 @@ export default function Home() {
       setAppealStatus("Appeal submitted. An admin will review your note.");
     }
     setAppealBusy(false);
-  };
-  const openReportForm = () => {
-    cancelPendingProgressionStart();
-    reportPreviousPausedRef.current = state.current.paused;
-    setReportStatus("");
-    setPauseMenuOpen(false);
-    setPaused(true);
-    setReportOpen(true);
-  };
-  const closeReportForm = () => {
-    setReportOpen(false);
-    setPaused(reportPreviousPausedRef.current);
   };
   const saveUsername = async (e: FormEvent) => {
     e.preventDefault();
@@ -7389,7 +7557,7 @@ export default function Home() {
     if (guest) return;
     const sessionUserId = userIdRef.current;
     if (!sessionUserId) return;
-    const [{ data: owned }, { data: loadout }] = await Promise.all([
+    const [ownedResult, loadoutResult, catalogResult] = await Promise.all([
       supabase
         .from("player_unlocks")
         .select("item_key,item_type,rarity")
@@ -7401,11 +7569,40 @@ export default function Home() {
         )
         .eq("user_id", sessionUserId)
         .maybeSingle(),
+      supabase
+        .from("extraction_catalog")
+        .select("item_key,item_type,rarity,display_name,extractable")
+        .eq("active", true),
     ]);
     if (userIdRef.current !== sessionUserId) return;
+    const collectionError =
+      ownedResult.error ?? loadoutResult.error ?? catalogResult.error;
+    if (collectionError) {
+      setInventoryStatus(`Could not load inventory: ${collectionError.message}`);
+      return;
+    }
+    const owned = ownedResult.data;
+    const loadout = loadoutResult.data;
+    const catalog = catalogResult.data;
     const ownedItems = (owned ?? []) as Unlock[];
+    const availableCatalog = (catalog ?? []) as CatalogItem[];
+    const lockedCatalog = availableCatalog.filter(
+      (item) =>
+        item.extractable !== false &&
+        !ownedItems.some(
+          (ownedItem) =>
+            ownedItem.item_key === item.item_key &&
+            ownedItem.item_type === item.item_type,
+        ),
+    );
     const safeLoadout = normalizeOwnedLoadout(ownedItems, loadout);
     setUnlocks(ownedItems);
+    setCatalogItems(availableCatalog);
+    setDirectPurchaseKey((current) =>
+      lockedCatalog.some((item) => item.item_key === current)
+        ? current
+        : lockedCatalog[0]?.item_key ?? "",
+    );
     setSelectedCharacter(safeLoadout.characterKey);
     setPlayerCosmetic(safeLoadout.playerCosmetic);
     setObstacleCosmetic(safeLoadout.obstacleCosmetic);
@@ -7502,8 +7699,24 @@ export default function Home() {
       }));
       const newCount = results.filter((item) => item.is_new).length;
       const duplicateCount = results.length - newCount;
+      const duplicateRefund = Math.max(
+        0,
+        Number(
+          data?.refund ??
+            results.reduce(
+              (total, item) =>
+                total +
+                (item.is_new
+                  ? 0
+                  : Number.isFinite(Number(item.duplicate_refund))
+                    ? Number(item.duplicate_refund)
+                    : DUPLICATE_REFUNDS[item.rarity]),
+              0,
+            ),
+        ) || 0,
+      );
       setShopStatus(
-        `${results.length} ITEM${results.length === 1 ? "" : "S"} REVEALED — ${newCount} NEW · ${duplicateCount} DUPLICATE${duplicateCount === 1 ? "" : "S"}`,
+        `${results.length} ITEM${results.length === 1 ? "" : "S"} REVEALED — ${newCount} NEW · ${duplicateCount} DUPLICATE${duplicateCount === 1 ? "" : "S"} · ♦ ${duplicateRefund} REFUNDED`,
       );
       await loadCollection();
     } catch {
@@ -7592,6 +7805,85 @@ export default function Home() {
         : `${item.item_key.replaceAll("_", " ").toUpperCase()} equipped.`,
     );
   };
+  const equipDefaultCosmetic = async (
+    slot: "player" | "obstacle" | "environment",
+  ) => {
+    const applyDefault = () => {
+      if (slot === "player") setPlayerCosmetic("");
+      if (slot === "obstacle") setObstacleCosmetic("");
+      if (slot === "environment") setEnvironmentCosmetic("");
+    };
+    if (guest) {
+      applyDefault();
+      setInventoryStatus(`DEFAULT ${slot.toUpperCase()} LOOK EQUIPPED.`);
+      return;
+    }
+    const { error } = await supabase.rpc("set_loadout", {
+      p_slot: slot,
+      p_item: "",
+    });
+    if (!error) applyDefault();
+    setInventoryStatus(
+      error
+        ? error.message
+        : `DEFAULT ${slot.toUpperCase()} LOOK EQUIPPED.`,
+    );
+  };
+  const purchaseCatalogItem = async () => {
+    if (guest || !userIdRef.current) {
+      setInventoryStatus("Sign in to unlock a permanent item.");
+      return;
+    }
+    if (directPurchaseBusy) return;
+    const item = catalogItems.find(
+      (catalogItem) =>
+        catalogItem.item_key === directPurchaseKey &&
+        catalogItem.extractable !== false &&
+        !unlocks.some(
+          (ownedItem) =>
+            ownedItem.item_key === catalogItem.item_key &&
+            ownedItem.item_type === catalogItem.item_type,
+        ),
+    );
+    if (!item) {
+      setInventoryStatus("Choose a locked item first.");
+      return;
+    }
+    const cost = DIRECT_UNLOCK_COSTS[item.rarity];
+    if (gemsRef.current < cost) {
+      setInventoryStatus(`You need ♦ ${cost} to unlock this item.`);
+      return;
+    }
+    setDirectPurchaseBusy(true);
+    setInventoryStatus(`Unlocking ${item.display_name ?? item.item_key}…`);
+    try {
+      const { data, error } = await supabase.rpc("purchase_catalog_item", {
+        p_item_key: item.item_key,
+      });
+      if (error) {
+        setInventoryStatus(error.message);
+        return;
+      }
+      const nextGems = Number(data?.total_gems ?? data?.gems);
+      if (Number.isFinite(nextGems)) {
+        gemsRef.current = Math.max(0, nextGems);
+        setGems(gemsRef.current);
+      }
+      await loadCollection();
+      const chargedCost = Math.max(0, Number(data?.cost) || 0);
+      setInventoryStatus(
+        data?.already_owned
+          ? `${(item.display_name ?? item.item_key).toUpperCase()} WAS ALREADY OWNED · NO GEMS SPENT.`
+          : `${(item.display_name ?? item.item_key).toUpperCase()} UNLOCKED FOR ♦ ${chargedCost}.`,
+      );
+    } catch {
+      setInventoryStatus(
+        "The direct unlock could not be confirmed. Check your balance before trying again.",
+      );
+    } finally {
+      setDirectPurchaseBusy(false);
+    }
+  };
   const loadLeaderboard = async () => {
     cancelPendingProgressionStart();
     const { data } = await supabase.rpc("get_leaderboard");
@@ -7631,6 +7923,27 @@ export default function Home() {
   const ownedEnvironments = unlocks.filter(
     (item) => item.item_type === "environment",
   );
+  const lockedCatalogItems = catalogItems
+    .filter(
+      (item) =>
+        item.extractable !== false &&
+        !unlocks.some(
+          (ownedItem) =>
+            ownedItem.item_key === item.item_key &&
+            ownedItem.item_type === item.item_type,
+        ),
+    )
+    .sort(
+      (left, right) =>
+        RARITY_ORDER[left.rarity] - RARITY_ORDER[right.rarity] ||
+        (left.display_name ?? left.item_key).localeCompare(
+          right.display_name ?? right.item_key,
+        ),
+    );
+  const directPurchaseItem =
+    lockedCatalogItems.find((item) => item.item_key === directPurchaseKey) ??
+    lockedCatalogItems[0] ??
+    null;
   const focusedCharacter = CLASS_CHARACTERS[
     inventoryCharacter.classKey
   ].find((character) => character.key === inventoryCharacter.characterKey);
@@ -8051,12 +8364,24 @@ export default function Home() {
     isOnlineVersus &&
     versusSelfEliminated &&
     versusPhase !== "finished";
+  const showPlayerLevel =
+    !guest &&
+    mainView === "endless" &&
+    playScope === "single" &&
+    !running &&
+    !over &&
+    !settingsOpen &&
+    !shopOpen &&
+    !inventoryOpen &&
+    !leaderboardOpen &&
+    !adminOpen &&
+    !usernameRequired;
   return (
     <main className={`game-shell mode-${mode} ${flash}`}>
       <div
-        className={`game-layout view-${mainView}${!guest ? " has-top-report" : ""}`}
+        className={`game-layout view-${mainView}${showPlayerLevel ? " has-player-level" : ""}`}
       >
-        {!guest && (
+        {showPlayerLevel && (
           <div className="report-utility-bar">
             <div
               className="player-level-card"
@@ -8090,35 +8415,15 @@ export default function Home() {
                   />
                 </i>
                 <small className="player-xp-sources">
-                  GEM +20 · COIN +3 · WAVE +10 · 10s +1
+                  ENDLESS SCORE² ÷ 4 · +100,000 PER GEM
                 </small>
                 <em>
                   {playerProgression.ranked_unlocked
                     ? "RANKED 1V1 UNLOCKED"
-                    : `${Math.max(0, 25 - playerProgression.level)} LEVELS TO RANKED`}
+                    : `${Math.max(0, RANKED_UNLOCK_LEVEL - playerProgression.level)} LEVELS TO RANKED`}
                 </em>
               </span>
             </div>
-            <button
-              className="top-report-button"
-              type="button"
-              aria-label={
-                isVersusRun
-                  ? "Report an issue after the current 1v1 ends"
-                  : "Report an issue"
-              }
-              aria-controls="player-report-dialog"
-              disabled={isVersusRun}
-              onClick={openReportForm}
-            >
-              <span aria-hidden="true">!</span>
-              <span>
-                <b>REPORT</b>
-                <small>
-                  {isVersusRun ? "AFTER THIS 1V1" : "SEND AN ISSUE"}
-                </small>
-              </span>
-            </button>
           </div>
         )}
         <section className="mode-actions" aria-label="Game modes">
@@ -8316,7 +8621,7 @@ export default function Home() {
                       <small>
                         {playerProgression.ranked_unlocked
                           ? "ELO ENABLED · COMPETITIVE"
-                          : `LOCKED · REACH LEVEL 25 (LVL ${playerProgression.level})`}
+                          : `LOCKED · REACH LEVEL ${RANKED_UNLOCK_LEVEL} (LVL ${playerProgression.level})`}
                       </small>
                     </button>
                   </div>
@@ -8971,12 +9276,15 @@ export default function Home() {
                 )}
                 {over && !guest && lastRunXpBreakdown && (
                   <div className="run-xp-summary" aria-label="Run XP earned">
-                    <strong>+{lastRunXpBreakdown.total} XP</strong>
+                    <strong>
+                      +{lastRunXpBreakdown.total.toLocaleString()} XP
+                    </strong>
                     <small>
-                      FINISH +{lastRunXpBreakdown.finish} · SCORE +
-                      {lastRunXpBreakdown.score} · WAVES +
-                      {lastRunXpBreakdown.waves} · PLAYTIME +
-                      {lastRunXpBreakdown.playtime}
+                      SCORE² ÷ 4 +
+                      {lastRunXpBreakdown.score.toLocaleString()} ·{" "}
+                      {lastRunXpBreakdown.gem_count.toLocaleString()} GEM
+                      {lastRunXpBreakdown.gem_count === 1 ? "" : "S"} +
+                      {lastRunXpBreakdown.gems.toLocaleString()}
                     </small>
                   </div>
                 )}
@@ -9190,62 +9498,6 @@ export default function Home() {
             </>
           )}
         </section>
-        {reportOpen && !guest && (
-          <div
-            className="report-backdrop"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="player-report-title"
-          >
-            <section className="report-modal" id="player-report-dialog">
-              <button
-                className="report-close"
-                type="button"
-                onClick={closeReportForm}
-                aria-label="Close report form"
-              >
-                ×
-              </button>
-              <p>PLAYER SUPPORT</p>
-              <h2 id="player-report-title">REPORT AN ISSUE</h2>
-              <form onSubmit={submitReport}>
-                <label>
-                  WHAT HAPPENED?
-                  <select
-                    value={reportType}
-                    onChange={(event) => setReportType(event.target.value)}
-                  >
-                    <option>Bug</option>
-                    <option>Gameplay problem</option>
-                    <option>Account problem</option>
-                    <option>Suggestion</option>
-                    <option>Other</option>
-                  </select>
-                </label>
-                <label>
-                  DETAILS
-                  <textarea
-                    value={reportMessage}
-                    onChange={(event) => setReportMessage(event.target.value)}
-                    minLength={10}
-                    maxLength={1500}
-                    placeholder="Tell us what happened and what you expected…"
-                    required
-                  />
-                </label>
-                <small>{reportMessage.length}/1500</small>
-                {reportStatus && (
-                  <div className="report-status" role="status">
-                    {reportStatus}
-                  </div>
-                )}
-                <button disabled={reportBusy}>
-                  {reportBusy ? "SENDING…" : "SEND REPORT →"}
-                </button>
-              </form>
-            </section>
-          </div>
-        )}
         {(settingsOpen || usernameRequired) && !guest && (
           <div className="report-backdrop" role="dialog" aria-modal="true">
             <section className="settings-modal">
@@ -9518,6 +9770,7 @@ export default function Home() {
                             </small>
                           ))}
                         </span>
+                        <small className="box-note">{box.note}</small>
                         <div className="extract-quantity">
                           <b>QTY</b>
                           <button
@@ -9580,6 +9833,14 @@ export default function Home() {
                     );
                   },
                 )}
+              </div>
+              <div className="duplicate-refund-chart">
+                <b>DUPLICATE REFUNDS</b>
+                {(Object.keys(DUPLICATE_REFUNDS) as Rarity[]).map((rarity) => (
+                  <span key={rarity} className={rarity}>
+                    {rarity.toUpperCase()} +♦ {DUPLICATE_REFUNDS[rarity]}
+                  </span>
+                ))}
               </div>
               <div ref={extractFeedbackRef} className="extract-feedback">
                 {extractAnimation !== "idle" && extractingOption ? (
@@ -9685,6 +9946,66 @@ export default function Home() {
                 ))}
               </div>
               <div className="inventory-scroll">
+                {!guest && (
+                  <section className="inventory-direct-unlock">
+                    <header>
+                      <div>
+                        <small>CHOOSE EXACTLY WHAT YOU WANT</small>
+                        <h3>DIRECT UNLOCK</h3>
+                      </div>
+                      <strong>♦ {gems} BALANCE</strong>
+                    </header>
+                    <div className="direct-unlock-prices" aria-label="Direct unlock prices">
+                      {(Object.keys(DIRECT_UNLOCK_COSTS) as Rarity[]).map(
+                        (rarity) => (
+                          <span key={rarity} className={rarity}>
+                            <b>{rarity}</b>
+                            <small>♦ {DIRECT_UNLOCK_COSTS[rarity]}</small>
+                          </span>
+                        ),
+                      )}
+                    </div>
+                    {directPurchaseItem ? (
+                      <div className="direct-unlock-picker">
+                        <label>
+                          LOCKED ITEM
+                          <select
+                            value={directPurchaseItem.item_key}
+                            disabled={directPurchaseBusy}
+                            onChange={(event) => {
+                              setDirectPurchaseKey(event.target.value);
+                              setInventoryStatus("");
+                            }}
+                          >
+                            {lockedCatalogItems.map((item) => (
+                              <option key={item.item_key} value={item.item_key}>
+                                {(item.display_name ?? item.item_key).toUpperCase()} ·{" "}
+                                {item.item_type.toUpperCase()} · {item.rarity.toUpperCase()} · ♦{" "}
+                                {DIRECT_UNLOCK_COSTS[item.rarity]}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          disabled={
+                            directPurchaseBusy ||
+                            gems < DIRECT_UNLOCK_COSTS[directPurchaseItem.rarity]
+                          }
+                          onClick={() => void purchaseCatalogItem()}
+                        >
+                          {directPurchaseBusy
+                            ? "UNLOCKING…"
+                            : `UNLOCK FOR ♦ ${DIRECT_UNLOCK_COSTS[directPurchaseItem.rarity]}`}
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="direct-unlock-complete">
+                        EVERY AVAILABLE ITEM IS ALREADY UNLOCKED.
+                      </p>
+                    )}
+                  </section>
+                )}
                 <details
                   className="inventory-section inventory-obstacles"
                   id="inventory-obstacle"
@@ -9723,6 +10044,19 @@ export default function Home() {
                       )}
                     </div>
                     <div className="inventory-cosmetic-grid">
+                      <button
+                        className={`default-look${
+                          obstacleCosmetic === "" ? " equipped" : ""
+                        }`}
+                        onClick={() => void equipDefaultCosmetic("obstacle")}
+                      >
+                        <span className="cosmetic-swatch">◆</span>
+                        <b>default obstacles</b>
+                        <small>
+                          INCLUDED
+                          {obstacleCosmetic === "" ? " · EQUIPPED" : ""}
+                        </small>
+                      </button>
                       {ownedObstacleCosmetics.length === 0 ? (
                         <div className="inventory-empty">
                           {guest
@@ -9765,6 +10099,19 @@ export default function Home() {
                       <em>{ownedEnvironments.length}</em>
                     </summary>
                     <div className="inventory-cosmetic-grid environments">
+                      <button
+                        className={`default-look${
+                          environmentCosmetic === "" ? " equipped" : ""
+                        }`}
+                        onClick={() => void equipDefaultCosmetic("environment")}
+                      >
+                        <span className="cosmetic-swatch">▰</span>
+                        <b>default track</b>
+                        <small>
+                          INCLUDED
+                          {environmentCosmetic === "" ? " · EQUIPPED" : ""}
+                        </small>
+                      </button>
                       {ownedEnvironments.length === 0 ? (
                         <div className="inventory-empty">
                           No environment cosmetics collected yet.
@@ -10013,6 +10360,23 @@ export default function Home() {
                                 <em>{ownedPlayerCosmetics.length}</em>
                               </summary>
                               <div className="inventory-cosmetic-grid player-looks">
+                                <button
+                                  className={`default-look${
+                                    playerCosmetic === "" ? " equipped" : ""
+                                  }`}
+                                  onClick={() =>
+                                    void equipDefaultCosmetic("player")
+                                  }
+                                >
+                                  <span className="cosmetic-swatch">✦</span>
+                                  <b>default runner</b>
+                                  <small>
+                                    INCLUDED
+                                    {playerCosmetic === ""
+                                      ? " · EQUIPPED"
+                                      : ""}
+                                  </small>
+                                </button>
                                 {ownedPlayerCosmetics.length === 0 ? (
                                   <div className="inventory-empty">
                                     {guest
