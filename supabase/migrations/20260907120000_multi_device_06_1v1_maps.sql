@@ -15,7 +15,7 @@
 --     The four-argument overload additionally consumes a server-sent attack;
 --     natural obstacles use the three-argument form.
 --   * update_1v1_state keeps its legacy signature.  The first eliminated player
---     stops while the match remains live; the second receives exactly 75 score,
+--     stops while the match remains live; the second receives exactly 280 score,
 --     then the server chooses the higher score or records a draw.
 --   * sync_1v1_score cannot advance an eliminated/left/finished player score.
 --   * activate_1v1_zenith_time_stop(uuid, bigint) accepts the caller's latest
@@ -1069,7 +1069,7 @@ begin
   limit 1;
 
   update public.multiplayer_players player
-  set score = player.score + 75,
+  set score = player.score + 280,
       second_death_bonus_awarded = true,
       updated_at = p_now
   where player.match_id = p_match_id
@@ -1635,7 +1635,7 @@ begin
       'intermission_ends_at', v_match.intermission_ends_at,
       'winner_user_id', v_match.winner_user_id,
       'is_draw', v_match.status = 'finished' and v_match.winner_user_id is null,
-      'second_death_bonus_points', 75,
+      'second_death_bonus_points', 280,
       'started_at', v_match.started_at,
       'finished_at', v_match.finished_at
     ),
@@ -1904,7 +1904,7 @@ begin
     10000::bigint + floor(v_elapsed_seconds * 25000)::bigint
   ) + v_mushroom_score
     + case when new.zenith_time_stop_used then 15000 else 0 end
-    + case when new.second_death_bonus_awarded then 75 else 0 end;
+    + case when new.second_death_bonus_awarded then 280 else 0 end;
   if new.score < 0 or new.score > v_score_ceiling then
     raise exception '1v1 score exceeds the server play-time allowance';
   end if;
@@ -3183,9 +3183,18 @@ grant execute on function public.update_1v1_position(uuid, integer)
 grant execute on function public.update_1v1_state(
   uuid, numeric, integer, bigint, text
 ) to authenticated;
-grant execute on function public.award_1v1_points(
-  uuid, text, integer, text
-) to authenticated;
+-- Multi-device 07 retires the single-pickup RPC. If its batch RPC is already
+-- installed, preserve that secure intermission-only surface on rerun.
+do $$
+begin
+  if to_regprocedure(
+       'public.sync_1v1_intermission_coins(uuid,text[])'
+     ) is not null then
+    execute 'grant execute on function public.sync_1v1_intermission_coins(uuid,text[])
+      to authenticated';
+  end if;
+end;
+$$;
 grant execute on function public.award_1v1_mushroom(uuid, integer, text)
   to authenticated;
 grant execute on function public.send_1v1_attack(uuid, text, integer)
@@ -3272,10 +3281,10 @@ select
     ))
   ) > 0 as shared_last_uses_all_other_seven,
   position(
-    $$player.score + 75$$ in pg_get_functiondef(to_regprocedure(
+    $$player.score + 280$$ in pg_get_functiondef(to_regprocedure(
       'app_private.finalize_1v1_after_second_death(uuid,timestamp with time zone)'
     ))
-  ) > 0 as second_death_gets_75_once,
+  ) > 0 as second_death_gets_280_once,
   position(
     $$else null$$ in pg_get_functiondef(to_regprocedure(
       'app_private.finalize_1v1_after_second_death(uuid,timestamp with time zone)'
@@ -3308,15 +3317,13 @@ select
   ) and not has_table_privilege(
     'authenticated', 'public.multiplayer_katana_events', 'SELECT'
   ) as new_private_tables_are_rpc_only,
-  has_function_privilege(
-    'authenticated',
-    'public.award_1v1_points(uuid,text,integer,text)',
-    'EXECUTE'
+  not has_function_privilege(
+    'authenticated','public.award_1v1_points(uuid,text,integer,text)','EXECUTE'
   ) and not has_function_privilege(
     'authenticated',
     'public.award_1v1_points(uuid,text,integer)',
     'EXECUTE'
-  ) as only_receipt_coin_rpc_is_client_callable,
+  ) as single_pickup_coin_rpcs_are_retired,
   has_function_privilege(
     'authenticated', 'public.reflect_1v1_attack(uuid,text,text)', 'EXECUTE'
   ) and has_function_privilege(

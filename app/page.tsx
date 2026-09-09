@@ -11,6 +11,16 @@ import { createBrowserClient } from "@supabase/ssr";
 import { audioEngine, type Soundtrack } from "./audio-engine";
 import { AdminPlayerEditor } from "./admin-player-editor";
 import {
+  calculateTankDamage,
+  generateJesterWaveEffect,
+  getCitadelOpeningBlocks,
+  getFortuneGemSpawnChance,
+  resolveWeaverSnowflake,
+  selectSentinelAnalyzedSource,
+  type HazardKind,
+  type TankCharacterKey,
+} from "./character-balance-rules";
+import {
   ATTACK_POINT_COSTS,
   CURRENT_RULES,
   GROVE_RULES,
@@ -64,9 +74,30 @@ type Item = {
   attackSafeLanes?: readonly number[];
   formationSpeed?: number;
   seededUntilWave?: number;
+  deactivated?: boolean;
 };
 type GameMode = "normal" | "hardcore" | "impossible";
 type OracleProphecy = "no-hit" | "completion" | "near-death";
+const ORACLE_PROPHECY_COPY: Record<
+  OracleProphecy,
+  { condition: string; reward: string; reducedReward: string }
+> = {
+  "no-hit": {
+    condition: "FINISH WITHOUT CONTACT",
+    reward: "NEXT WAVE INVINCIBLE",
+    reducedReward: "NEXT WAVE 10-SECOND SHIELD",
+  },
+  completion: {
+    condition: "GET HIT · FINISH ABOVE 1 HP",
+    reward: "FULL HEAL",
+    reducedReward: "+2 HP",
+  },
+  "near-death": {
+    condition: "FINISH AT 1 HP OR LESS",
+    reward: "CHOOSE A HEALER PASSIVE",
+    reducedReward: "LEARN A RANDOM HEALER PASSIVE",
+  },
+};
 type AbilityChoice =
   | { kind: "lifeline-lane" }
   | { kind: "pacer-character" }
@@ -788,18 +819,6 @@ const VERSUS_INTERMISSION_SECONDS = 10;
 const VERSUS_MAX_HEARTS = 12;
 const createVersusPickupNonce = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
-const isTransportLikeError = (message: string) => {
-  const normalized = message.toLowerCase();
-  return [
-    "network",
-    "fetch",
-    "timeout",
-    "timed out",
-    "connection",
-    "socket",
-    "load failed",
-  ].some((fragment) => normalized.includes(fragment));
-};
 const isCoinSetupError = (message: string) => {
   const normalized = message.toLowerCase();
   return [
@@ -809,15 +828,6 @@ const isCoinSetupError = (message: string) => {
     "valid coin pickup id",
     "coins must be awarded",
     "invalid coin",
-  ].some((fragment) => normalized.includes(fragment));
-};
-const isCoinMatchStateError = (message: string) => {
-  const normalized = message.toLowerCase();
-  return [
-    "match not found",
-    "no longer active",
-    "active 1v1 play",
-    "sign in required",
   ].some((fragment) => normalized.includes(fragment));
 };
 const normalizeVersusHearts = (value: number) => {
@@ -978,15 +988,15 @@ const CLASS_CHARACTERS = {
     { key: "tank_plow", name: "Plow", weapon: "Ram Shield", rarity: "uncommon" },
     { key: "trickster_rogue", name: "Rogue", weapon: "Daggers", rarity: "uncommon" },
     { key: "trickster_clockwork", name: "Clockwork", weapon: "Time Cards", rarity: "uncommon" },
-    { key: "trickster_flicker", name: "Flicker", weapon: "Blink Knives", rarity: "uncommon" },
-    { key: "runner_flare", name: "Flare", weapon: "Signal Spear", rarity: "rare" },
+    { key: "trickster_flicker", name: "Flicker", weapon: "Blink Knives", rarity: "rare" },
+    { key: "runner_flare", name: "Flare", weapon: "Signal Spear", rarity: "epic" },
     { key: "trickster_pickpocket", name: "Pickpocket", weapon: "Coin Dagger", rarity: "rare" },
     { key: "trickster_switch", name: "Switch", weapon: "Twin Coins", rarity: "rare" },
-    { key: "trickster_gambit", name: "Gambit", weapon: "Loaded Cards", rarity: "rare" },
+    { key: "trickster_gambit", name: "Gambit", weapon: "Loaded Cards", rarity: "legendary" },
     { key: "medic_vial", name: "Vial", weapon: "Tonic Flask", rarity: "epic" },
     { key: "trickster_mirage", name: "Mirage", weapon: "Prism Fans", rarity: "epic" },
     { key: "runner_comet", name: "Comet", weapon: "Star Spear", rarity: "legendary" },
-    { key: "trickster_hex", name: "Hex", weapon: "Void Chakram", rarity: "legendary" },
+    { key: "trickster_hex", name: "Hex", weapon: "Void Chakram", rarity: "mythic" },
     { key: "trickster_echo", name: "Echo", weapon: "Repeat Knives", rarity: "mythic" },
   ],
   misc: [
@@ -1069,29 +1079,29 @@ const CHARACTER_ABILITIES = {
   runner_scout: {
     name: "QUICKSTEP",
     description:
-      "Can cut snowflake freeze to 1.5 seconds and frozen lane-change delay to 0.125 seconds.",
+      "Cuts freeze to 1.5 seconds. Press E and repeat the timed input to make the next snowflake heal 0.5 HP; 50-second cooldown.",
   },
   runner_drift: {
     name: "SLIPSTREAM",
     description:
-      "Can gain 15% more score for 1.25 seconds after a lane change. Another lane change refreshes the boost.",
+      "Lane changes within 0.5 seconds stack +15% score and hazard speed, up to +200%; taking damage resets the chain.",
   },
   runner_ranger: {
-    name: "PICKUP MAGNET",
-    description: "Can collect gems, Melons, and 1v1 coins from either neighboring lane.",
+    name: "PICKUP ZIP",
+    description: "Press E every 30 seconds to zip to an on-screen pickup. Melons award double score.",
   },
   runner_fortune: {
     name: "FORTUNE FINDER",
-    description: "Can make gems appear 2× as often.",
+    description: "Each gem collected this run adds 1 percentage point to gem spawn chance, up to +100%.",
   },
   runner_relay: {
     name: "OVERCHARGE RELAY",
     description: "Every two completed waves overcharges a heart. Its discharge clears the closest obstacle in every lane.",
   },
   runner_comet: {
-    name: "STAR DRIVE",
+    name: "HEATFEAST",
     description:
-      "Can earn 50% more score after 8 seconds without damage. The boost ends when hit.",
+      "Halves 1v1 obstacle prices, doubles sent amounts, and stores both players' spending in shared HEATFEAST thresholds.",
   },
   runner_pacer: {
     name: "WAVE RUSH",
@@ -1099,18 +1109,18 @@ const CHARACTER_ABILITIES = {
       "Makes hazards 3× faster with 5× score for each wave's first 15 seconds. On death, pass the baton to a non-Runner once.",
   },
   runner_vault: {
-    name: "SPIKE VAULT",
-    description: "Can vault over the first spike hit each wave.",
+    name: "HAZARD VAULT",
+    description: "Vaults over the first spike or log hit each wave.",
   },
   runner_spark: {
     name: "CRYSTAL CHARGE",
     description:
-      "Can earn 50% more score for 10 seconds after collecting a gem. Another gem refreshes the boost.",
+      "Every gem collected adds a permanent 1% score boost for the current run.",
   },
   runner_flare: {
-    name: "CLEAN RUN",
+    name: "SIGNAL FLARE",
     description:
-      "Can earn 50% more score during the next wave after completing a wave without taking damage.",
+      "Press E to burn logs, barrels, and snowflakes in one lane for 15 seconds; every 10 burns shortens its cooldown.",
   },
   runner_orbit: {
     name: "LANE ORBIT",
@@ -1152,7 +1162,7 @@ const CHARACTER_ABILITIES = {
   medic_mercy: {
     name: "GRACE GUARD",
     description:
-      "Can reduce the first hit worth at least 1 HP by 1 HP once each wave, with a minimum of 0.5 HP damage.",
+      "The first hit each wave deals half damage; after every protected hit there is a 25% chance the protection continues.",
   },
   medic_pulse: {
     name: "LAST PULSE",
@@ -1163,8 +1173,8 @@ const CHARACTER_ABILITIES = {
     description: "Restores HP to 5 after every third completed wave, but otherwise heals 1 HP only every two waves.",
   },
   medic_vial: {
-    name: "CRYSTAL TONIC",
-    description: "Can gain 2 seconds of invincibility from every gem.",
+    name: "SWITCH ALLEGIANCE",
+    description: "Gems cost 1 HP and each wave heals to full. Press E once to reverse obstacle effects for 30 seconds.",
   },
   medic_lifeline: {
     name: "LIFELINE",
@@ -1197,27 +1207,27 @@ const CHARACTER_ABILITIES = {
   tank_bulwark: {
     name: "HEAVY PLATE",
     description:
-      "Can reduce the first hit worth at least 1 HP by 0.5 HP once each wave.",
+      "Takes 20% less damage from every source and reduces the first heavy hit of each wave by another 0.5 HP.",
   },
   tank_guard: {
-    name: "EXTRA PLATE",
-    description: "Can reach 4.5 HP.",
+    name: "GUARDED PACE",
+    description: "Takes 30% less damage from every source and earns 10% less score.",
   },
   tank_ironclad: {
     name: "IRON SHELL",
-    description: "Can reduce log damage to 0.5 HP.",
+    description: "Takes no log damage and takes 50% more damage from every other source.",
   },
   tank_warden: {
     name: "SPIKE LOCK",
-    description: "Can ignore every spike hit.",
+    description: "Can reach 4 HP, takes 25% less damage, and can click or tap spikes to deactivate them.",
   },
   tank_citadel: {
-    name: "EVEN WALL",
-    description: "Can ignore the first damaging hit during every even-numbered wave.",
+    name: "FLAWLESS WALL",
+    description: "Ignores 1–3 opening obstacles based on consecutive flawless waves.",
   },
   tank_colossus: {
     name: "COLOSSUS FRAME",
-    description: "Can reach 5.5 HP and reduce rock damage to 1.5 HP.",
+    description: "Can reach 10 HP, heals 2 HP only after flawless waves, and gains score, slowdown, and rock resistance from excess HP.",
   },
   tank_glacier: {
     name: "FROST ARMOR",
@@ -1225,28 +1235,28 @@ const CHARACTER_ABILITIES = {
   },
   tank_brace: {
     name: "SPIKE BRACE",
-    description: "Can reduce spike damage to 0.5 HP.",
+    description: "Takes no spike damage and takes 50% more damage from every other source.",
   },
   tank_hammer: {
     name: "DEMOLITION",
     description:
-      "Can reach 5 HP, reduce log damage to 0.5 HP, and ignore the first barrel each wave.",
+      "Takes 10% less damage. Press E to destroy the nearest non-rock in the current lane and its neighboring lanes.",
   },
   tank_anchor: {
-    name: "STONEGUARD",
-    description: "Can reduce rock damage to 1 HP.",
+    name: "GROUND HOOK",
+    description: "Press E to lock lane movement and take 75% less damage for 5 seconds.",
   },
   tank_rampart: {
-    name: "THIRD WALL",
-    description: "Can ignore every third damaging collision.",
+    name: "LASTING RAMPART",
+    description: "Takes 20–50% less damage as exact HP falls from 2 to 0.5.",
   },
   tank_sentinel: {
-    name: "LAST STAND",
-    description: "Can survive one lethal hit per run with 0.5 HP.",
+    name: "ANALYZE",
+    description: "Analyzes the run's highest-damage hazard each wave, ignores its first hit, then takes 75% less damage from it. E slows barrels for 15 seconds.",
   },
   tank_atlas: {
     name: "WORLD BEARER",
-    description: "Can reach 6 HP and heal 1 HP each wave, but must switch lanes before the sky-crush timer expires. Ordinary hits cannot lower Atlas below 1 HP.",
+    description: "Can reach 7 HP and heal 1 HP each wave. Every obstacle hit shortens Sky Crush by 0.5 seconds, down to 1 second.",
   },
   tank_drag: {
     name: "HEAVY DRAG",
@@ -1264,63 +1274,63 @@ const CHARACTER_ABILITIES = {
   tank_bastion: {
     name: "HOLD GROUND",
     description:
-      "Can gain 0.5 HP of armor after staying in one lane for 6 seconds. Moving before it charges restarts the timer. The next damaging hit consumes the armor.",
+      "Gains 5% damage reduction per full second in one lane, up to one fully blocked hit after 20 seconds. Moving or being hit resets it.",
   },
   trickster_rogue: {
     name: "SHADOWSTEP",
     description:
-      "Can gain 0.45 seconds of invincibility by grazing an adjacent hazard. Cannot change lanes while invincible. Cooldown: 2.5 seconds.",
+      "Grazes charge a meter once every 5 seconds. Press E at 2, 5, or 10 charges for a shield, full clear, or 5-second shield.",
   },
   trickster_echo: {
-    name: "ECHO GRAZE",
-    description: "Can gain 0.65 seconds of invincibility and 40 + 10× wave score by grazing an adjacent hazard. Cooldown: 2 seconds.",
+    name: "THE MIRROR",
+    description: "Completes sequential Mirror quests to earn shards and borrow passives; its final realm reflects damage and changes death rules.",
   },
   trickster_flicker: {
-    name: "FIRST FLICKER",
+    name: "FATE FLICKER",
     description:
-      "Can gain 0.75 seconds of invincibility from the first lane change each wave.",
+      "Press E once per wave to turn the closest hazard in every lane into a gem, Melon, or attack coin.",
   },
   trickster_switch: {
-    name: "REVERSAL",
+    name: "LANE COUNT",
     description:
-      "Can gain 0.5 seconds of invincibility by reversing lane-change direction. Cooldown: 2 seconds.",
+      "At 50 lane changes gains 10% score; at 100, each change grants a delayed 0.25-second shield.",
   },
   trickster_gambit: {
-    name: "HIGH STAKES",
+    name: "COUNTING CARDS",
     description:
-      "Can gain 75% more score for 2 seconds by grazing an adjacent hazard. Cooldown: 2.5 seconds.",
+      "Draws five cards each wave and turns poker hands into temporary, permanent, healing, defense, and 1v1 rewards.",
   },
   trickster_jester: {
-    name: "ENCORE",
-    description: "Can start every wave with 1.25 seconds of invincibility.",
+    name: "WILD ENCORE",
+    description: "Rolls one positive, matched score-and-speed, or negative modifier at the start of every wave.",
   },
   trickster_mirage: {
-    name: "AFTERIMAGE",
+    name: "MIRAGE INVASION",
     description:
-      "Can gain 0.65 seconds of invincibility from a lane change. Cooldown: 2.5 seconds.",
+      "Press E once per wave to invade for 5 seconds while invincible, then lose 1 HP on return.",
   },
   trickster_hex: {
-    name: "VOID CUT",
+    name: "VOID REALM",
     description:
-      "Can destroy the nearest damaging obstacle in the destination lane every third lane change.",
+      "Enters the Void on even waves to collect Damnation, unlock damage reduction and souls, and eventually challenge Hades.",
   },
   trickster_phantom: {
-    name: "PHASE VEIL",
-    description: "Can ignore the first damaging obstacle each wave.",
+    name: "MOON PHASE",
+    description: "Ignores the first hit of each hazard kind. Nights add 50% speed, double score, block two of each kind and snowflakes; Bloodmoons turn two red hazard kinds into +2 HP and snowflakes into +1 HP. LORDSDOWN grants 10 HP and death ascends into a 6-HP LORD with hit negation and Eviscerate.",
   },
   trickster_smoke: {
-    name: "SMOKE SCREEN",
+    name: "SMOKE BOMB",
     description:
-      "Can make hazards move 35% slower for 2.5 seconds after surviving a hit.",
+      "Press E every 20 seconds to teleport to a currently safe lane.",
   },
   trickster_clockwork: {
-    name: "TIME TRICK",
+    name: "CLOCKWORK SLOW",
     description:
-      "Can make hazards move 30% slower for 1.25 seconds after every sixth lane change. Cooldown: 5 seconds.",
+      "Starts with hazards 10% slower and adds 0.5% slow each second, up to 60%.",
   },
   trickster_pickpocket: {
-    name: "CLOSE COUNT",
-    description: "Can gain 50 + 10× wave score after every seventh hazard safely passed.",
+    name: "DOUBLE TAKE",
+    description: "Doubles all score and gem income; in 1v1, E can steal 10% of rival attack coins once per wave.",
   },
   trickster_wildcard: {
     name: "LUCKY DRAW",
@@ -1328,48 +1338,48 @@ const CHARACTER_ABILITIES = {
       "Can draw one wave-long bonus: 15% more score, 50% more gem spawns, or 15% slower hazards.",
   },
   misc_nomad: {
-    name: "OPEN ROAD",
-    description: "Can make every hazard move 7% slower.",
+    name: "SURVIVAL INSTINCT",
+    description: "A lethal hit has a 50% one-time chance to leave 0.5 HP and permanently slow hazards by 20%.",
   },
   misc_tinker: {
-    name: "SPIKE TIMER",
-    description: "Can make spikes move 25% slower.",
+    name: "INSPIRATION",
+    description: "Click each spike once for inspiration; at 3, press E to launch a handmade spike that destroys a projectile.",
   },
   misc_broker: {
-    name: "BETTER MARKET",
-    description: "Can make Endless Melons and 1v1 coins appear 25% more often, alongside its gem bonus.",
+    name: "MARKET FUNDS",
+    description: "Stores gems, coins, and Melons in separate funds that move by 1–50% each wave with a 60% chance to rise.",
   },
   misc_prospector: {
     name: "GEM SURVEY",
-    description: "Can make gems appear 60% more often.",
+    description: "Warns 5 seconds before each gem appears and highlights its future lane.",
   },
   misc_lantern: {
-    name: "DANGER LIGHT",
-    description: "Can make rocks and spikes move 15% slower.",
+    name: "FLASH OF LIGHT",
+    description: "Press E to freeze every hazard for 2 seconds.",
   },
   misc_scribe: {
-    name: "THREE-RUNE RULE",
-    description: "Can limit consecutive spawns of the same hazard to 3 instead of 4.",
+    name: "HAZARD CAP",
+    description: "At wave end, chooses one hazard to cap at at least 1 and otherwise wave divided by 10 spawns next wave.",
   },
   misc_weaver: {
-    name: "THAWING THREAD",
-    description: "Can make snowflakes move 35% slower.",
+    name: "THAWING JACKET",
+    description: "After 5 snowflakes, press E for permanent freeze immunity; every second later snowflake heals 0.5 HP once per wave.",
   },
   misc_mimic: {
-    name: "COPIED CYCLE",
-    description: "Can cycle each wave between hazards 18% slower, gems 75% more often, and pickups 35% slower.",
+    name: "COPYCAT",
+    description: "Copies a non-Mythic rival in 1v1; in Endless, selects two Rare-or-lower passives for the run.",
   },
   misc_catalyst: {
     name: "FLUX FIELD",
-    description: "Can make gems, Melons, and 1v1 coins move 25% slower.",
+    description: "Far pickups move 50% slower and nearby pickups 50% faster. Press E to collect every pickup on screen.",
   },
   misc_harvester: {
-    name: "CAREFUL HARVEST",
-    description: "Can make gems, Melons, and 1v1 coins move 45% slower.",
+    name: "HARVEST",
+    description: "Every pickup fund unlocks its own E power at 10 collected and a much stronger version at 50.",
   },
   misc_muse: {
-    name: "DREAM CONTROL",
-    description: "Can make every hazard move 18% slower and limit consecutive matching hazards to 2.",
+    name: "RHYTHM BREAK",
+    description: "Caps the screen at 5 hazards and uses a one-time 30-second rhythm challenge to unlock lasting music, defense, score, healing, and revive tiers.",
   },
 } as const satisfies Record<
   RosterCharacterKey,
@@ -1405,21 +1415,42 @@ const getCharacterMaxHearts = (
   characterKey: string,
   characterClass: string,
 ) =>
-  characterKey === "medic_patch"
+  characterKey === "trickster_phantom"
+    ? 3
+    : characterKey === "medic_patch"
     ? 4
     : characterKey === "tank_atlas"
-    ? 6
-    : characterKey === "medic_beacon" || characterKey === "tank_colossus"
+    ? 7
+    : characterKey === "tank_colossus"
+      ? 10
+    : characterKey === "medic_beacon"
       ? 5.5
-      : characterKey === "tank_guard"
-        ? 4.5
-        : characterKey === "medic_suture" || characterKey === "tank_hammer"
+      : characterKey === "medic_suture" || characterKey === "tank_hammer"
           ? 5
           : characterClass === "tank"
             ? 4
             : characterClass === "trickster"
               ? 2
               : 3;
+const getCharacterStartingHearts = (
+  characterKey: string,
+  characterClass: string,
+) =>
+  characterKey === "trickster_phantom"
+    ? 3
+    : characterClass === "tank"
+      ? 4
+      : characterClass === "trickster"
+        ? 2
+        : 3;
+const PHANTOM_BLOODMOON_HAZARDS: readonly Kind[] = [
+  "car",
+  "log",
+  "rock",
+  "barrel",
+  "spikes",
+  "current",
+];
 const WEAPON_SCORE_BONUS_BY_RARITY: Readonly<Record<Rarity, number>> = {
   common: 0.03,
   uncommon: 0.04,
@@ -1443,6 +1474,7 @@ const UNIQUE_WEAPON_EFFECTS: Partial<Record<CharacterKey, string>> = {
   tank_atlas: "HALF DAMAGE FOR 2 SECONDS AFTER A LANE CHANGE",
   medic_revive: "AFTER A HIT · DESTROY THE FIRST OBSTACLE EACH WAVE",
   medic_oracle: "1ST HIT 0 DAMAGE · 2ND HIT HALF · THEN FULL",
+  tank_brace: "+15% DISTANCE SCORE",
 };
 const getCharacterWeaponScoreBonus = (
   characterKey: CharacterKey,
@@ -1450,6 +1482,8 @@ const getCharacterWeaponScoreBonus = (
 ) =>
   characterKey === "runner_velocity"
     ? 0.1
+    : characterKey === "tank_brace"
+      ? 0.15
     : UNIQUE_WEAPON_EFFECTS[characterKey]
       ? 0
       : getWeaponScoreBonus(rarity);
@@ -1589,7 +1623,7 @@ const DIRECT_UNLOCK_COSTS: Readonly<Record<Rarity, number>> = {
   uncommon: 10,
   rare: 15,
   epic: 25,
-  legendary: 300,
+  legendary: 175,
   mythic: 2000,
 };
 const DUPLICATE_REFUNDS: Readonly<Record<Rarity, number>> = {
@@ -1757,7 +1791,9 @@ export default function Home() {
     [waveForecast, setWaveForecast] = useState<string[]>([]),
     [waveForecastCollapsed, setWaveForecastCollapsed] = useState(false),
     [deferredAttackGroups, setDeferredAttackGroups] = useState<Item[][]>([]),
-    [velocityDisplayPercent, setVelocityDisplayPercent] = useState(0);
+    [velocityDisplayPercent, setVelocityDisplayPercent] = useState(0),
+    [phantomHealthCap, setPhantomHealthCap] = useState(3),
+    [phantomLord, setPhantomLord] = useState(false);
   const id = useRef(0),
     last = useRef(0),
     itemsSnapshotRef = useRef<Item[]>(items),
@@ -1798,7 +1834,11 @@ export default function Home() {
     collisionWaveRef = useRef(0),
     damageTakenWaveRef = useRef(0),
     driftBoostRemainingRef = useRef(0),
+    driftLastMoveAtRef = useRef(0),
+    driftStackPercentRef = useRef(0),
     sparkBoostRemainingRef = useRef(0),
+    sparkGemCountRef = useRef(0),
+    fortuneGemCountRef = useRef(0),
     flareDamageWaveRef = useRef(0),
     flareBoostWaveRef = useRef(0),
     orbitCooldownRemainingRef = useRef(0),
@@ -1811,6 +1851,7 @@ export default function Home() {
       null,
     ),
     rogueGrazeCooldownUntilRef = useRef(0),
+    rogueGrazeMeterRef = useRef(0),
     rogueGrazedItemIdsRef = useRef<Set<number>>(new Set()),
     bloomGemWaveRef = useRef(0),
     sproutSeedWaveRef = useRef(0),
@@ -1850,18 +1891,68 @@ export default function Home() {
     damageLockedRef = useRef(false),
     frozenUntilRef = useRef(0),
     firstGuardWaveRef = useRef(0),
+    mercyChainActiveRef = useRef(true),
     hammerBreakWaveRef = useRef(0),
     wardenBlockWaveRef = useRef(0),
     citadelBlockWaveRef = useRef(0),
     bastionChargeRemainingRef = useRef(6000),
     bastionArmorChargedRef = useRef(false),
+    citadelFlawlessStreakRef = useRef(0),
+    citadelBlocksRemainingRef = useRef(1),
+    sentinelDamageByKindRef = useRef<Partial<Record<Kind, number>>>({}),
+    sentinelAnalyzedKindRef = useRef<Kind | null>(null),
+    sentinelAnalyzedBlockWaveRef = useRef(0),
+    sentinelBarrelSlowUntilRef = useRef(0),
+    sentinelActionWaveRef = useRef(0),
+    anchorGuardUntilRef = useRef(0),
+    anchorLaneLockedRef = useRef(false),
+    jesterEffectRef = useRef<{
+      kind: "first-zero" | "half" | "barrel-zero" | "neutral" | "first-double" | "more" | "barrel-double";
+      percent: number;
+      firstUsed: boolean;
+    }>({ kind: "first-zero", percent: 0, firstUsed: false }),
     sentinelLastStandUsedRef = useRef(false),
     phantomPhaseWaveRef = useRef(0),
+    phantomKindHitsRef = useRef<Partial<Record<Kind, number>>>({}),
+    phantomBloodmoonKindsRef = useRef<Set<Kind>>(new Set()),
+    phantomHealthCapRef = useRef(3),
+    phantomLordRef = useRef(false),
+    phantomLordNegationStreakRef = useRef(0),
     smokeSlowRemainingRef = useRef(0),
+    smokeCooldownUntilRef = useRef(0),
     clockworkMoveCountRef = useRef(0),
     clockworkSlowRemainingRef = useRef(0),
     clockworkCooldownRemainingRef = useRef(0),
+    clockworkElapsedMsRef = useRef(0),
     pickpocketPassedCountRef = useRef(0),
+    pickpocketUsedWaveRef = useRef(0),
+    switchLaneChangesRef = useRef(0),
+    flickerUsedWaveRef = useRef(0),
+    flareLaneRef = useRef<number | null>(null),
+    flareActiveUntilRef = useRef(0),
+    flareCooldownUntilRef = useRef(0),
+    flareBurnCountRef = useRef(0),
+    vialAllegianceUntilRef = useRef(0),
+    vialUsedRef = useRef(false),
+    mirageUsedWaveRef = useRef(0),
+    obstacleFreezeUntilRef = useRef(0),
+    lanternCooldownUntilRef = useRef(0),
+    scoutInputWindowUntilRef = useRef(0),
+    scoutSnowflakeHealReadyRef = useRef(false),
+    scoutCooldownUntilRef = useRef(0),
+    dragChainRef = useRef<{ wave: number; lane: number } | null>(null),
+    nomadSurvivalUsedRef = useRef(false),
+    tinkerInspirationRef = useRef(0),
+    tinkerClickedSpikeIdsRef = useRef<Set<number>>(new Set()),
+    rangerCooldownUntilRef = useRef(0),
+    brokerFundsRef = useRef({ gems: 0, coins: 0, melons: 0 }),
+    prospectorNoticeWaveRef = useRef(0),
+    weaverSnowflakeCountRef = useRef(0),
+    weaverJacketRef = useRef(false),
+    weaverHealWaveRef = useRef(0),
+    weaverHealedAmountRef = useRef(0),
+    harvesterCountsRef = useRef({ gems: 0, coins: 0, melons: 0 }),
+    harvesterCooldownUntilRef = useRef(0),
     wildcardBuffRef = useRef<"score" | "gems" | "slow" | null>(null),
     ambientHazardStreakRef = useRef<{ kind: Kind | null; count: number }>({
       kind: null,
@@ -1878,6 +1969,7 @@ export default function Home() {
     spawnedAttackIdsRef = useRef<Set<string>>(new Set()),
     queuedAttackTokenIdsRef = useRef<Set<string>>(new Set()),
     processedPickupIdsRef = useRef<Set<number>>(new Set()),
+    pendingVersusCoinPickupIdsRef = useRef<Set<string>>(new Set()),
     versusPickupNonceRef = useRef(createVersusPickupNonce()),
     versusFinishedRef = useRef(false),
     versusSelfEliminatedRef = useRef(false),
@@ -1890,7 +1982,7 @@ export default function Home() {
       createFactoryConveyorState(),
     ),
     versusPointsRef = useRef(0),
-    versusCoinAwardQueueRef = useRef<Promise<void>>(Promise.resolve()),
+    versusCoinSyncBusyRef = useRef(false),
     versusStateSyncQueueRef = useRef<Promise<void>>(Promise.resolve()),
     versusScoreSyncPendingRef = useRef(false),
     versusTransitionBusyRef = useRef(false),
@@ -2111,6 +2203,9 @@ export default function Home() {
     [playScope, setPlayScope] = useState<PlayScope>("single"),
     [versusMode, setVersusMode] = useState<VersusMode>("casual"),
     [versusMap, setVersusMap] = useState<MapId>("classic"),
+    [practiceMapChoice, setPracticeMapChoice] = useState<MapId | "random">(
+      "random",
+    ),
     [mapPriority, setMapPriority] = useState<MapId[]>([
       ...DEFAULT_MAP_PRIORITY,
     ]),
@@ -2397,9 +2492,10 @@ export default function Home() {
   );
   const resetVersusClientSync = useCallback(() => {
     processedPickupIdsRef.current.clear();
+    pendingVersusCoinPickupIdsRef.current.clear();
+    versusCoinSyncBusyRef.current = false;
     pendingKatanaReflectionIdsRef.current.clear();
     versusPickupNonceRef.current = createVersusPickupNonce();
-    versusCoinAwardQueueRef.current = Promise.resolve();
     versusStateSyncQueueRef.current = Promise.resolve();
     versusScoreSyncPendingRef.current = false;
     versusTransitionBusyRef.current = false;
@@ -2412,118 +2508,55 @@ export default function Home() {
       versusSyncRetryTimerRef.current = null;
     }
   }, []);
-  const reconcileVersusPoints = useCallback(
-    async (matchId: string, requestUserId: string) => {
+  const queueOnlineCoinAward = useCallback(
+    (matchId: string, pickupId: number) => {
+      if (!userIdRef.current || versusMatchRef.current !== matchId) return;
+      const pickupClaimId = `coin:${versusPickupNonceRef.current}:${pickupId}`;
+      if (pendingVersusCoinPickupIdsRef.current.has(pickupClaimId)) return;
+      pendingVersusCoinPickupIdsRef.current.add(pickupClaimId);
+
+      // Coins are collected instantly for responsive play, but their receipts
+      // are intentionally sent to Supabase only after this wave enters its
+      // intermission. The server replaces this preview with the exact balance.
+      const previewAward =
+        getAttackPointsForCoin(versusMapRef.current) *
+        currentCoinMultiplierRef.current;
+      versusPointsRef.current += previewAward;
+      setVersusPoints(versusPointsRef.current);
+    },
+    [],
+  );
+  const syncIntermissionCoinClaims = useCallback(
+    async (matchId: string) => {
+      const requestUserId = userIdRef.current;
+      const pickupIds = Array.from(pendingVersusCoinPickupIdsRef.current);
+      if (!requestUserId || pickupIds.length === 0) return true;
       try {
-        if (userIdRef.current !== requestUserId) return false;
-        const { data, error } = await supabase.rpc("get_1v1_state", {
-          p_match_id: matchId,
-        });
+        const { data, error } = await supabase.rpc(
+          "sync_1v1_intermission_coins",
+          { p_match_id: matchId, p_pickup_ids: pickupIds },
+        );
         if (
-          error ||
           userIdRef.current !== requestUserId ||
           versusMatchRef.current !== matchId
         )
           return false;
-        applyAuthoritativeVersusPoints(data?.self?.obstacle_points);
+        if (error) {
+          if (isCoinSetupError(error.message))
+            setVersusResult("1V1 COIN DATABASE SETUP IS MISSING");
+          return false;
+        }
+        pickupIds.forEach((pickupId) =>
+          pendingVersusCoinPickupIdsRef.current.delete(pickupId),
+        );
+        applyAuthoritativeVersusPoints(data?.obstacle_points);
+        void refreshProgression(requestUserId);
         return true;
       } catch {
         return false;
       }
     },
-    [applyAuthoritativeVersusPoints],
-  );
-  const queueOnlineCoinAward = useCallback(
-    (matchId: string, pickupId: number) => {
-      const requestUserId = userIdRef.current;
-      if (!requestUserId) return;
-      const pickupClaimId = `coin:${versusPickupNonceRef.current}:${pickupId}`;
-      const awardCoin = async () => {
-        let attempt = 0;
-        while (
-          userIdRef.current === requestUserId &&
-          versusMatchRef.current === matchId &&
-          !versusFinishedRef.current
-        ) {
-          let lastError = "";
-          try {
-            const { data, error } = await supabase.rpc("award_1v1_points", {
-              p_match_id: matchId,
-              p_source: "coin",
-              p_amount: 1,
-              p_pickup_id: pickupClaimId,
-            });
-            if (
-              userIdRef.current !== requestUserId ||
-              versusMatchRef.current !== matchId
-            )
-              return;
-            if (!error) {
-              applyAuthoritativeVersusPoints(data?.obstacle_points);
-              void refreshProgression(requestUserId);
-              return;
-            }
-            lastError = error.message;
-          } catch {
-            lastError = "connection interrupted";
-          }
-          if (!isTransportLikeError(lastError)) {
-            if (
-              isCoinSetupError(lastError) ||
-              !isCoinMatchStateError(lastError)
-            ) {
-              setVersusResult("1V1 COIN DATABASE SETUP IS MISSING");
-              return;
-            }
-            const restored = await hydrateVersusStateRef.current?.(
-              matchId,
-              true,
-            );
-            if (
-              !restored &&
-              userIdRef.current === requestUserId &&
-              versusMatchRef.current === matchId
-            ) {
-              versusFinishedRef.current = true;
-              setVersusPhase("finished");
-              setVersusIntermissionReady(false);
-              setRunning(false);
-              setPaused(false);
-              setOver(true);
-              setVersusResult(
-                lastError.toLowerCase().includes("sign in")
-                  ? "SIGN IN AGAIN TO CONTINUE 1V1"
-                  : "THIS 1V1 MATCH IS NO LONGER ACTIVE",
-              );
-            }
-            return;
-          }
-          attempt += 1;
-          if (attempt % 3 === 0) {
-            await reconcileVersusPoints(matchId, requestUserId);
-            if (
-              userIdRef.current !== requestUserId ||
-              versusMatchRef.current !== matchId
-            )
-              return;
-            setVersusResult(
-              `COIN SAVE DELAYED · RETRYING · ${lastError.toUpperCase()}`,
-            );
-          }
-          await new Promise((resolve) =>
-            setTimeout(resolve, Math.min(2000, 200 * 2 ** attempt)),
-          );
-        }
-      };
-      const queued = enqueueVersusStateSync(awardCoin);
-      versusCoinAwardQueueRef.current = queued.catch(() => undefined);
-    },
-    [
-      applyAuthoritativeVersusPoints,
-      enqueueVersusStateSync,
-      reconcileVersusPoints,
-      refreshProgression,
-    ],
+    [applyAuthoritativeVersusPoints, refreshProgression],
   );
   const isOnlineVersus = playScope === "versus";
   const isBotPractice = playScope === "practice";
@@ -2591,8 +2624,10 @@ export default function Home() {
     const requiredWave = unlockWave[characterKey];
     return requiredWave !== undefined && wave >= requiredWave;
   }, [activeCharacter, wave]);
-  const baseStartingHearts =
-    activeClass === "tank" ? 4 : activeClass === "trickster" ? 2 : 3;
+  const baseStartingHearts = getCharacterStartingHearts(
+    activeCharacter,
+    activeClass,
+  );
   const baseCharacterMaxHearts = getCharacterMaxHearts(
     activeCharacter,
     activeClass,
@@ -2613,9 +2648,21 @@ export default function Home() {
       ? 1
       : mapHealth.maxHp;
   const maxHearts =
-    isOnlineVersus && versusServerMaxHearts !== null
+    activeCharacter === "trickster_phantom"
+      ? phantomHealthCap
+      : isOnlineVersus && versusServerMaxHearts !== null
       ? versusServerMaxHearts
       : localMaxHearts;
+  const phantomNightActive =
+    activeCharacter === "trickster_phantom" &&
+    !phantomLord &&
+    wave % 2 === 0;
+  const phantomBloodmoonActive =
+    activeCharacter === "trickster_phantom" && wave % 5 === 0;
+  const phantomLordsdownActive =
+    activeCharacter === "trickster_phantom" &&
+    !phantomLord &&
+    wave % 10 === 0;
   const modeMultiplier = modeRules.scoreMultiplier;
   const classScoreMultiplier =
     activeClass === "trickster" && mode === "normal" ? 1.15 : 1;
@@ -3088,7 +3135,11 @@ export default function Home() {
       collisionWaveRef.current = restoring ? restoredWave : 0;
       damageTakenWaveRef.current = restoring ? restoredWave : 0;
       driftBoostRemainingRef.current = 0;
+      driftLastMoveAtRef.current = 0;
+      driftStackPercentRef.current = 0;
       sparkBoostRemainingRef.current = 0;
+      sparkGemCountRef.current = 0;
+      fortuneGemCountRef.current = 0;
       flareDamageWaveRef.current = restoring ? restoredWave : 0;
       flareBoostWaveRef.current = 0;
       gemStreakRef.current = 0;
@@ -3097,6 +3148,7 @@ export default function Home() {
       cometChargeRemainingRef.current = 8000;
       cometChargedRef.current = false;
       rogueGrazeCooldownUntilRef.current = restoring ? now + 2500 : 0;
+      rogueGrazeMeterRef.current = 0;
       rogueGrazedItemIdsRef.current.clear();
       bloomGemWaveRef.current = restoring ? restoredWave : 0;
       sproutSeedWaveRef.current = restoring ? restoredWave : 0;
@@ -3122,6 +3174,7 @@ export default function Home() {
       oracleShieldWaveRef.current = 0;
       oracleBorrowedAbilitiesRef.current.clear();
       rampartCollisionCountRef.current = 0;
+      mercyChainActiveRef.current = true;
       flickerShieldWaveRef.current = restoring ? restoredWave : 0;
       switchLastDirectionRef.current = 0;
       switchShieldCooldownUntilRef.current = restoring ? now + 2000 : 0;
@@ -3132,13 +3185,64 @@ export default function Home() {
       hexMoveCountRef.current = 0;
       wardenBlockWaveRef.current = restoring ? restoredWave : 0;
       citadelBlockWaveRef.current = restoring ? restoredWave : 0;
-      bastionChargeRemainingRef.current = 6000;
+      bastionChargeRemainingRef.current = 20000;
       bastionArmorChargedRef.current = false;
+      citadelFlawlessStreakRef.current = 0;
+      citadelBlocksRemainingRef.current = restoring ? 0 : 1;
+      sentinelDamageByKindRef.current = {};
+      sentinelAnalyzedKindRef.current = null;
+      sentinelAnalyzedBlockWaveRef.current = 0;
+      sentinelBarrelSlowUntilRef.current = 0;
+      sentinelActionWaveRef.current = restoring ? restoredWave : 0;
+      anchorGuardUntilRef.current = 0;
+      anchorLaneLockedRef.current = false;
+      jesterEffectRef.current = {
+        kind: "first-zero",
+        percent: 0,
+        firstUsed: false,
+      };
+      phantomKindHitsRef.current = {};
+      phantomBloodmoonKindsRef.current.clear();
+      phantomHealthCapRef.current = 3;
+      phantomLordRef.current = false;
+      phantomLordNegationStreakRef.current = 0;
+      setPhantomHealthCap(3);
+      setPhantomLord(false);
       smokeSlowRemainingRef.current = 0;
+      smokeCooldownUntilRef.current = restoring ? now + 20000 : 0;
       clockworkMoveCountRef.current = 0;
       clockworkSlowRemainingRef.current = 0;
       clockworkCooldownRemainingRef.current = restoring ? 5000 : 0;
+      clockworkElapsedMsRef.current = 0;
       pickpocketPassedCountRef.current = 0;
+      pickpocketUsedWaveRef.current = restoring ? restoredWave : 0;
+      switchLaneChangesRef.current = 0;
+      flickerUsedWaveRef.current = restoring ? restoredWave : 0;
+      flareLaneRef.current = null;
+      flareActiveUntilRef.current = 0;
+      flareCooldownUntilRef.current = restoring ? now + 30000 : 0;
+      flareBurnCountRef.current = 0;
+      vialAllegianceUntilRef.current = 0;
+      vialUsedRef.current = restoring;
+      mirageUsedWaveRef.current = restoring ? restoredWave : 0;
+      obstacleFreezeUntilRef.current = 0;
+      lanternCooldownUntilRef.current = restoring ? now + 10000 : 0;
+      scoutInputWindowUntilRef.current = 0;
+      scoutSnowflakeHealReadyRef.current = false;
+      scoutCooldownUntilRef.current = restoring ? now + 50000 : 0;
+      dragChainRef.current = null;
+      nomadSurvivalUsedRef.current = restoring;
+      tinkerInspirationRef.current = 0;
+      tinkerClickedSpikeIdsRef.current.clear();
+      rangerCooldownUntilRef.current = restoring ? now + 30000 : 0;
+      brokerFundsRef.current = { gems: 0, coins: 0, melons: 0 };
+      prospectorNoticeWaveRef.current = 0;
+      weaverSnowflakeCountRef.current = 0;
+      weaverJacketRef.current = false;
+      weaverHealWaveRef.current = 0;
+      weaverHealedAmountRef.current = 0;
+      harvesterCountsRef.current = { gems: 0, coins: 0, melons: 0 };
+      harvesterCooldownUntilRef.current = 0;
       wildcardBuffRef.current = null;
       setAbilityChoice(null);
       setTonicIngredients(0);
@@ -3184,6 +3288,39 @@ export default function Home() {
         kinds: plannedKinds,
         cursor: 0,
       };
+      if (
+        applyCharacterEffects &&
+        announcedCharacter === "trickster_phantom"
+      ) {
+        const isLord = phantomLordRef.current;
+        const isBloodmoon = number % 5 === 0;
+        const isLordsdown = !isLord && number % 10 === 0;
+        if (isBloodmoon) {
+          const availableKinds = [...PHANTOM_BLOODMOON_HAZARDS];
+          for (let index = availableKinds.length - 1; index > 0; index -= 1) {
+            const swapIndex = Math.floor(Math.random() * (index + 1));
+            [availableKinds[index], availableKinds[swapIndex]] = [
+              availableKinds[swapIndex],
+              availableKinds[index],
+            ];
+          }
+          phantomBloodmoonKindsRef.current = new Set(
+            availableKinds.slice(0, 2),
+          );
+        } else {
+          phantomBloodmoonKindsRef.current.clear();
+        }
+        const nextCap = isLord ? 6 : isBloodmoon ? 10 : 3;
+        phantomHealthCapRef.current = nextCap;
+        setPhantomHealthCap(nextCap);
+        if (isLordsdown) {
+          state.current.hearts = 10;
+          setHearts(10);
+        } else if (state.current.hearts > nextCap) {
+          state.current.hearts = nextCap;
+          setHearts(nextCap);
+        }
+      }
       const canForecast =
         announcedCharacter === "runner_horizon" ||
         announcedCharacter === "medic_oracle" ||
@@ -3229,6 +3366,39 @@ export default function Home() {
       } else {
         setWaveForecast([]);
       }
+      if (
+        applyCharacterEffects &&
+        number === 1 &&
+        announcedCharacter === "trickster_jester"
+      ) {
+        const rolled = generateJesterWaveEffect(
+          `${versusMatchRef.current ?? "solo"}:${userIdRef.current ?? "guest"}`,
+          number,
+        );
+        jesterEffectRef.current = {
+          kind:
+            rolled.kind === "first-hit-zero"
+              ? "first-zero"
+              : rolled.kind === "half-damage"
+                ? "half"
+                : rolled.kind === "barrel-immunity"
+                  ? "barrel-zero"
+                  : rolled.kind === "score-and-speed"
+                    ? "neutral"
+                    : rolled.kind === "first-hit-double"
+                      ? "first-double"
+                      : rolled.kind === "fifty-percent-more-damage"
+                        ? "more"
+                        : "barrel-double",
+          percent:
+            rolled.kind === "score-and-speed" ? rolled.percent / 100 : 0,
+          firstUsed: false,
+        };
+        showAbilityNotice(
+          `JESTER ROLL · ${rolled.kind.replaceAll("-", " ").toUpperCase()}${rolled.kind === "score-and-speed" ? ` ${rolled.percent}%` : ""}`,
+          1500,
+        );
+      }
       void audioEngine.playSfx("wave");
       setWaveMessage(`WAVE ${number}`);
       setWavePause(true);
@@ -3253,13 +3423,6 @@ export default function Home() {
           grantInvincibility(10000);
           showAbilityNotice("MERGED NO-HIT REWARD · 10 SECOND SHIELD", 1500);
         }
-        if (
-          applyCharacterEffects &&
-          announcedCharacter === "trickster_jester"
-        ) {
-          grantInvincibility(1250);
-          showAbilityNotice("ENCORE · 1.25 SECOND SHIELD", 1400);
-        }
         if (announcedCharacter === "trickster_wildcard") {
           const matchId = versusMatchRef.current;
           const seed = `${matchId ?? "solo"}:${userIdRef.current ?? "guest"}:${number}`;
@@ -3278,6 +3441,37 @@ export default function Home() {
                 : buff === "gems"
                   ? "LUCKY DRAW · GEM CHANCE ×1.50"
                   : "LUCKY DRAW · HAZARDS 15% SLOWER",
+              1800,
+            );
+        }
+        if (announcedCharacter === "trickster_phantom") {
+          const isLord = phantomLordRef.current;
+          const isNight = !isLord && number % 2 === 0;
+          const isBloodmoon = number % 5 === 0;
+          const isLordsdown = !isLord && number % 10 === 0;
+          if (isNight) grantInvincibility(5000);
+          if (isLordsdown)
+            showAbilityNotice(
+              "LORDSDOWN · 10 HP · NIGHT + BLOODMOON · 5 SECOND SHIELD",
+              2200,
+            );
+          else if (isBloodmoon)
+            showAbilityNotice(
+              `BLOODMOON · ${Array.from(
+                phantomBloodmoonKindsRef.current,
+              )
+                .map((kind) => kind.toUpperCase())
+                .join(" + ")} HEAL 2 HP · SNOWFLAKES HEAL 1 HP`,
+              2200,
+            );
+          else if (isNight)
+            showAbilityNotice(
+              "NIGHT WAVE · SPEED ×1.5 · SCORE ×2 · SNOWFLAKE IMMUNITY · 5 SECOND SHIELD",
+              2000,
+            );
+          else if (isLord)
+            showAbilityNotice(
+              "LORD · MAX 6 HP · 50% HIT NEGATION · EVISCERATE READY",
               1800,
             );
         }
@@ -3337,8 +3531,10 @@ export default function Home() {
             ? candidateCharacter
             : "runner_ace");
     const runClass = getCharacterClassKey(runCharacter);
-    const runBaseStartingHearts =
-      runClass === "tank" ? 4 : runClass === "trickster" ? 2 : 3;
+    const runBaseStartingHearts = getCharacterStartingHearts(
+      runCharacter,
+      runClass,
+    );
     const runMapHealth = applyMapHealthModifiers(
       runMapId,
       runBaseStartingHearts,
@@ -3496,6 +3692,51 @@ export default function Home() {
       setVersusIntermissionReady(false);
     }
   };
+  const applyCharacterSelfDamage = useCallback(
+    (damage: number, notice: string) => {
+      const safeDamage = Math.max(0, damage);
+      const nextHearts = Math.max(0, state.current.hearts - safeDamage);
+      state.current.hearts = nextHearts;
+      setHearts(nextHearts);
+      void audioEngine.playSfx("hit");
+      setFlash(safeDamage <= 0.5 ? "life-half" : safeDamage >= 2 ? "life-two" : "life-lost");
+      showAbilityNotice(notice, 1100);
+      setTimeout(() => {
+        setFlash((current) =>
+          current === "life-half" ||
+          current === "life-two" ||
+          current === "life-lost"
+            ? ""
+            : current,
+        );
+      }, 480);
+      if (nextHearts > 0) return false;
+      setRunning(false);
+      setPaused(false);
+      setPauseMenuOpen(false);
+      setOver(true);
+      if (isBotPractice) {
+        setVersusResult("PRACTICE DEFEAT");
+        setVersusPhase("finished");
+        setVersusIntermissionReady(false);
+      } else if (isOnlineVersus) {
+        setVersusSelfEliminated(true);
+        versusSelfEliminatedRef.current = true;
+        setVersusPhase("eliminated");
+        setVersusIntermissionReady(false);
+        setVersusResult("RUN COMPLETE · RIVAL STILL RUNNING");
+      } else if (guest) {
+        gemsRef.current = 0;
+        setGems(0);
+      } else {
+        const best = Math.max(highScoreRef.current, scoreRef.current);
+        highScoreRef.current = best;
+        setHighScore(best);
+      }
+      return true;
+    },
+    [guest, isBotPractice, isOnlineVersus, showAbilityNotice],
+  );
   const applyDirectMapDamage = useCallback(
     (damage: number, notice: string) => {
       if (
@@ -3673,40 +3914,29 @@ export default function Home() {
         }
       }
       if (
-        activeCharacter === "tank_bastion" &&
-        !bastionArmorChargedRef.current
-      )
-        bastionChargeRemainingRef.current = 6000;
-      if (activeCharacter === "runner_drift") {
-        driftBoostRemainingRef.current = 1250;
-        showAbilityNotice("SLIPSTREAM · SCORE ×1.15", 700);
-      }
-      if (
-        activeCharacter === "trickster_flicker" &&
-        flickerShieldWaveRef.current !== wave
+        activeCharacter === "tank_bastion"
       ) {
-        flickerShieldWaveRef.current = wave;
-        grantInvincibility(750);
-        showAbilityNotice("FIRST FLICKER · 0.75 SECOND SHIELD", 850);
+        bastionChargeRemainingRef.current = 20000;
+        bastionArmorChargedRef.current = false;
+      }
+      if (activeCharacter === "runner_drift") {
+        driftStackPercentRef.current =
+          now - driftLastMoveAtRef.current <= 500
+            ? Math.min(2, driftStackPercentRef.current + 0.15)
+            : 0.15;
+        driftLastMoveAtRef.current = now;
+        driftBoostRemainingRef.current = 500;
+        showAbilityNotice(
+          `SLIPSTREAM · SCORE +${Math.round(driftStackPercentRef.current * 100)}% · HAZARD SPEED +${Math.round(driftStackPercentRef.current * 100)}%`,
+          700,
+        );
       }
       if (activeCharacter === "trickster_switch") {
-        if (
-          switchLastDirectionRef.current === -direction &&
-          switchShieldCooldownUntilRef.current <= now
-        ) {
-          switchShieldCooldownUntilRef.current = now + 2000;
-          grantInvincibility(500);
-          showAbilityNotice("REVERSAL · 0.5 SECOND SHIELD", 750);
-        }
+        switchLaneChangesRef.current += 1;
+        if (switchLaneChangesRef.current >= 100)
+          window.setTimeout(() => grantInvincibility(250), 10);
         switchLastDirectionRef.current = direction;
-      }
-      if (
-        activeCharacter === "trickster_mirage" &&
-        mirageShieldCooldownUntilRef.current <= now
-      ) {
-        mirageShieldCooldownUntilRef.current = now + 2500;
-        grantInvincibility(650);
-        showAbilityNotice("AFTERIMAGE · 0.65 SECOND SHIELD", 800);
+        setAbilityStateVersion((value) => value + 1);
       }
       if (activeCharacter === "trickster_hex") {
         hexMoveCountRef.current += 1;
@@ -3731,17 +3961,6 @@ export default function Home() {
           });
         }
       }
-      if (activeCharacter === "trickster_clockwork") {
-        if (clockworkCooldownRemainingRef.current <= 0) {
-          clockworkMoveCountRef.current += 1;
-          if (clockworkMoveCountRef.current >= 6) {
-            clockworkMoveCountRef.current = 0;
-            clockworkSlowRemainingRef.current = 1250;
-            clockworkCooldownRemainingRef.current = 5000;
-            showAbilityNotice("TIME TRICK · HAZARDS 30% SLOWER", 1000);
-          }
-        }
-      }
     },
     [
       activeCharacter,
@@ -3749,7 +3968,6 @@ export default function Home() {
       hasCharacterAbility,
       isOnlineVersus,
       showAbilityNotice,
-      wave,
     ],
   );
   const move = useCallback(
@@ -3759,6 +3977,7 @@ export default function Home() {
         state.current.paused ||
         state.current.wavePause ||
         turnLockedRef.current ||
+        (anchorLaneLockedRef.current && anchorGuardUntilRef.current > Date.now()) ||
         (activeCharacter === "trickster_rogue" &&
           invincibleUntilRef.current > Date.now()) ||
         (activeMapId === "pitch" &&
@@ -3944,6 +4163,310 @@ export default function Home() {
       void audioEngine.playSfx("move");
       return;
     }
+    if (activeCharacter === "tank_hammer") {
+      const currentLane = state.current.lane;
+      const neighboring = getTrackLanes(activeLaneCount).filter(
+        (candidate) => Math.abs(candidate - currentLane) === 1,
+      );
+      let destroyed = 0;
+      setItems((current) => {
+        const eligible = (lane: number) =>
+          current
+            .filter(
+              (item) =>
+                item.lane === lane &&
+                item.y >= -10 &&
+                item.y < 91 &&
+                isHazardKind(item.kind) &&
+                item.kind !== "rock",
+            )
+            .sort((left, right) => right.y - left.y);
+        const targets = [eligible(currentLane)[0], ...neighboring.map((lane) => eligible(lane)[0])]
+          .filter(Boolean) as Item[];
+        if (neighboring.length === 1)
+          targets.push(eligible(neighboring[0])[1]);
+        const targetIds = new Set(targets.filter(Boolean).map((item) => item.id));
+        destroyed = targetIds.size;
+        return current.filter((item) => !targetIds.has(item.id));
+      });
+      showAbilityNotice(
+        destroyed > 0
+          ? `HAMMER · ${destroyed} OBSTACLE${destroyed === 1 ? "" : "S"} DESTROYED`
+          : "HAMMER · NO NON-ROCK TARGETS",
+        1000,
+      );
+      return;
+    }
+    if (activeCharacter === "tank_anchor") {
+      anchorGuardUntilRef.current = Date.now() + 5000;
+      anchorLaneLockedRef.current = true;
+      showAbilityNotice("GROUND HOOK · LANE LOCKED · DAMAGE -75% · 5 SECONDS", 1300);
+      return;
+    }
+    if (
+      activeCharacter === "tank_sentinel" &&
+      sentinelActionWaveRef.current !== wave
+    ) {
+      sentinelActionWaveRef.current = wave;
+      sentinelBarrelSlowUntilRef.current = Date.now() + 15000;
+      showAbilityNotice("STEEL SPEAR · BARRELS 75% SLOWER · 15 SECONDS", 1200);
+      return;
+    }
+    if (activeCharacter === "trickster_smoke") {
+      if (smokeCooldownUntilRef.current > Date.now()) {
+        showAbilityNotice("SMOKE BOMB · RECHARGING", 700);
+        return;
+      }
+      const occupied = new Set(
+        itemsSnapshotRef.current
+          .filter(
+            (item) =>
+              isHazardKind(item.kind) && item.y >= 42 && item.y <= 104,
+          )
+          .map((item) => item.lane),
+      );
+      const safeLanes = getTrackLanes(activeLaneCount).filter(
+        (candidate) => !occupied.has(candidate),
+      );
+      const destination =
+        safeLanes[Math.floor(Math.random() * safeLanes.length)] ??
+        state.current.lane;
+      state.current.lane = destination;
+      setLane(destination);
+      grantInvincibility(350);
+      smokeCooldownUntilRef.current = Date.now() + 20000;
+      showAbilityNotice(`SMOKE BOMB · TELEPORTED TO LANE ${destination + 1}`, 1000);
+      return;
+    }
+    if (activeCharacter === "trickster_rogue") {
+      const meter = rogueGrazeMeterRef.current;
+      if (meter >= 10) {
+        rogueGrazeMeterRef.current -= 10;
+        grantInvincibility(5000);
+        showAbilityNotice("SHADOW METER ×10 · 5 SECOND SHIELD · LANES LOCKED", 1300);
+      } else if (meter >= 5) {
+        rogueGrazeMeterRef.current -= 5;
+        setItems((current) => current.filter((item) => !isHazardKind(item.kind)));
+        showAbilityNotice("SHADOW METER ×5 · ALL OBSTACLES CLEARED", 1200);
+      } else if (meter >= 2) {
+        rogueGrazeMeterRef.current -= 2;
+        grantInvincibility(450);
+        showAbilityNotice("SHADOW METER ×2 · 0.45 SECOND SHIELD", 900);
+      } else showAbilityNotice(`SHADOW METER · ${meter}/2 GRAZES`, 750);
+      setAbilityStateVersion((value) => value + 1);
+      return;
+    }
+    if (
+      activeCharacter === "trickster_flicker" &&
+      flickerUsedWaveRef.current !== wave
+    ) {
+      flickerUsedWaveRef.current = wave;
+      setItems((current) => {
+        const closest = new Map<number, Item>();
+        current.forEach((item) => {
+          if (!isHazardKind(item.kind) || item.y >= 91) return;
+          const previous = closest.get(item.lane);
+          if (!previous || item.y > previous.y) closest.set(item.lane, item);
+        });
+        const targets = new Set(Array.from(closest.values()).map((item) => item.id));
+        const pickups: Kind[] = isVersusRun
+          ? ["gem", "coin"]
+          : ["gem", "melon"];
+        return current.map((item) =>
+          targets.has(item.id)
+            ? { ...item, kind: pickups[Math.floor(Math.random() * pickups.length)] }
+            : item,
+        );
+      });
+      showAbilityNotice("FLICKER · CLOSEST HAZARD IN EVERY LANE TRANSFORMED", 1200);
+      return;
+    }
+    if (activeCharacter === "runner_flare") {
+      if (flareCooldownUntilRef.current > Date.now()) {
+        showAbilityNotice("SIGNAL FLARE · RECHARGING", 700);
+        return;
+      }
+      flareLaneRef.current = state.current.lane;
+      flareActiveUntilRef.current = Date.now() + 15000;
+      flareCooldownUntilRef.current =
+        Date.now() + Math.max(15000, 30000 - Math.floor(flareBurnCountRef.current / 10) * 5000);
+      showAbilityNotice(`SIGNAL FLARE · LANE ${state.current.lane + 1} BURNS FOR 15 SECONDS`, 1200);
+      return;
+    }
+    if (activeCharacter === "trickster_phantom" && phantomLordRef.current) {
+      let destroyed = 0;
+      setItems((current) => {
+        const retained = current.filter((item) => {
+          const projectile =
+            isHazardKind(item.kind) &&
+            item.kind !== "rock" &&
+            item.kind !== "spikes" &&
+            item.kind !== "current";
+          if (projectile) destroyed += 1;
+          return !projectile;
+        });
+        return retained;
+      });
+      showAbilityNotice(
+        `EVISCERATE · ${destroyed} PROJECTILE${destroyed === 1 ? "" : "S"} ERASED`,
+        1100,
+      );
+      void audioEngine.playSfx("shield");
+      return;
+    }
+    if (activeCharacter === "medic_vial" && !vialUsedRef.current) {
+      vialUsedRef.current = true;
+      vialAllegianceUntilRef.current = Date.now() + 30000;
+      showAbilityNotice("SWITCH ALLEGIANCE · OBSTACLE EFFECTS REVERSED · 30 SECONDS", 1400);
+      return;
+    }
+    if (
+      activeCharacter === "trickster_mirage" &&
+      mirageUsedWaveRef.current !== wave
+    ) {
+      mirageUsedWaveRef.current = wave;
+      grantInvincibility(5000);
+      showAbilityNotice("MIRAGE INVASION · INVINCIBLE FOR 5 SECONDS", 1200);
+      window.setTimeout(() => {
+        if (!state.current.running) return;
+        state.current.hearts = Math.max(0, state.current.hearts - 1);
+        setHearts(state.current.hearts);
+        showAbilityNotice("MIRAGE RETURN · -1 HP", 900);
+      }, 5000);
+      return;
+    }
+    if (activeCharacter === "runner_scout") {
+      const now = Date.now();
+      if (scoutInputWindowUntilRef.current > now) {
+        scoutInputWindowUntilRef.current = 0;
+        scoutSnowflakeHealReadyRef.current = true;
+        scoutCooldownUntilRef.current = now + 50000;
+        showAbilityNotice("TIMED INPUT PERFECT · NEXT SNOWFLAKE HEALS 0.5 HP", 1200);
+      } else if (scoutCooldownUntilRef.current <= now) {
+        scoutInputWindowUntilRef.current = now + 1500;
+        showAbilityNotice("QUICKSTEP INPUT · PRESS E AGAIN WITHIN 1.5 SECONDS", 1500);
+      } else showAbilityNotice("QUICKSTEP INPUT · RECHARGING", 700);
+      return;
+    }
+    if (activeCharacter === "tank_drag") {
+      if (!dragChainRef.current || dragChainRef.current.wave !== wave) {
+        dragChainRef.current = { wave, lane: state.current.lane };
+        showAbilityNotice(`CHAIN SET · LANE ${state.current.lane + 1}`, 850);
+      } else {
+        state.current.lane = dragChainRef.current.lane;
+        setLane(dragChainRef.current.lane);
+        grantInvincibility(700);
+        dragChainRef.current = null;
+        showAbilityNotice("CHAIN RETURN · COLLISION-PROOF PULL", 1000);
+      }
+      return;
+    }
+    if (activeCharacter === "misc_tinker") {
+      if (tinkerInspirationRef.current < 3) {
+        showAbilityNotice(`INSPIRATION · ${tinkerInspirationRef.current}/3`, 750);
+        return;
+      }
+      tinkerInspirationRef.current -= 3;
+      setItems((current) => {
+        const target = current
+          .filter(
+            (item) =>
+              item.lane === state.current.lane &&
+              isHazardKind(item.kind) &&
+              item.kind !== "rock" &&
+              item.y < 91,
+          )
+          .sort((left, right) => right.y - left.y)[0];
+        return target ? current.filter((item) => item.id !== target.id) : current;
+      });
+      showAbilityNotice("HANDMADE SPIKE · FIRST PROJECTILE DESTROYED", 1000);
+      return;
+    }
+    if (activeCharacter === "runner_ranger") {
+      if (rangerCooldownUntilRef.current > Date.now()) {
+        showAbilityNotice("PICKUP ZIP · RECHARGING", 700);
+        return;
+      }
+      const target = itemsSnapshotRef.current
+        .filter((item) => ["gem", "coin", "melon"].includes(item.kind))
+        .sort((left, right) => right.y - left.y)[0];
+      if (!target) {
+        showAbilityNotice("PICKUP ZIP · NO PICKUP ON SCREEN", 700);
+        return;
+      }
+      state.current.lane = target.lane;
+      setLane(target.lane);
+      grantInvincibility(300);
+      rangerCooldownUntilRef.current = Date.now() + 30000;
+      showAbilityNotice(`PICKUP ZIP · LANE ${target.lane + 1}`, 900);
+      return;
+    }
+    if (activeCharacter === "misc_lantern") {
+      if (lanternCooldownUntilRef.current > Date.now()) {
+        showAbilityNotice("FLASH OF LIGHT · RECHARGING", 700);
+        return;
+      }
+      obstacleFreezeUntilRef.current = Date.now() + 2000;
+      lanternCooldownUntilRef.current = Date.now() + 10000;
+      showAbilityNotice("FLASH OF LIGHT · ALL HAZARDS FROZEN FOR 2 SECONDS", 1100);
+      return;
+    }
+    if (activeCharacter === "misc_weaver") {
+      if (weaverSnowflakeCountRef.current < 5) {
+        showAbilityNotice(`THREAD · ${weaverSnowflakeCountRef.current}/5 SNOWFLAKES`, 750);
+        return;
+      }
+      weaverJacketRef.current = true;
+      weaverSnowflakeCountRef.current = 0;
+      weaverHealWaveRef.current = wave;
+      weaverHealedAmountRef.current = 0;
+      showAbilityNotice("THAWING JACKET · SNOWFLAKE IMMUNITY ACTIVE", 1100);
+      return;
+    }
+    if (activeCharacter === "misc_catalyst") {
+      setItems((current) =>
+        current.map((item) =>
+          ["gem", "coin", "melon"].includes(item.kind)
+            ? { ...item, lane: state.current.lane, y: 90 }
+            : item,
+        ),
+      );
+      showAbilityNotice("FLUX PULL · ALL PICKUPS COLLECTED", 1000);
+      return;
+    }
+    if (activeCharacter === "misc_harvester") {
+      const entries = Object.entries(harvesterCountsRef.current) as Array<
+        [keyof typeof harvesterCountsRef.current, number]
+      >;
+      const [source, amount] = entries.sort((left, right) => right[1] - left[1])[0];
+      if (amount < 10 || harvesterCooldownUntilRef.current > Date.now()) {
+        showAbilityNotice("HARVEST · NEED 10 OF ONE PICKUP TYPE", 800);
+        return;
+      }
+      harvesterCooldownUntilRef.current = Date.now() + (amount >= 50 && source === "melons" ? 45000 : 30000);
+      if (source === "gems") {
+        grantInvincibility(amount >= 50 ? 20000 : 10000);
+        showAbilityNotice(`GEM HARVEST · DEFLECTION ${amount >= 50 ? 20 : 10} SECONDS`, 1100);
+      } else if (source === "melons") {
+        setItems((current) => {
+          if (amount >= 50) return current.filter((item) => !isHazardKind(item.kind));
+          const closest = new Map<number, Item>();
+          current.forEach((item) => {
+            if (!isHazardKind(item.kind)) return;
+            const old = closest.get(item.lane);
+            if (!old || item.y > old.y) closest.set(item.lane, item);
+          });
+          const ids = new Set(Array.from(closest.values()).map((item) => item.id));
+          return current.filter((item) => !ids.has(item.id));
+        });
+        showAbilityNotice("MELON HARVEST · LANE FRONTS CLEARED", 1100);
+      } else {
+        versusPointsRef.current += amount >= 50 ? 20 : 10;
+        setVersusPoints(versusPointsRef.current);
+        showAbilityNotice(`COIN HARVEST · +${amount >= 50 ? 20 : 10} ATTACK COINS`, 1000);
+      }
+      return;
+    }
     if (
       activeCharacter === "medic_lifeline" &&
       lifelineHookUsesRef.current < 3
@@ -4025,11 +4548,13 @@ export default function Home() {
     );
   }, [
     abilityChoice,
+    activeLaneCount,
     activeCharacter,
     applyVersusTimeStopState,
     grantInvincibility,
     hasCharacterAbility,
     isOnlineVersus,
+    isVersusRun,
     maxHearts,
     pulseGame,
     showAbilityNotice,
@@ -4410,7 +4935,11 @@ export default function Home() {
     setScore(restoredScore);
     setWave(restoredWave);
     setHearts(restoredHearts);
-    applyAuthoritativeVersusPoints(snapshot.self?.obstacle_points ?? 0);
+    // A mid-wave poll must not erase locally collected coins that are waiting
+    // for the intermission-only batch receipt. The authoritative balance is
+    // applied immediately after that batch succeeds.
+    if (pendingVersusCoinPickupIdsRef.current.size === 0)
+      applyAuthoritativeVersusPoints(snapshot.self?.obstacle_points ?? 0);
     setVersusOpponent(snapshot.opponent?.username || "RIVAL");
     setVersusOpponentHearts(
       Math.max(0, Number(snapshot.opponent?.hearts) || 0),
@@ -4655,6 +5184,15 @@ export default function Home() {
       );
       return;
     }
+    if (
+      versusMode === "ranked" &&
+      getCharacterDefinition(equippedCharacter).rarity === "mythic"
+    ) {
+      setVersusResult(
+        "MYTHIC CHARACTERS ARE DISABLED IN RANKED · CHOOSE ANOTHER CHARACTER",
+      );
+      return;
+    }
     if (versusSearchingRef.current || versusLeaving) return;
     invalidateVersusSearch();
     const searchToken = versusSearchTokenRef.current;
@@ -4720,10 +5258,13 @@ export default function Home() {
     playerAttacksAgainstBotRef.current = [];
     progressionRunIdRef.current = null;
     progressionAwardedRunIdRef.current = null;
-    const practiceMap = selectOneVersusOneMap({
-      playerOnePriority: mapPriorityConfigured ? mapPriority : null,
-      playerTwoPriority: null,
-    });
+    const practiceMap =
+      practiceMapChoice === "random"
+        ? selectOneVersusOneMap({
+            playerOnePriority: mapPriorityConfigured ? mapPriority : null,
+            playerTwoPriority: null,
+          })
+        : practiceMapChoice;
     versusMapRef.current = practiceMap;
     setVersusMap(practiceMap);
     const practiceBotHealth = applyMapHealthModifiers(
@@ -5084,6 +5625,15 @@ export default function Home() {
     const tick = (now: number) => {
       const dt = Math.min(32, now - prev);
       prev = now;
+      if (activeCharacter === "trickster_clockwork")
+        clockworkElapsedMsRef.current += dt;
+      if (
+        anchorLaneLockedRef.current &&
+        anchorGuardUntilRef.current <= Date.now()
+      ) {
+        anchorLaneLockedRef.current = false;
+        showAbilityNotice("GROUND HOOK RELEASED · LANE MOVEMENT RESTORED", 900);
+      }
       if (timeStopDeadlineRef.current > 0) {
         timeStopRemainingRef.current = Math.max(
           0,
@@ -5158,6 +5708,12 @@ export default function Home() {
         characterSpeedMultiplier *=
           1.05 + Math.min(1, velocityChargeMsRef.current / 100000);
       if (reviveFlyingRef.current) characterSpeedMultiplier *= 1.5;
+      if (
+        activeCharacter === "trickster_phantom" &&
+        !phantomLordRef.current &&
+        wave % 2 === 0
+      )
+        characterSpeedMultiplier *= 1.5;
       const obstacleSpeedMultiplier =
         currentSpeedMultiplier * characterSpeedMultiplier;
       if (activeMapId === "volcano") {
@@ -5178,11 +5734,8 @@ export default function Home() {
         atlasLaneElapsedRef.current += dt;
         if (atlasLaneElapsedRef.current >= atlasLaneLimitRef.current) {
           atlasLaneElapsedRef.current = 0;
-          const finalCrush =
-            state.current.hearts <= 1 && atlasLaneLimitRef.current <= 1000;
-          const nextHearts = finalCrush
-            ? 0
-            : Math.max(1, state.current.hearts - 2);
+          const nextHearts = Math.max(0, state.current.hearts - 2);
+          const finalCrush = nextHearts <= 0;
           state.current.hearts = nextHearts;
           setHearts(nextHearts);
           void audioEngine.playSfx("hit");
@@ -5209,8 +5762,7 @@ export default function Home() {
       if (
         now - last.current >
           Math.max(330, 980 - wave * 55) /
-            activeMapRules.totalObstacleMultiplier &&
-        deferredAttackGroupsRef.current.length === 0
+            activeMapRules.totalObstacleMultiplier
       ) {
         last.current = now;
         const r = Math.random(),
@@ -5218,7 +5770,6 @@ export default function Home() {
           baseGemChance =
             mode === "impossible" ? 0.14 : mode === "hardcore" ? 0.1 : 0.06,
           characterGemMultiplier =
-            (activeCharacter === "runner_fortune" ? 2 : 1) *
             (activeCharacter === "misc_broker" ? 1.25 : 1) *
             (activeCharacter === "misc_prospector" ? 1.6 : 1) *
             (activeCharacter === "misc_mimic" && mimicPhase === 1
@@ -5228,12 +5779,22 @@ export default function Home() {
             wildcardBuffRef.current === "gems"
               ? 1.5
               : 1),
-          gemChance = Math.min(
-            0.3,
-            baseGemChance * characterGemMultiplier,
-          ),
+          gemChance =
+            activeCharacter === "runner_fortune"
+              ? getFortuneGemSpawnChance(
+                  baseGemChance,
+                  fortuneGemCountRef.current,
+                )
+              : Math.min(0.3, baseGemChance * characterGemMultiplier),
           gemThreshold = 1 - gemChance,
-          versusGemThreshold = 1 - 0.025 * characterGemMultiplier,
+          versusGemThreshold =
+            1 -
+            (activeCharacter === "runner_fortune"
+              ? getFortuneGemSpawnChance(
+                  0.025,
+                  fortuneGemCountRef.current,
+                )
+              : 0.025 * characterGemMultiplier),
           attackPickupChance =
             activeCharacter === "misc_broker"
               ? ATTACK_COIN_SPAWN_CHANCE * 1.25
@@ -5312,6 +5873,11 @@ export default function Home() {
                     : [],
               ),
           );
+          const queuedAttackLanes = new Set(
+            (deferredAttackGroupsRef.current[0] ?? []).map(
+              (item) => item.lane,
+            ),
+          );
           const hazardLanes = new Set(
             currentItems
               .filter(
@@ -5342,6 +5908,7 @@ export default function Home() {
             : spawnableLanes.filter(
                 (lane) =>
                   !blocked.has(lane) &&
+                  !queuedAttackLanes.has(lane) &&
                   (!isHazardKind(kind) ||
                     !reservedAttackSafeLanes.has(lane)),
               );
@@ -5371,7 +5938,9 @@ export default function Home() {
         const getItemSpeedFactor = (item: Item) => {
           const isHazard = isHazardKind(item.kind);
           let speedFactor =
-            item.kind === "barrel"
+            item.formationSpeed !== undefined
+              ? item.formationSpeed
+              : item.kind === "barrel"
               ? 1.75
               : item.kind === "current"
                 ? 1.75 * CURRENT_RULES.barrelSpeedMultiplier
@@ -5385,27 +5954,61 @@ export default function Home() {
           if (isHazard) {
             speedFactor *= permanentObstacleSlowRef.current;
             if (beaconActiveRef.current) speedFactor *= 0.5;
+            if (obstacleFreezeUntilRef.current > Date.now()) speedFactor = 0;
+            if (activeCharacter === "runner_drift")
+              speedFactor *= 1 + driftStackPercentRef.current;
+            if (activeCharacter === "trickster_clockwork") {
+              const slow = Math.min(
+                0.6,
+                0.1 + (clockworkElapsedMsRef.current / 1000) * 0.005,
+              );
+              speedFactor *= 1 - slow;
+            }
+            if (
+              activeCharacter === "tank_colossus" &&
+              state.current.hearts > 3
+            )
+              speedFactor *= Math.max(
+                0.2,
+                1 - (state.current.hearts - 3) * 0.05,
+              );
+            if (
+              activeCharacter === "trickster_jester" &&
+              jesterEffectRef.current.kind === "neutral"
+            )
+              speedFactor *= 1 + jesterEffectRef.current.percent;
           }
-          if (isHazard && activeMapId === "factory")
+          if (
+            isHazard &&
+            item.formationSpeed === undefined &&
+            activeMapId === "factory"
+          )
             speedFactor *= getFactoryObstacleSpeedMultiplier(
               item.lane,
               factoryConveyorRef.current,
             );
           if (
+            item.formationSpeed === undefined &&
             activeCharacter === "tank_drag" &&
             (item.kind === "barrel" || item.kind === "log")
           )
             speedFactor *= 0.85;
           if (isHazard && activeCharacter === "misc_nomad")
             speedFactor *= 0.93;
-          if (item.kind === "spikes" && activeCharacter === "misc_tinker")
+          if (
+            item.formationSpeed === undefined &&
+            item.kind === "spikes" &&
+            activeCharacter === "misc_tinker"
+          )
             speedFactor *= 0.75;
           if (
+            item.formationSpeed === undefined &&
             (item.kind === "rock" || item.kind === "spikes") &&
             activeCharacter === "misc_lantern"
           )
             speedFactor *= 0.85;
           if (
+            item.formationSpeed === undefined &&
             item.kind === "snowflake" &&
             activeCharacter === "misc_weaver"
           )
@@ -5430,7 +6033,8 @@ export default function Home() {
               item.kind === "melon") &&
             activeCharacter === "misc_catalyst"
           )
-            speedFactor *= 0.75;
+            speedFactor *=
+              Math.abs(item.lane - state.current.lane) >= 2 ? 0.5 : 1.5;
           if (
             (item.kind === "gem" ||
               item.kind === "coin" ||
@@ -5441,28 +6045,21 @@ export default function Home() {
           if (isHazard && activeCharacter === "misc_muse")
             speedFactor *= 0.82;
           if (
-            isHazard &&
-            activeCharacter === "trickster_smoke" &&
-            smokeSlowRemainingRef.current > 0
+            item.formationSpeed === undefined &&
+            item.kind === "barrel" &&
+            activeCharacter === "tank_sentinel" &&
+            sentinelBarrelSlowUntilRef.current > Date.now()
           )
-            speedFactor *= 0.65;
-          if (
-            isHazard &&
-            activeCharacter === "trickster_clockwork" &&
-            clockworkSlowRemainingRef.current > 0
-          )
-            speedFactor *= 0.7;
+            speedFactor *= 0.25;
           if (
             isHazard &&
             activeCharacter === "trickster_wildcard" &&
             wildcardBuffRef.current === "slow"
           )
             speedFactor *= 0.85;
-          // Multi-hazard opponent formations must arrive as one readable wall.
-          // Per-obstacle and conveyor speeds would otherwise split the wall,
-          // destroying its rotating safe route (or making that route unfair).
-          if (item.formationSpeed !== undefined)
-            speedFactor = item.formationSpeed;
+          // Purchased formations start from one shared speed so mixed obstacle
+          // types keep the same readable safe route. Global character effects
+          // still apply, including freeze, Drift, Clockwork, and Jester.
           return speedFactor;
         };
         const nextYById = new Map<number, number>();
@@ -5499,6 +6096,28 @@ export default function Home() {
             ...item,
             y: nextYById.get(item.id) ?? item.y,
           };
+          if (
+            activeCharacter === "runner_flare" &&
+            flareActiveUntilRef.current > Date.now() &&
+            n.lane === flareLaneRef.current &&
+            (n.kind === "log" ||
+              n.kind === "barrel" ||
+              n.kind === "snowflake")
+          ) {
+            flareBurnCountRef.current += 1;
+            if (n.attackToken && isOnlineVersus && versusMatchRef.current)
+              void supabase.rpc("reflect_1v1_attack", {
+                p_match_id: versusMatchRef.current,
+                p_reflection_id: `flare:${versusPickupNonceRef.current}:${wave}:${n.id}`,
+                p_obstacle_type: n.kind,
+              });
+            if (flareBurnCountRef.current % 10 === 0)
+              showAbilityNotice(
+                `FLARE MASTERED · COOLDOWN ${Math.max(15, 30 - Math.floor(flareBurnCountRef.current / 10) * 5)}s`,
+                900,
+              );
+            return [];
+          }
           if (pendingKatanaReflectionIdsRef.current.has(n.id))
             return [n];
           const crossedRunnerBand = item.y < 91 && n.y >= 65;
@@ -5516,17 +6135,13 @@ export default function Home() {
               activeCharacter === "trickster_rogue" &&
               rogueGrazeCooldownUntilRef.current <= Date.now()
             ) {
-              rogueGrazeCooldownUntilRef.current = Date.now() + 2500;
-              grantInvincibility(450);
-              showAbilityNotice("SHADOWSTEP · GRAZE SHIELD");
-            }
-            if (
-              activeCharacter === "trickster_gambit" &&
-              gambitCooldownUntilRef.current <= Date.now()
-            ) {
-              gambitCooldownUntilRef.current = Date.now() + 2500;
-              gambitBoostRemainingRef.current = 2000;
-              showAbilityNotice("HIGH STAKES · SCORE ×1.75", 950);
+              rogueGrazeCooldownUntilRef.current = Date.now() + 5000;
+              rogueGrazeMeterRef.current += 1;
+              setAbilityStateVersion((value) => value + 1);
+              showAbilityNotice(
+                `SHADOW METER · ${rogueGrazeMeterRef.current} GRAZE${rogueGrazeMeterRef.current === 1 ? "" : "S"}`,
+                850,
+              );
             }
             if (
               activeCharacter === "trickster_echo" &&
@@ -5561,6 +6176,7 @@ export default function Home() {
             (n.lane === state.current.lane || rangerPickup || currentContact) &&
             crossedRunnerBand
           ) {
+            let phantomIgnore = false;
             if (isHazard) {
               collisionWaveRef.current = wave;
               if (activeCharacter === "medic_oracle")
@@ -5572,6 +6188,13 @@ export default function Home() {
                 setVelocityDisplayPercent(0);
                 setAbilityStateVersion((value) => value + 1);
                 showAbilityNotice("FULL VELOCITY · MOMENTUM RESET", 800);
+              }
+              if (activeCharacter === "trickster_phantom") {
+                const priorHits = phantomKindHitsRef.current[n.kind] ?? 0;
+                const ignoreCount =
+                  !phantomLordRef.current && wave % 2 === 0 ? 2 : 1;
+                phantomKindHitsRef.current[n.kind] = priorHits + 1;
+                phantomIgnore = priorHits < ignoreCount;
               }
             }
             if (rangerPulled)
@@ -5786,6 +6409,66 @@ export default function Home() {
                 showAbilityNotice("ROCK SHATTERED YOUR KATANA", 1300);
               }
             }
+            if (
+              activeCharacter === "trickster_phantom" &&
+              wave % 5 === 0 &&
+              phantomBloodmoonKindsRef.current.has(n.kind)
+            ) {
+              state.current.hearts = Math.min(
+                phantomHealthCapRef.current,
+                state.current.hearts + 2,
+              );
+              setHearts(state.current.hearts);
+              void audioEngine.playSfx("shield");
+              showAbilityNotice(
+                `BLOODMOON ${n.kind.toUpperCase()} · +2 HP`,
+                1000,
+              );
+              return [];
+            }
+            const vialAllegianceActive =
+              activeCharacter === "medic_vial" &&
+              vialAllegianceUntilRef.current > Date.now();
+            if (vialAllegianceActive && n.kind === "current") {
+              const previousLane = state.current.lane;
+              if (previousLane !== n.lane) {
+                state.current.lane += Math.sign(n.lane - previousLane);
+                setLane(state.current.lane);
+                if (isOnlineVersus && versusMatchRef.current)
+                  void supabase.rpc("update_1v1_position", {
+                    p_match_id: versusMatchRef.current,
+                    p_lane_index: state.current.lane,
+                  });
+                showAbilityNotice("SWITCHED CURRENT · PULLED ONE LANE CLOSER", 950);
+              } else {
+                showAbilityNotice("SWITCHED CURRENT · NO EFFECT IN ITS LANE", 850);
+              }
+              return [];
+            }
+            if (vialAllegianceActive && n.kind === "snowflake") {
+              state.current.hearts = Math.min(
+                maxHearts,
+                state.current.hearts + 1,
+              );
+              setHearts(state.current.hearts);
+              clearFreezeEffect();
+              showAbilityNotice("SWITCHED SNOWFLAKE · +1 HP", 900);
+              return [];
+            }
+            if (vialAllegianceActive && isHazard) {
+              const healing =
+                n.kind === "rock" ? 2 : n.kind === "barrel" ? 0.5 : 1;
+              state.current.hearts = Math.min(
+                maxHearts,
+                state.current.hearts + healing,
+              );
+              setHearts(state.current.hearts);
+              showAbilityNotice(
+                `SWITCHED ${n.kind.toUpperCase()} · +${healing} HP`,
+                900,
+              );
+              return [];
+            }
             if (n.kind === "mushroom") {
               void audioEngine.playSfx("gem");
               scoreRef.current += GROVE_RULES.mushroomScore;
@@ -5831,22 +6514,42 @@ export default function Home() {
                 const gemAward = isVersusRun
                   ? 1
                   : (gemStreakRef.current += 1);
-                const total = gemsRef.current + gemAward;
+                const adjustedGemAward =
+                  activeCharacter === "trickster_pickpocket"
+                    ? gemAward * 2
+                    : gemAward;
+                const total = gemsRef.current + adjustedGemAward;
                 gemsRef.current = total;
                 setGems(total);
                 setGemBump(false);
                 requestAnimationFrame(() => setGemBump(true));
                 setTimeout(() => setGemBump(false), 500);
-                if (guest && gemAward > 1)
+                if (guest && adjustedGemAward > 1)
                   showAbilityNotice(
-                    `GEM STREAK ×${gemAward} · +${gemAward} GEMS`,
+                    `GEM STREAK · +${adjustedGemAward} GEMS`,
                     950,
                   );
               }
               if (activeCharacter === "runner_spark") {
-                sparkBoostRemainingRef.current = 10000;
-                showAbilityNotice("CRYSTAL CHARGE · SCORE ×1.50", 900);
+                sparkGemCountRef.current += 1;
+                setAbilityStateVersion((value) => value + 1);
+                showAbilityNotice(
+                  `CRYSTAL CHARGE · PERMANENT RUN SCORE +${sparkGemCountRef.current}%`,
+                  900,
+                );
               }
+              if (activeCharacter === "runner_fortune") {
+                fortuneGemCountRef.current += 1;
+                setAbilityStateVersion((value) => value + 1);
+                showAbilityNotice(
+                  `FORTUNE FINDER · +${fortuneGemCountRef.current}% GEM CHANCE`,
+                  900,
+                );
+              }
+              if (activeCharacter === "misc_broker")
+                brokerFundsRef.current.gems += 1;
+              if (activeCharacter === "misc_harvester")
+                harvesterCountsRef.current.gems += 1;
               if (
                 healingEnabled &&
                 hasCharacterAbility("medic_bloom") &&
@@ -5879,8 +6582,12 @@ export default function Home() {
                 showAbilityNotice("HALO STAFF · +1 HP", 900);
               }
               if (activeCharacter === "medic_vial") {
-                grantInvincibility(2000);
-                showAbilityNotice("CRYSTAL TONIC · 2 SECOND SHIELD", 1200);
+                const vialDamage =
+                  vialAllegianceUntilRef.current > Date.now() ? 2 : 1;
+                applyCharacterSelfDamage(
+                  vialDamage,
+                  `VIAL GEM COST · -${vialDamage} HP`,
+                );
               }
               const gemContextId = progressionRunIdRef.current;
               const gemRequestUserId = userIdRef.current;
@@ -5890,11 +6597,28 @@ export default function Home() {
               void audioEngine.playSfx("gem");
               const melonScore = Math.max(
                 0,
-                Math.floor(MELON_BASE_SCORE * currentCoinMultiplierRef.current),
+                Math.floor(
+                  MELON_BASE_SCORE *
+                    currentCoinMultiplierRef.current *
+                    (activeCharacter === "runner_ranger" ? 2 : 1),
+                  ),
               );
-              scoreRef.current += melonScore;
-              setScore(scoreRef.current);
-              showAbilityNotice(`MELON · +${melonScore} SCORE`, 900);
+              if (vialAllegianceActive) {
+                scoreRef.current = Math.max(0, scoreRef.current - melonScore);
+                setScore(scoreRef.current);
+                applyCharacterSelfDamage(
+                  1,
+                  `SWITCHED MELON · -1 HP · -${melonScore} SCORE`,
+                );
+              } else {
+                scoreRef.current += melonScore;
+                setScore(scoreRef.current);
+                showAbilityNotice(`MELON · +${melonScore} SCORE`, 900);
+                if (activeCharacter === "misc_broker")
+                  brokerFundsRef.current.melons += melonScore;
+                if (activeCharacter === "misc_harvester")
+                  harvesterCountsRef.current.melons += 1;
+              }
             } else if (n.kind === "coin") {
               void audioEngine.playSfx("gem");
               if (isBotPractice) {
@@ -5905,6 +6629,10 @@ export default function Home() {
               } else if (isOnlineVersus && versusMatchRef.current) {
                 queueOnlineCoinAward(versusMatchRef.current, n.id);
               }
+              if (activeCharacter === "misc_broker")
+                brokerFundsRef.current.coins += 1;
+              if (activeCharacter === "misc_harvester")
+                harvesterCountsRef.current.coins += 1;
             } else if (
               n.kind === "current" &&
               currentInteraction?.kind === "push"
@@ -5920,6 +6648,69 @@ export default function Home() {
               showAbilityNotice("CURRENT · FORCED LANE PUSH", 850);
               return [];
             } else if (n.kind === "snowflake") {
+              if (activeCharacter === "trickster_phantom") {
+                if (wave % 5 === 0) {
+                  state.current.hearts = Math.min(
+                    phantomHealthCapRef.current,
+                    state.current.hearts + 1,
+                  );
+                  setHearts(state.current.hearts);
+                  clearFreezeEffect();
+                  showAbilityNotice("BLOODMOON SNOWFLAKE · +1 HP", 900);
+                  return [];
+                }
+                if (!phantomLordRef.current && wave % 2 === 0) {
+                  clearFreezeEffect();
+                  void audioEngine.playSfx("shield");
+                  showAbilityNotice("NIGHT VEIL · SNOWFLAKE BLOCKED", 850);
+                  return [];
+                }
+              }
+              if (activeCharacter === "runner_scout" && scoutSnowflakeHealReadyRef.current) {
+                scoutSnowflakeHealReadyRef.current = false;
+                state.current.hearts = Math.min(maxHearts, state.current.hearts + 0.5);
+                setHearts(state.current.hearts);
+                showAbilityNotice("QUICKSTEP CATCH · +0.5 HP", 900);
+              }
+              if (activeCharacter === "misc_weaver") {
+                if (weaverJacketRef.current) {
+                  if (weaverHealWaveRef.current !== wave) {
+                    weaverHealWaveRef.current = wave;
+                    weaverHealedAmountRef.current = 0;
+                  }
+                  const resolved = resolveWeaverSnowflake(
+                    {
+                      snowflakesSinceJacket:
+                        weaverSnowflakeCountRef.current,
+                      healedThisWave: weaverHealedAmountRef.current,
+                    },
+                    true,
+                  );
+                  weaverSnowflakeCountRef.current =
+                    resolved.state.snowflakesSinceJacket;
+                  weaverHealedAmountRef.current =
+                    resolved.state.healedThisWave;
+                  if (resolved.healing > 0) {
+                    state.current.hearts = Math.min(
+                      maxHearts,
+                      state.current.hearts + resolved.healing,
+                    );
+                    setHearts(state.current.hearts);
+                    showAbilityNotice(
+                      `THAWING JACKET · +${resolved.healing} HP`,
+                      900,
+                    );
+                  } else
+                    showAbilityNotice(
+                      "THAWING JACKET · FREEZE BLOCKED",
+                      800,
+                    );
+                  setAbilityStateVersion((value) => value + 1);
+                  return [];
+                }
+                weaverSnowflakeCountRef.current += 1;
+                setAbilityStateVersion((value) => value + 1);
+              }
               if (
                 healingEnabled &&
                 hasCharacterAbility("medic_remedy") &&
@@ -5952,14 +6743,14 @@ export default function Home() {
               }
             } else if (
               activeCharacter === "runner_vault" &&
-              n.kind === "spikes" &&
+              (n.kind === "spikes" || n.kind === "log") &&
               wardenBlockWaveRef.current !== wave
             ) {
               wardenBlockWaveRef.current = wave;
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
-              showAbilityNotice("SPIKE VAULT · FIRST SPIKE BLOCKED");
+              showAbilityNotice(`VAULT · FIRST ${n.kind.toUpperCase()} BLOCKED`);
               return [];
             } else if (
               activeCharacter === "tank_hammer" &&
@@ -5979,47 +6770,53 @@ export default function Home() {
               setTimeout(() => setFlash(""), 120);
               showAbilityNotice(`${activeAbility.name} · HIT BLOCKED`);
               return [];
-            } else if (
-              activeCharacter === "tank_warden" &&
-              n.kind === "spikes"
-            ) {
+            } else if (n.kind === "spikes" && n.deactivated) {
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
-              showAbilityNotice("SPIKE LOCK · SPIKE BLOCKED");
+              showAbilityNotice("DEACTIVATED SPIKES · 0 DAMAGE");
               return [];
             } else if (
               activeCharacter === "tank_citadel" &&
-              wave % 2 === 0 &&
-              citadelBlockWaveRef.current !== wave
+              citadelBlocksRemainingRef.current > 0
             ) {
-              citadelBlockWaveRef.current = wave;
+              citadelBlocksRemainingRef.current -= 1;
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
-              showAbilityNotice("EVEN WALL · FIRST HIT BLOCKED");
+              showAbilityNotice(
+                `CITADEL · OBSTACLE IGNORED · ${citadelBlocksRemainingRef.current} LEFT`,
+              );
+              return [];
+            } else if (phantomIgnore) {
+              void audioEngine.playSfx("shield");
+              setFlash("shield");
+              setTimeout(() => setFlash(""), 150);
+              showAbilityNotice(
+                `${wave % 2 === 0 ? "NIGHT VEIL" : "PHASE VEIL"} · ${n.kind.toUpperCase()} IGNORED`,
+              );
               return [];
             } else if (
               activeCharacter === "trickster_phantom" &&
-              phantomPhaseWaveRef.current !== wave
+              phantomLordRef.current &&
+              phantomLordNegationStreakRef.current < 3 &&
+              Math.random() < 0.5
             ) {
-              phantomPhaseWaveRef.current = wave;
+              phantomLordNegationStreakRef.current += 1;
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
-              showAbilityNotice("PHASE VEIL · HIT PHASED");
-              return [];
-            } else if (
-              activeCharacter === "tank_rampart" &&
-              (rampartCollisionCountRef.current + 1) % 3 === 0
-            ) {
-              rampartCollisionCountRef.current += 1;
-              void audioEngine.playSfx("shield");
-              setFlash("shield");
-              setTimeout(() => setFlash(""), 150);
-              showAbilityNotice("THIRD WALL · 0 DAMAGE");
+              showAbilityNotice(
+                `LORD VEIL · HIT NEGATED · ${phantomLordNegationStreakRef.current}/3 CHAIN`,
+                950,
+              );
               return [];
             } else {
+              if (
+                activeCharacter === "trickster_phantom" &&
+                phantomLordRef.current
+              )
+                phantomLordNegationStreakRef.current = 0;
               clearRecoveryZone = true;
               damageLockedRef.current = true;
               if (activeCharacter === "tank_rampart")
@@ -6041,75 +6838,71 @@ export default function Home() {
                     ? 2
                     : n.kind === "barrel"
                       ? 0.5
-                      : activeCharacter === "tank_hammer" && n.kind === "log"
-                        ? 0.5
-                        : activeCharacter === "tank_ironclad" &&
-                            n.kind === "log"
-                          ? 0.5
-                        : activeCharacter === "tank_brace" &&
-                            n.kind === "spikes"
-                          ? 0.5
-                          : 1;
-              let abilityAdjustedDamage =
-                activeCharacter === "tank_anchor" && n.kind === "rock"
-                  ? 1
-                  : activeCharacter === "tank_colossus" && n.kind === "rock"
-                    ? 1.5
-                  : rawDamage;
+                      : 1;
+              let abilityAdjustedDamage = rawDamage;
               if (
-                activeCharacter === "tank_anchor" &&
-                n.kind === "rock" &&
-                rawDamage > abilityAdjustedDamage
-              )
-                showAbilityNotice("STONEGUARD · ROCK DAMAGE 1 HP");
-              if (
-                activeCharacter === "tank_colossus" &&
-                n.kind === "rock" &&
-                rawDamage > abilityAdjustedDamage
-              )
-                showAbilityNotice("COLOSSUS FRAME · ROCK DAMAGE 1.5 HP");
-              if (
-                activeCharacter === "tank_ironclad" &&
-                n.kind === "log"
-              )
-                showAbilityNotice("IRON SHELL · LOG DAMAGE 0.5 HP");
-              if (
-                activeCharacter === "tank_brace" &&
-                n.kind === "spikes"
-              )
-                showAbilityNotice("SPIKE BRACE · SPIKE DAMAGE 0.5 HP");
-              if (
-                (activeCharacter === "medic_mercy" ||
-                  activeCharacter === "tank_bulwark") &&
-                abilityAdjustedDamage > 0.5 &&
-                firstGuardWaveRef.current !== wave
+                activeClass === "tank" ||
+                activeCharacter === "medic_mercy"
               ) {
-                firstGuardWaveRef.current = wave;
-                const guardReduction =
-                  activeCharacter === "medic_mercy" ? 1 : 0.5;
-                abilityAdjustedDamage = Math.max(
-                  0.5,
-                  abilityAdjustedDamage - guardReduction,
-                );
-                showAbilityNotice(
-                  `${
-                    activeCharacter === "tank_bulwark"
-                      ? "HEAVY PLATE"
-                      : "GRACE GUARD"
-                  } · BLOCKED ${guardReduction} HP`,
-                );
+                const tankResult = calculateTankDamage({
+                  character: activeCharacter as TankCharacterKey,
+                  source: n.kind as HazardKind,
+                  baseDamage: rawDamage,
+                  currentHearts: state.current.hearts,
+                  bulwarkPlateAvailable:
+                    firstGuardWaveRef.current !== wave,
+                  mercyPassiveActive: mercyChainActiveRef.current,
+                  mercyContinuationRoll: Math.random(),
+                  spikeDeactivated: Boolean(n.deactivated),
+                  bastionSecondsInLane:
+                    (20000 - bastionChargeRemainingRef.current) / 1000,
+                  citadelBlocksRemaining: 0,
+                  sentinelAnalyzedSource:
+                    sentinelAnalyzedKindRef.current as HazardKind | null,
+                  sentinelFirstAnalyzedHitAvailable:
+                    sentinelAnalyzedBlockWaveRef.current !== wave,
+                  titanMaulEquipped: true,
+                });
+                abilityAdjustedDamage = tankResult.damage;
+                if (tankResult.consumed.bulwarkPlate)
+                  firstGuardWaveRef.current = wave;
+                if (tankResult.consumed.mercyPassive)
+                  mercyChainActiveRef.current =
+                    tankResult.mercyPassiveActiveAfterHit;
+                if (tankResult.consumed.sentinelFirstAnalyzedHit)
+                  sentinelAnalyzedBlockWaveRef.current = wave;
+                if (tankResult.consumed.bastionCharge) {
+                  bastionArmorChargedRef.current = false;
+                  bastionChargeRemainingRef.current = 20000;
+                }
+                if (tankResult.reasons.length > 0)
+                  showAbilityNotice(
+                    tankResult.reasons
+                      .map((reason) => reason.replaceAll("-", " ").toUpperCase())
+                      .join(" · "),
+                    1000,
+                  );
               }
               if (
-                activeCharacter === "tank_bastion" &&
-                bastionArmorChargedRef.current
-              ) {
-                bastionArmorChargedRef.current = false;
-                bastionChargeRemainingRef.current = 6000;
-                abilityAdjustedDamage = Math.max(
-                  0,
-                  abilityAdjustedDamage - 0.5,
-                );
-                showAbilityNotice("HOLD GROUND · 0.5 HP ARMOR USED", 1100);
+                activeCharacter === "tank_anchor" &&
+                anchorGuardUntilRef.current > Date.now()
+              )
+                abilityAdjustedDamage *= 0.25;
+              if (activeCharacter === "trickster_jester") {
+                const effect = jesterEffectRef.current;
+                if (effect.kind === "first-zero" && !effect.firstUsed)
+                  abilityAdjustedDamage = 0;
+                else if (effect.kind === "half")
+                  abilityAdjustedDamage *= 0.5;
+                else if (effect.kind === "barrel-zero" && n.kind === "barrel")
+                  abilityAdjustedDamage = 0;
+                else if (effect.kind === "first-double" && !effect.firstUsed)
+                  abilityAdjustedDamage *= 2;
+                else if (effect.kind === "more")
+                  abilityAdjustedDamage *= 1.5;
+                else if (effect.kind === "barrel-double" && n.kind === "barrel")
+                  abilityAdjustedDamage *= 2;
+                effect.firstUsed = true;
               }
               if (
                 n.seededUntilWave !== undefined &&
@@ -6149,6 +6942,11 @@ export default function Home() {
                 return [];
               }
               preserveFreezeThroughHit();
+              if (activeCharacter === "runner_drift") {
+                driftStackPercentRef.current = 0;
+                driftLastMoveAtRef.current = 0;
+                showAbilityNotice("SLIPSTREAM · CHAIN RESET", 800);
+              }
               if (playScope === "single")
                 queueEndlessGemStreakReset();
               void audioEngine.playSfx("hit");
@@ -6163,28 +6961,53 @@ export default function Home() {
                 );
               }
               let nextHearts = state.current.hearts - damage;
-              if (hasCharacterAbility("tank_atlas")) {
-                if (state.current.hearts <= 1) {
-                  atlasLaneLimitRef.current = Math.max(
-                    1000,
-                    atlasLaneLimitRef.current - 500,
-                  );
-                  setAbilityStateVersion((value) => value + 1);
-                  showAbilityNotice(
-                    `WORLD BEARER · SKY TIMER ${(atlasLaneLimitRef.current / 1000).toFixed(1)}s`,
-                    1100,
-                  );
-                }
-                nextHearts = Math.max(1, nextHearts);
-              }
               if (
                 nextHearts <= 0 &&
-                activeCharacter === "tank_sentinel" &&
-                !sentinelLastStandUsedRef.current
+                activeCharacter === "trickster_phantom" &&
+                !phantomLordRef.current &&
+                wave % 10 === 0
               ) {
-                sentinelLastStandUsedRef.current = true;
+                phantomLordRef.current = true;
+                phantomLordNegationStreakRef.current = 0;
+                phantomHealthCapRef.current = 6;
+                setPhantomLord(true);
+                setPhantomHealthCap(6);
+                nextHearts = 6;
+                showAbilityNotice(
+                  "LORDSDOWN · PHANTOM ASCENDED · REVIVED AT 6 HP",
+                  1800,
+                );
+              }
+              if (hasCharacterAbility("tank_atlas")) {
+                atlasLaneLimitRef.current = Math.max(
+                  1000,
+                  atlasLaneLimitRef.current - 500,
+                );
+                setAbilityStateVersion((value) => value + 1);
+                showAbilityNotice(
+                  `WORLD BEARER · SKY TIMER ${(atlasLaneLimitRef.current / 1000).toFixed(1)}s`,
+                  1100,
+                );
+              }
+              if (activeCharacter === "tank_sentinel")
+                sentinelDamageByKindRef.current[n.kind] =
+                  (sentinelDamageByKindRef.current[n.kind] ?? 0) + damage;
+              if (
+                nextHearts <= 0 &&
+                activeCharacter === "misc_nomad" &&
+                !nomadSurvivalUsedRef.current &&
+                Math.random() < 0.5
+              ) {
+                nomadSurvivalUsedRef.current = true;
+                permanentObstacleSlowRef.current = Math.min(
+                  permanentObstacleSlowRef.current,
+                  0.8,
+                );
                 nextHearts = 0.5;
-                showAbilityNotice("LAST STAND · SURVIVED AT 0.5 HP", 1400);
+                showAbilityNotice(
+                  "SURVIVAL INSTINCT · 0.5 HP · HAZARDS PERMANENTLY 20% SLOWER",
+                  1500,
+                );
               }
               if (
                 nextHearts <= 0 &&
@@ -6270,10 +7093,6 @@ export default function Home() {
               if (nextHearts > 0 && activeCharacter === "tank_plow") {
                 clearDamagedLane = true;
                 showAbilityNotice("LANE PLOW · LANE CLEARED", 1000);
-              }
-              if (nextHearts > 0 && activeCharacter === "trickster_smoke") {
-                smokeSlowRemainingRef.current = 2500;
-                showAbilityNotice("SMOKE SCREEN · HAZARDS 35% SLOWER", 1100);
               }
               state.current.hearts = Math.max(0, nextHearts);
               setHearts(state.current.hearts);
@@ -6414,24 +7233,34 @@ export default function Home() {
       if (pacerRushActive) characterScoreMultiplier *= 5;
       if (
         activeCharacter === "runner_drift" &&
-        driftBoostRemainingRef.current > 0
+        driftStackPercentRef.current > 0
       )
-        characterScoreMultiplier *= 1.15;
+        characterScoreMultiplier *= 1 + driftStackPercentRef.current;
+      if (activeCharacter === "runner_spark")
+        characterScoreMultiplier *= 1 + sparkGemCountRef.current * 0.01;
+      if (activeCharacter === "trickster_pickpocket")
+        characterScoreMultiplier *= 2;
       if (
-        activeCharacter === "runner_spark" &&
-        sparkBoostRemainingRef.current > 0
+        activeCharacter === "trickster_switch" &&
+        switchLaneChangesRef.current >= 50
       )
-        characterScoreMultiplier *= 1.5;
+        characterScoreMultiplier *= 1.1;
+      if (activeCharacter === "tank_guard")
+        characterScoreMultiplier *= 0.9;
+      if (activeCharacter === "tank_colossus")
+        characterScoreMultiplier *=
+          1 + Math.max(0, state.current.hearts - 3) * 0.05;
       if (
-        activeCharacter === "runner_flare" &&
-        flareBoostWaveRef.current === wave
+        activeCharacter === "trickster_jester" &&
+        jesterEffectRef.current.kind === "neutral"
       )
-        characterScoreMultiplier *= 1.5;
+        characterScoreMultiplier *= 1 + jesterEffectRef.current.percent;
       if (
-        activeCharacter === "runner_comet" &&
-        cometChargedRef.current
+        activeCharacter === "trickster_phantom" &&
+        !phantomLordRef.current &&
+        wave % 2 === 0
       )
-        characterScoreMultiplier *= 1.5;
+        characterScoreMultiplier *= 2;
       if (
         hasCharacterAbility("medic_halo") &&
         state.current.hearts >= maxHearts
@@ -6449,11 +7278,6 @@ export default function Home() {
         characterScoreMultiplier *= 1.5;
       if (activeCharacter === "medic_oracle" && oracleCompleted > 0)
         characterScoreMultiplier *= 1 + oracleCompleted * 0.05;
-      if (
-        activeCharacter === "trickster_gambit" &&
-        gambitBoostRemainingRef.current > 0
-      )
-        characterScoreMultiplier *= 1.75;
       if (
         activeCharacter === "trickster_wildcard" &&
         wildcardBuffRef.current === "score"
@@ -6546,7 +7370,7 @@ export default function Home() {
         );
         if (bastionChargeRemainingRef.current === 0) {
           bastionArmorChargedRef.current = true;
-          showAbilityNotice("HOLD GROUND · 0.5 HP ARMOR READY", 1100);
+          showAbilityNotice("HOLD GROUND · NEXT HIT FULLY NEGATED", 1100);
         }
       }
       if (
@@ -6633,6 +7457,7 @@ export default function Home() {
     applyAuthoritativeVersusPoints,
     applyProgressionPayload,
     applyDirectMapDamage,
+    applyCharacterSelfDamage,
     activeAbility.name,
   ]);
   useEffect(() => {
@@ -6657,11 +7482,55 @@ export default function Home() {
         setFactoryConveyor(nextConveyor);
       }
       wildcardBuffRef.current = null;
-      if (activeCharacter === "runner_flare") {
-        const cleanWave = flareDamageWaveRef.current !== completedWave;
-        flareBoostWaveRef.current = cleanWave ? next : 0;
-        if (cleanWave)
-          showAbilityNotice("CLEAN RUN · NEXT WAVE SCORE ×1.50", 1200);
+      mercyChainActiveRef.current = true;
+      phantomKindHitsRef.current = {};
+      if (activeCharacter === "tank_citadel") {
+        citadelFlawlessStreakRef.current =
+          collisionWaveRef.current === completedWave
+            ? 0
+            : citadelFlawlessStreakRef.current + 1;
+        citadelBlocksRemainingRef.current = getCitadelOpeningBlocks(
+          citadelFlawlessStreakRef.current,
+        );
+      }
+      if (activeCharacter === "tank_sentinel") {
+        sentinelAnalyzedKindRef.current =
+          selectSentinelAnalyzedSource(
+            sentinelDamageByKindRef.current as Partial<
+              Record<HazardKind, number>
+            >,
+          ) as Kind | null;
+        sentinelAnalyzedBlockWaveRef.current = 0;
+      }
+      if (activeCharacter === "trickster_jester") {
+        const rolled = generateJesterWaveEffect(
+          `${versusMatchRef.current ?? "solo"}:${userIdRef.current ?? "guest"}`,
+          next,
+        );
+        const mappedKind =
+          rolled.kind === "first-hit-zero"
+            ? "first-zero"
+            : rolled.kind === "half-damage"
+              ? "half"
+              : rolled.kind === "barrel-immunity"
+                ? "barrel-zero"
+                : rolled.kind === "score-and-speed"
+                  ? "neutral"
+                  : rolled.kind === "first-hit-double"
+                    ? "first-double"
+                    : rolled.kind === "fifty-percent-more-damage"
+                      ? "more"
+                      : "barrel-double";
+        jesterEffectRef.current = {
+          kind: mappedKind,
+          percent:
+            rolled.kind === "score-and-speed" ? rolled.percent / 100 : 0,
+          firstUsed: false,
+        };
+        showAbilityNotice(
+          `JESTER ROLL · ${rolled.kind.replaceAll("-", " ").toUpperCase()}${rolled.kind === "score-and-speed" ? ` ${rolled.percent}%` : ""}`,
+          1500,
+        );
       }
       if (hasCharacterAbility("medic_mender")) {
         menderChargeRemainingRef.current = 20000;
@@ -6707,7 +7576,9 @@ export default function Home() {
         const sutureFullRestore =
           hasCharacterAbility("medic_suture") && completedWave % 3 === 0;
         const healAmount =
-          activeCharacter === "medic_patch"
+          activeCharacter === "medic_vial"
+            ? maxHearts
+          : activeCharacter === "medic_patch"
             ? 1.5
             : hasCharacterAbility("medic_salve")
               ? state.current.hearts <= 1
@@ -6727,6 +7598,10 @@ export default function Home() {
               ? 0
             : activeCharacter === "tank_atlas"
               ? 1
+            : activeCharacter === "tank_colossus"
+              ? collisionWaveRef.current === completedWave
+                ? 0
+                : 2
             : activeClass === "tank"
               ? 0.5
               : 1;
@@ -6757,7 +7632,10 @@ export default function Home() {
           state.current.hearts < maxHearts
         )
           showAbilityNotice("WORLD BEARER · +1 HP", 1200);
-        const healedHearts = sutureFullRestore
+        const healedHearts =
+          activeCharacter === "medic_vial"
+            ? maxHearts
+          : sutureFullRestore
           ? maxHearts
           : Math.min(maxHearts, state.current.hearts + healAmount);
         state.current.hearts = healedHearts;
@@ -6835,9 +7713,16 @@ export default function Home() {
               setAbilityStateVersion((value) => value + 1);
             }
           });
+          const earnedRewards = [
+            ORACLE_PROPHECY_COPY[normalReward].reward,
+            ...reducedRewards.map(
+              (prophecy) => ORACLE_PROPHECY_COPY[prophecy].reducedReward,
+            ),
+            "PERMANENT SCORE +5%",
+          ];
           showAbilityNotice(
-            `PROPHECY COMPLETE · SCORE +${(oracleCompleted + 1) * 5}%`,
-            1500,
+            `PROPHECY COMPLETE · ${earnedRewards.join(" · ")}`,
+            2200,
           );
         }
         setOracleProphecies([]);
@@ -6923,6 +7808,29 @@ export default function Home() {
     queueEndlessGemStreakReset,
   ]);
   useEffect(() => {
+    if (
+      playScope !== "versus" ||
+      versusPhase !== "intermission" ||
+      !versusIntermissionReady ||
+      versusCountdown <= 1 ||
+      pendingVersusCoinPickupIdsRef.current.size === 0 ||
+      versusCoinSyncBusyRef.current
+    )
+      return;
+    const matchId = versusMatchRef.current;
+    if (!matchId) return;
+    versusCoinSyncBusyRef.current = true;
+    void syncIntermissionCoinClaims(matchId).finally(() => {
+      versusCoinSyncBusyRef.current = false;
+    });
+  }, [
+    playScope,
+    versusPhase,
+    versusIntermissionReady,
+    versusCountdown,
+    syncIntermissionCoinClaims,
+  ]);
+  useEffect(() => {
     if (versusPhase !== "intermission") return;
     if (versusCountdown <= 0) {
       if (isBotPractice) {
@@ -6980,7 +7888,11 @@ export default function Home() {
       versusTransitionBusyRef.current = true;
       versusHydrationIntentRef.current += 1;
       const resumeMatch = async () => {
-        await versusCoinAwardQueueRef.current.catch(() => undefined);
+        // The secure coin endpoint is deliberately never called after the
+        // shared intermission expires. Any receipts that could not reach the
+        // server during the ten-second window are discarded; the state update
+        // below reconciles the optimistic HUD with the authoritative balance.
+        pendingVersusCoinPickupIdsRef.current.clear();
         if (versusMatchRef.current !== matchId) return;
         await enqueueVersusStateSync(async () => {
           if (versusMatchRef.current !== matchId) return;
@@ -7191,8 +8103,6 @@ export default function Home() {
         : "playing";
     const syncIntent = ++versusStateSyncIntentRef.current;
     const syncState = async () => {
-      if (nextStatus === "intermission")
-        await versusCoinAwardQueueRef.current.catch(() => undefined);
       if (
         versusMatchRef.current !== matchId ||
         versusStateSyncIntentRef.current !== syncIntent
@@ -7238,7 +8148,11 @@ export default function Home() {
           clearTimeout(versusSyncRetryTimerRef.current);
           versusSyncRetryTimerRef.current = null;
         }
-        applyAuthoritativeVersusPoints(data?.self?.obstacle_points);
+        // Keep the pickup preview while waiting for the rival. The dedicated
+        // intermission effect claims the batch only after the shared ten-second
+        // server intermission is active.
+        if (pendingVersusCoinPickupIdsRef.current.size === 0)
+          applyAuthoritativeVersusPoints(data?.self?.obstacle_points);
         const serverStatus = String(data?.match?.status ?? "");
         if (serverStatus === "finished") {
           versusFinishedRef.current = true;
@@ -8329,6 +9243,31 @@ export default function Home() {
       1400,
     );
   };
+  const interactWithSpike = (itemId: number) => {
+    if (activeCharacter === "tank_warden") {
+      setItems((current) =>
+        current.map((item) =>
+          item.id === itemId && item.kind === "spikes"
+            ? { ...item, deactivated: true }
+            : item,
+        ),
+      );
+      showAbilityNotice("WARDEN · SPIKES DEACTIVATED", 850);
+      return;
+    }
+    if (
+      activeCharacter === "misc_tinker" &&
+      !tinkerClickedSpikeIdsRef.current.has(itemId)
+    ) {
+      tinkerClickedSpikeIdsRef.current.add(itemId);
+      tinkerInspirationRef.current += 1;
+      setAbilityStateVersion((value) => value + 1);
+      showAbilityNotice(
+        `INSPIRATION · ${tinkerInspirationRef.current}/3`,
+        850,
+      );
+    }
+  };
   const abilityAction = (() => {
     if (
       activeCharacter === "runner_zenith" &&
@@ -8354,6 +9293,130 @@ export default function Home() {
             : "READY · BURST + SHIELD",
         ready: dashCooldownRemainingRef.current <= 0,
       };
+    if (activeCharacter === "tank_hammer")
+      return { label: "HAMMER", status: "CLEARS CURRENT + NEIGHBOR LANES", ready: true };
+    if (activeCharacter === "tank_anchor")
+      return {
+        label: "GROUND HOOK",
+        status:
+          anchorGuardUntilRef.current > Date.now()
+            ? "ACTIVE · LANE LOCKED · DAMAGE -75%"
+            : "READY · 5 SECOND GUARD",
+        ready: anchorGuardUntilRef.current <= Date.now(),
+      };
+    if (activeCharacter === "tank_sentinel")
+      return {
+        label: "STEEL SPEAR",
+        status: sentinelActionWaveRef.current === wave ? "USED THIS WAVE" : "BARRELS -75% SPEED · 15s",
+        ready: sentinelActionWaveRef.current !== wave,
+      };
+    if (activeCharacter === "trickster_smoke")
+      return {
+        label: "SMOKE BOMB",
+        status:
+          smokeCooldownUntilRef.current > Date.now()
+            ? `${Math.ceil((smokeCooldownUntilRef.current - Date.now()) / 1000)}s COOLDOWN`
+            : "TELEPORT TO A SAFE LANE",
+        ready: smokeCooldownUntilRef.current <= Date.now(),
+      };
+    if (activeCharacter === "trickster_rogue")
+      return {
+        label: "SHADOW METER",
+        status: `${rogueGrazeMeterRef.current} GRAZES · 2 / 5 / 10`,
+        ready: rogueGrazeMeterRef.current >= 2,
+      };
+    if (activeCharacter === "trickster_flicker")
+      return {
+        label: "FLICKER",
+        status: flickerUsedWaveRef.current === wave ? "USED THIS WAVE" : "TRANSFORM EACH LANE'S CLOSEST HAZARD",
+        ready: flickerUsedWaveRef.current !== wave,
+      };
+    if (activeCharacter === "runner_flare")
+      return {
+        label: "SIGNAL FLARE",
+        status:
+          flareCooldownUntilRef.current > Date.now()
+            ? `${Math.ceil((flareCooldownUntilRef.current - Date.now()) / 1000)}s COOLDOWN`
+            : "BURN THIS LANE FOR 15s",
+        ready: flareCooldownUntilRef.current <= Date.now(),
+      };
+    if (activeCharacter === "trickster_phantom" && phantomLord)
+      return {
+        label: "EVISCERATE",
+        status: "ERASE ALL PROJECTILES ON SCREEN",
+        ready: true,
+      };
+    if (activeCharacter === "medic_vial")
+      return {
+        label: "SWITCH ALLEGIANCE",
+        status: vialUsedRef.current ? "USED THIS RUN" : "REVERSE EFFECTS FOR 30s",
+        ready: !vialUsedRef.current,
+      };
+    if (activeCharacter === "trickster_mirage")
+      return {
+        label: "MIRAGE INVASION",
+        status: mirageUsedWaveRef.current === wave ? "USED THIS WAVE" : "5s INVASION · -1 HP ON RETURN",
+        ready: mirageUsedWaveRef.current !== wave,
+      };
+    if (activeCharacter === "runner_scout")
+      return {
+        label: "QUICKSTEP INPUT",
+        status:
+          scoutInputWindowUntilRef.current > Date.now()
+            ? "PRESS AGAIN NOW"
+            : scoutCooldownUntilRef.current > Date.now()
+              ? `${Math.ceil((scoutCooldownUntilRef.current - Date.now()) / 1000)}s COOLDOWN`
+              : "READY · ARM SNOWFLAKE HEAL",
+        ready:
+          scoutInputWindowUntilRef.current > Date.now() ||
+          scoutCooldownUntilRef.current <= Date.now(),
+      };
+    if (activeCharacter === "tank_drag")
+      return {
+        label: "CHAIN ANCHOR",
+        status: dragChainRef.current?.wave === wave ? "RETURN TO SAVED LANE" : "SET RETURN POINT",
+        ready: true,
+      };
+    if (activeCharacter === "misc_tinker")
+      return {
+        label: "HANDMADE SPIKE",
+        status: `${tinkerInspirationRef.current}/3 INSPIRATION`,
+        ready: tinkerInspirationRef.current >= 3,
+      };
+    if (activeCharacter === "runner_ranger")
+      return {
+        label: "PICKUP ZIP",
+        status:
+          rangerCooldownUntilRef.current > Date.now()
+            ? `${Math.ceil((rangerCooldownUntilRef.current - Date.now()) / 1000)}s COOLDOWN`
+            : "ZIP TO THE NEAREST PICKUP",
+        ready: rangerCooldownUntilRef.current <= Date.now(),
+      };
+    if (activeCharacter === "misc_lantern")
+      return {
+        label: "FLASH OF LIGHT",
+        status:
+          lanternCooldownUntilRef.current > Date.now()
+            ? `${Math.ceil((lanternCooldownUntilRef.current - Date.now()) / 1000)}s COOLDOWN`
+            : "FREEZE ALL HAZARDS · 2s",
+        ready: lanternCooldownUntilRef.current <= Date.now(),
+      };
+    if (activeCharacter === "misc_weaver")
+      return {
+        label: "WEAVE JACKET",
+        status: weaverJacketRef.current ? "JACKET ACTIVE" : `${weaverSnowflakeCountRef.current}/5 SNOWFLAKES`,
+        ready: !weaverJacketRef.current && weaverSnowflakeCountRef.current >= 5,
+      };
+    if (activeCharacter === "misc_catalyst")
+      return { label: "FLUX PULL", status: "COLLECT EVERY PICKUP ON SCREEN", ready: true };
+    if (activeCharacter === "misc_harvester") {
+      const highest = Math.max(...Object.values(harvesterCountsRef.current));
+      return {
+        label: "HARVEST",
+        status: `${highest}/10 CHARGE${harvesterCooldownUntilRef.current > Date.now() ? " · COOLDOWN" : ""}`,
+        ready: highest >= 10 && harvesterCooldownUntilRef.current <= Date.now(),
+      };
+    }
     if (activeCharacter === "medic_lifeline")
       return {
         label: "RESCUE HOOK",
@@ -8900,7 +9963,9 @@ export default function Home() {
                       disabled={
                         versusPhase === "searching" ||
                         versusLeaving ||
-                        !playerProgression.ranked_unlocked
+                        !playerProgression.ranked_unlocked ||
+                        getCharacterDefinition(equippedCharacter).rarity ===
+                          "mythic"
                       }
                       onClick={() => {
                         setVersusMode("ranked");
@@ -8911,7 +9976,10 @@ export default function Home() {
                       <b>RANKED</b>
                       <small>
                         {playerProgression.ranked_unlocked
-                          ? "ELO ENABLED · COMPETITIVE"
+                          ? getCharacterDefinition(equippedCharacter).rarity ===
+                            "mythic"
+                            ? "MYTHIC EQUIPPED · CHOOSE A NON-MYTHIC"
+                            : "ELO ENABLED · COMPETITIVE"
                           : `LOCKED · REACH LEVEL ${RANKED_UNLOCK_LEVEL} (LVL ${playerProgression.level})`}
                       </small>
                     </button>
@@ -8962,6 +10030,25 @@ export default function Home() {
                       <div className="versus-practice-divider" aria-hidden="true">
                         <span>OR</span>
                       </div>
+                      <label className="practice-map-picker">
+                        <span>PRACTICE MAP</span>
+                        <select
+                          value={practiceMapChoice}
+                          disabled={versusLeaving}
+                          onChange={(event) =>
+                            setPracticeMapChoice(
+                              event.target.value as MapId | "random",
+                            )
+                          }
+                        >
+                          <option value="random">RANDOM ARENA</option>
+                          {MAP_IDS.map((mapId) => (
+                            <option key={mapId} value={mapId}>
+                              {MAP_RULES[mapId].name.toUpperCase()}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                       <button
                         className="versus-practice"
                         onClick={startBotPractice}
@@ -9077,7 +10164,7 @@ export default function Home() {
                       their run ends too.
                     </li>
                     <li>
-                      The second runner to fall receives <b>+75 score</b>, then
+                      The second runner to fall receives <b>+280 score</b>, then
                       the higher final score wins. Equal scores are a draw.
                     </li>
                     <li>
@@ -9235,7 +10322,7 @@ export default function Home() {
             </div>
           </header>
           <div
-            className={`playfield map-${activeMapId}${environmentCosmetic ? ` environment-${environmentCosmetic}` : ""}`}
+            className={`playfield map-${activeMapId}${environmentCosmetic ? ` environment-${environmentCosmetic}` : ""}${phantomNightActive ? " phantom-night" : ""}${phantomBloodmoonActive ? " phantom-bloodmoon" : ""}${phantomLordsdownActive ? " phantom-lordsdown" : ""}${phantomLord ? " phantom-lord" : ""}`}
           >
             <div className="sky" aria-hidden="true">
               <i />
@@ -9436,6 +10523,18 @@ export default function Home() {
                   <small>SCORE ×{modeMultiplier.toFixed(2)}</small>
                 )}
               </div>
+              {activeCharacter === "runner_flare" &&
+                flareLaneRef.current !== null &&
+                flareActiveUntilRef.current > Date.now() && (
+                  <div
+                    className="character-flare-zone"
+                    style={{
+                      left: `${(flareLaneRef.current / activeLaneCount) * 100}%`,
+                      width: `${100 / activeLaneCount}%`,
+                    }}
+                    aria-label={`Signal flare burning lane ${flareLaneRef.current + 1}`}
+                  />
+                )}
               {items.map((x) => (
                 <div
                   key={x.id}
@@ -9443,18 +10542,44 @@ export default function Home() {
                     obstacleCosmetic && isHazardKind(x.kind)
                       ? ` obstacle-${obstacleCosmetic}`
                       : ""
-                  }${(x.seededUntilWave ?? 0) >= wave ? " seeded" : ""}`}
+                  }${(x.seededUntilWave ?? 0) >= wave ? " seeded" : ""}${x.deactivated ? " deactivated" : ""}${activeCharacter === "tank_sentinel" && x.kind === sentinelAnalyzedKindRef.current ? " analyzed" : ""}${phantomBloodmoonActive && phantomBloodmoonKindsRef.current.has(x.kind) ? " bloodmoon-friendly" : ""}`}
                   style={{
                     left: `${((x.lane + 0.5) / activeLaneCount) * 100}%`,
                     top: `${x.y}%`,
                   }}
                   aria-label={x.kind}
+                  role={
+                    x.kind === "spikes" &&
+                    (activeCharacter === "tank_warden" ||
+                      activeCharacter === "misc_tinker")
+                      ? "button"
+                      : undefined
+                  }
+                  tabIndex={
+                    x.kind === "spikes" &&
+                    (activeCharacter === "tank_warden" ||
+                      activeCharacter === "misc_tinker")
+                      ? 0
+                      : undefined
+                  }
+                  onClick={() => {
+                    if (x.kind === "spikes") interactWithSpike(x.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (
+                      x.kind === "spikes" &&
+                      (event.key === "Enter" || event.key === " ")
+                    ) {
+                      event.preventDefault();
+                      interactWithSpike(x.id);
+                    }
+                  }}
                 >
                   <Obstacle kind={x.kind} />
                 </div>
               ))}
               <div
-                className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}${beaconActiveRef.current ? " beacon-active" : ""}${reviveFlyingRef.current ? " flight-active" : ""}${haloPartsRef.current >= 3 ? " halo-ready" : ""}${activeCharacter === "runner_velocity" && velocityDisplayPercent > 0 ? velocityDisplayPercent >= 100 ? " velocity-max" : velocityDisplayPercent >= 50 ? " velocity-charged" : " velocity-charging" : ""}`}
+                className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}${beaconActiveRef.current ? " beacon-active" : ""}${reviveFlyingRef.current ? " flight-active" : ""}${haloPartsRef.current >= 3 ? " halo-ready" : ""}${phantomLord ? " phantom-lord-form" : ""}${activeCharacter === "runner_velocity" && velocityDisplayPercent > 0 ? velocityDisplayPercent >= 100 ? " velocity-max" : velocityDisplayPercent >= 50 ? " velocity-charged" : " velocity-charging" : ""}`}
                 style={{ left: `${((lane + 0.5) / activeLaneCount) * 100}%` }}
               >
                 {hasCharacterAbility("medic_halo") && haloPartsRef.current > 0 && <i className="runner-halo" data-pieces={haloPartsRef.current} />}
@@ -9512,7 +10637,7 @@ export default function Home() {
             )}
             {abilityChoice?.kind === "oracle-prophecy" && (
               <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose an Oracle prophecy">
-                <section className="ability-panel mythic-panel"><header><div><small>{oracleCompleted} COMPLETED</small><b>CHOOSE THE NEXT PROPHECY</b></div></header><div className="ability-panel-body"><p className="ability-panel-note">Success adds a permanent 5% score bonus. Failure costs 1 HP and can be lethal.</p><div className="ability-option-grid">{oracleChoiceSets.map((choice) => <button key={choice.join("-")} className="ability-option reward" onClick={() => chooseOracleProphecy(choice)}><span>✦</span><span><b>{choice.map((value) => value.replace("-", " ").toUpperCase()).join(" + ")}</b><small>{choice.length > 1 ? "MERGED · ONE CONDITION REQUIRED" : choice[0] === "no-hit" ? "FINISH WITHOUT CONTACT" : choice[0] === "completion" ? "GET HIT · FINISH ABOVE 1 HP" : "FINISH AT 1 HP OR LESS"}</small></span></button>)}</div></div></section>
+                <section className="ability-panel mythic-panel"><header><div><small>{oracleCompleted} COMPLETED</small><b>CHOOSE THE NEXT PROPHECY</b></div></header><div className="ability-panel-body"><p className="ability-panel-note">Success gives the reward shown plus a permanent 5% score bonus. Failure costs 1 HP and can be lethal.</p><div className="ability-option-grid">{oracleChoiceSets.map((choice) => <button key={choice.join("-")} className="ability-option reward" onClick={() => chooseOracleProphecy(choice)}><span>✦</span><span><b>{choice.map((value) => value.replace("-", " ").toUpperCase()).join(" + ")}</b><small>{choice.map((value, index) => `${ORACLE_PROPHECY_COPY[value].condition} → ${index === 0 ? ORACLE_PROPHECY_COPY[value].reward : ORACLE_PROPHECY_COPY[value].reducedReward}`).join(" · ")}</small></span></button>)}</div></div></section>
               </div>
             )}
             {abilityChoice?.kind === "oracle-passive" && (
@@ -9557,8 +10682,8 @@ export default function Home() {
                     </span>
                     <em>
                       {waitingForVersusResult
-                        ? "The second runner to finish receives +75, then the final scores decide the match."
-                        : "Final scores include the +75 second-finish bonus. Equal scores finish as a draw."}
+                        ? "The second runner to finish receives +280, then the final scores decide the match."
+                        : "Final scores include the +280 second-finish bonus. Equal scores finish as a draw."}
                     </em>
                   </div>
                 )}

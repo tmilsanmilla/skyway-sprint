@@ -794,7 +794,7 @@ begin
     10000::bigint+floor(v_elapsed_seconds*25000)::bigint)
     +coalesce(v_mushroom_score,0)
     +case when v_zenith_time_stop_used then 15000 else 0 end
-    +case when v_second_death_bonus then 75 else 0 end;
+    +case when v_second_death_bonus then 280 else 0 end;
   if new.score<0 or new.score>v_score_ceiling then
     raise exception '1v1 score exceeds the server play-time allowance';
   end if;
@@ -806,8 +806,9 @@ create trigger enforce_1v1_score_ceiling
 before insert or update of score on public.multiplayer_players
 for each row execute function app_private.enforce_1v1_score_ceiling();
 
--- Current receipt-only 1v1 coin claim. Verified active play, wave, and recent
--- receipt counts cap unique IDs while exact retries remain idempotent.
+-- Legacy single-pickup implementation retained for migration compatibility.
+-- Client execute is revoked below; Multi-device 07 owns the current atomic
+-- intermission batch RPC.
 create or replace function public.award_1v1_points(
   p_match_id uuid,p_source text,p_amount integer,p_pickup_id text
 )
@@ -1249,6 +1250,16 @@ revoke all on function public.award_1v1_points(uuid,text,integer,text)
   from public,anon,authenticated;
 do $$
 begin
+  if to_regprocedure(
+       'public.sync_1v1_intermission_coins(uuid,text[])'
+     ) is not null then
+    execute 'revoke all on function public.sync_1v1_intermission_coins(uuid,text[])
+      from public,anon,authenticated';
+  end if;
+end
+$$;
+do $$
+begin
   if to_regprocedure('public.award_1v1_points(uuid,text,integer)') is not null then
     execute 'revoke all on function public.award_1v1_points(uuid, text, integer) from public, anon, authenticated';
   end if;
@@ -1285,8 +1296,16 @@ revoke all on function app_private.flush_1v1_progression_on_phase_exit()
 revoke all on function public.save_player_high_score(bigint)
   from public,anon,authenticated;
 grant execute on function public.claim_player_gem(uuid,text) to authenticated;
-grant execute on function public.award_1v1_points(uuid,text,integer,text)
-  to authenticated;
+do $$
+begin
+  if to_regprocedure(
+       'public.sync_1v1_intermission_coins(uuid,text[])'
+     ) is not null then
+    execute 'grant execute on function public.sync_1v1_intermission_coins(uuid,text[])
+      to authenticated';
+  end if;
+end
+$$;
 grant execute on function public.get_player_progression() to authenticated;
 grant execute on function public.start_progression_run() to authenticated;
 grant execute on function public.sync_progression_run(uuid,integer,boolean)
@@ -1439,7 +1458,7 @@ insert into canonical_character_kits values
   ('tank_bulwark','Bulwark','common','tank',false,'Tower Shield',.03),
   ('runner_vault','Vault','common','tank',true,'Spring Pole',.03),
   ('tank_guard','Guard','common','tank',true,'Iron Buckler',.03),
-  ('tank_brace','Brace','uncommon','tank',true,'Spike Buckler',.04),
+  ('tank_brace','Brace','uncommon','tank',true,'Spike Buckler',.15),
   ('tank_ironclad','Ironclad','uncommon','tank',true,'Plate Hammer',.04),
   ('medic_mercy','Mercy','rare','tank',true,'Injector',.05),
   ('tank_hammer','Hammer','rare','tank',true,'War Hammer',.05),
@@ -1459,16 +1478,16 @@ insert into canonical_character_kits values
   ('tank_plow','Plow','uncommon','trickster',true,'Ram Shield',.04),
   ('trickster_rogue','Rogue','uncommon','trickster',false,'Daggers',.04),
   ('trickster_clockwork','Clockwork','uncommon','trickster',true,'Time Cards',.04),
-  ('trickster_flicker','Flicker','uncommon','trickster',true,'Blink Knives',.04),
-  ('runner_flare','Flare','rare','trickster',true,'Signal Spear',.05),
+  ('trickster_flicker','Flicker','rare','trickster',true,'Blink Knives',.05),
+  ('runner_flare','Flare','epic','trickster',true,'Signal Spear',.06),
   ('trickster_pickpocket','Pickpocket','rare','trickster',true,'Coin Dagger',.05),
   ('trickster_switch','Switch','rare','trickster',true,'Twin Coins',.05),
-  ('trickster_gambit','Gambit','rare','trickster',true,'Loaded Cards',.05),
+  ('trickster_gambit','Gambit','legendary','trickster',true,'Loaded Cards',0),
   ('medic_vial','Vial','epic','trickster',true,'Tonic Flask',.06),
   ('trickster_mirage','Mirage','epic','trickster',true,'Prism Fans',.06),
-  ('runner_comet','Comet','legendary','trickster',true,'Star Spear',.07),
-  ('trickster_hex','Hex','legendary','trickster',true,'Void Chakram',.07),
-  ('trickster_echo','Echo','mythic','trickster',true,'Repeat Knives',.08),
+  ('runner_comet','Comet','legendary','trickster',true,'Star Spear',0),
+  ('trickster_hex','Hex','mythic','trickster',true,'Void Chakram',0),
+  ('trickster_echo','Echo','mythic','trickster',true,'Repeat Knives',0),
   -- MISC: everything outside the four defined roles.
   ('runner_scout','Scout','common','misc',true,'Twin Blades',.03),
   ('tank_drag','Drag','common','misc',true,'Chain Hook',.03),
@@ -1484,21 +1503,8 @@ insert into canonical_character_kits values
   ('trickster_wildcard','Wildcard','epic','misc',true,'Dice Fans',.06),
   ('misc_mimic','Mimic','epic','misc',true,'Copy Mask',.06),
   ('misc_catalyst','Catalyst','epic','misc',true,'Flux Vial',.06),
-  ('misc_harvester','Harvester','legendary','misc',true,'Crescent Sickle',.07),
-  ('misc_muse','Muse','mythic','misc',true,'Dream Harp',.08);
-
--- Snapshot the existing Tank roster before the canonical upsert. Tank balance
--- is still being designed, so this merged query must neither overwrite nor
--- silently recategorize any of those 16 existing rows.
-create temporary table preserved_tank_catalog_rows(
-  item_key text primary key,
-  row_data jsonb not null
-) on commit drop;
-insert into preserved_tank_catalog_rows(item_key,row_data)
-select catalog.item_key,to_jsonb(catalog)
-from public.extraction_catalog catalog
-join canonical_character_kits kit using(item_key)
-where kit.character_class='tank';
+  ('misc_harvester','Harvester','legendary','misc',true,'Crescent Sickle',0),
+  ('misc_muse','Muse','mythic','misc',true,'Dream Harp',0);
 
 insert into public.extraction_catalog(
   item_key,display_name,item_type,rarity,character_class,extractable,active,
@@ -1512,13 +1518,9 @@ on conflict(item_key) do update set
   rarity=excluded.rarity,character_class=excluded.character_class,
   extractable=excluded.extractable,active=excluded.active,
   weapon_name=excluded.weapon_name,
-  weapon_score_bonus=excluded.weapon_score_bonus
--- Tank-category balance is intentionally frozen. Fresh installs still receive
--- the baseline rows, but rerunning Player 01 cannot rewrite an existing Tank.
-where excluded.character_class<>'tank';
+  weapon_score_bonus=excluded.weapon_score_bonus;
 
--- Finished Runner/Healer rules. Tank proposals are intentionally not merged
--- until their design is complete.
+-- Finished Runner/Healer rules.
 with finished_abilities(item_key,passive_ability,weapon_effect) as (values
   ('runner_ace','Earns 10% more score.','Adds 3% distance score.'),
   ('runner_dash','Moves 6% faster and earns 6% more score; its E dash grants a 1-second speed burst and a brief shield.','Adds 3% distance score.'),
@@ -1560,6 +1562,249 @@ from finished_abilities ability
 where catalog.item_key=ability.item_key
   and catalog.item_type='character'
   and catalog.character_class in ('runner','medic');
+
+-- Finished Tank, Trickster, and Misc contracts from the attached balance pass.
+with finished_abilities(
+  item_key,rarity,passive_ability,weapon_effect,weapon_score_bonus
+) as (values
+  ('tank_bulwark','common','Ignores the first hit each wave and takes 20% less damage from every source.','Tower Shield adds 3% distance score.',.03),
+  ('runner_vault','common','Vaults over spikes and logs without taking damage.','Spring Pole adds 3% distance score.',.03),
+  ('tank_guard','common','Takes 30% less damage from every source and earns 10% less score.','Iron Buckler adds 3% distance score.',.03),
+  ('tank_brace','uncommon','Takes 50% more damage from every source but takes no spike damage.','Spike Buckler adds 15% distance score.',.15),
+  ('tank_ironclad','uncommon','Takes 50% more damage from every source but takes no log damage.','Plate Hammer adds 4% distance score.',.04),
+  ('medic_mercy','rare','The first hit each wave deals 50% less damage; after each protected hit there is a 25% chance protection continues, and a failed roll ends it for that wave.','Injector adds 5% distance score.',.05),
+  ('tank_hammer','rare','Takes 10% less damage. Press E to destroy the first non-rock obstacle in the current lane and both neighboring lanes; at an edge, destroy two in the only neighboring lane.','War Hammer powers Hammer but cannot destroy rocks.',0),
+  ('tank_anchor','rare','Press E to lock lane movement and take 75% less damage for 5 seconds, then movement unlocks.','Ground Hook adds 5% distance score.',.05),
+  ('tank_warden','rare','Can reach 4 HP, takes 25% less damage, and can click or tap a spike to darken and deactivate it.','Lock Shield adds 5% distance score.',.05),
+  ('tank_bastion','epic','Each second in one lane stores 5% damage reduction for the next hit, up to 100% after 20 seconds; taking a hit resets it.','Fortress Shield adds 6% distance score.',.06),
+  ('tank_rampart','epic','Takes 20% less damage at 2 HP, 30% less at 1.5 HP, 40% less at 1 HP, and 50% less at 0.5 HP.','Siege Wall adds 6% distance score.',.06),
+  ('trickster_jester','epic','Each wave randomly gains a positive effect (first hit ignored, 50% damage reduction, or barrel immunity), a neutral 1-100% score-and-hazard-speed boost, or a negative effect (first hit doubled, 50% more damage, or double barrel damage).','Card Fan adds 6% distance score.',.06),
+  ('tank_citadel','epic','At wave start ignores 1-3 obstacles, equal to consecutive flawless waves and capped at 3.','Rampart Axe adds 6% distance score.',.06),
+  ('tank_sentinel','legendary','Each wave analyzes the obstacle type that dealt the most damage this run: it glows blue, deals 75% less damage, and its first hit that wave is ignored.','Press E with Steel Spear to slow barrels by 75% for 15 seconds.',0),
+  ('tank_colossus','legendary','Can reach 10 HP and heals 2 HP only after a flawless wave. Each HP above 3 grants 5% score and slows hazards 5%; rocks deal 1.5 at 5 HP, 1 at 7 HP, and 0 at 10 HP.','Titan Maul reduces all damage 35% and rock damage 50%.',0),
+  ('trickster_phantom','mythic','Ignores the first kind of each damaging obstacle each wave. Night waves double score, add 50% speed, ignore two of each obstacle kind, and cancel snowflakes; Bloodmoons make two red obstacle kinds harmless and healing; LORDSDOWN combines the best effects at 10 HP and death transforms Phantom into a 6-HP Lord with capped 50% hit negation and Eviscerate. Temporary night HP returns to 3.','Moon Scythe grants 5 seconds of invincibility at the start of every night wave.',0),
+  ('trickster_smoke','common','Every 20 seconds press E to teleport to a currently safe lane; in 1v1 hold E for 3 seconds to obscure the top of the opponent lane with smoke.','Smoke Bombs add 3% distance score.',.03),
+  ('runner_drift','uncommon','Lane changes no more than 0.5 seconds apart stack 15% score and equal hazard speed up to 200%; a hit resets it. In Ranked, E adds 0.1-second opponent input delay for 5 seconds and stacks with freeze.','Slipstream Shoes add 4% distance score.',.04),
+  ('runner_spark','uncommon','Every collected gem permanently adds 1% score for the run. In 1v1, a 15-coin Sparked Gem damages its collector for 1 HP and heals Spark for 0.5 HP.','Prism Baton adds 4% distance score.',.04),
+  ('tank_plow','uncommon','Keeps Plow''s current obstacle-breaking ability; in 1v1, 20 attack coins can set a false HP total visible only to the opponent.','Ram Shield adds 4% distance score.',.04),
+  ('trickster_rogue','uncommon','One graze per 5 seconds fills Shadow: at 2, E grants 0.45 seconds invincibility without lane changes; at 5, E clears the screen; at 10, E grants 5 seconds invincibility without lane changes.','Daggers add 4% distance score.',.04),
+  ('trickster_clockwork','uncommon','Hazards start 10% slower and slow another 0.5% per second, capped at 60%; in 1v1 the opponent''s sent hazards accelerate inversely.','Time Cards add 4% distance score.',.04),
+  ('trickster_flicker','rare','Once per wave press E to turn the closest obstacle in every lane into a gem, melon, or attack coin; in 1v1 it also swaps all opponent obstacles.','Blink Knives add 5% distance score.',.05),
+  ('runner_flare','epic','Every 30 seconds press E to place a 15-second flare that burns logs, barrels, and snowflakes; every 10 burns reduces cooldown 5 seconds to a 15-second minimum, and burned hazards are sent to the opponent.','Signal Spear adds 6% distance score.',.06),
+  ('trickster_pickpocket','rare','Doubles every source of score and gems. Once per 1v1 wave, E steals the ceiling of 10% of opponent attack coins, at least 1; no steal occurs when both players use Pickpocket.','Coin Dagger adds 5% distance score.',.05),
+  ('trickster_switch','rare','At 50 cumulative lane changes gain 10% score; at 100, lane changes grant delayed 0.25-second invincibility; at 1000 in 1v1, spend 50 attack coins to secretly remap opponent purchases.','Twin Coins add 5% distance score.',.05),
+  ('trickster_gambit','legendary','Draws five cards per wave into a 10-card hand and pauses while managing it. Poker hands grant escalating one-wave and permanent HP, score, defense, revive, coin-steal, and 1v1 doubled-attack rewards, from High Card through Royal Flush.','Loaded Cards enable the poker-hand rewards.',0),
+  ('medic_vial','epic','Gem collection costs 1 HP and wave end heals to full. Once per 1v1, E changes obstacle allegiance for 30 seconds: hazards heal by type, melons damage and subtract score, currents pull, and gems damage both players; Endless applies the allegiance effect to Vial.','Tonic Flask adds 6% distance score.',.06),
+  ('trickster_mirage','epic','Once per 1v1 wave, E enters the opponent field for 5 seconds invulnerably; sharing their lane every 0.5 seconds deals 1 HP, then Mirage takes 1 HP when it ends.','Prism Fans add 6% distance score.',.06),
+  ('runner_comet','legendary','In 1v1 intermission, obstacle prices are halved and quantities doubled; E can remove natural incoming hazards at fixed costs. Shared HEATFEAST stores spent coins and unlocks coin, damage, tax, removal, sending, and split-attack bonuses as it is consumed.','Star Spear multiplies attack-coin income by 1.5.',0),
+  ('trickster_hex','mythic','On even waves, E enters a 15-second Void Realm to collect Damnation without advancing the wave. Thresholds unlock score, Current, Souls, damage reduction, Hades, god revives, throne invincibility, opponent Void effects, and doubled opponent damage.','Press R to throw Void Chakram, deleting one obstacle and tripling it toward the opponent in 1v1.',0),
+  ('trickster_echo','mythic','Completes ordered Mirror quests for six shards and selected non-mythic passives. The Knowing unlocks an 8-HP mirror phase with 80% reduction, reflected damage, shard-powered score, Mirror Realm healing, and a final reflective phase; Endless removes opponent-targeted effects.','Repeat Knives channel the Mirror quests and realm.',0),
+  ('runner_scout','common','Keeps Scout''s current ability. Every 50 seconds, E starts a timed input; success makes the next snowflake heal 0.5 HP.','Twin Blades add 3% distance score.',.03),
+  ('tank_drag','common','Keeps Drag''s passive. Once per wave, E leaves a chain; pressing E again pulls Drag back to that lane with invincibility during the pull.','Chain Hook adds 3% distance score.',.03),
+  ('misc_nomad','common','Lethal damage has a 50% chance to leave 0.5 HP and permanently slow all obstacles 20%.','Trail Hook adds 3% distance score.',.03),
+  ('misc_tinker','common','Clicking each spike once grants Inspiration; at 3 Inspiration, E launches a handmade spike that destroys the first projectile it meets.','Gear Wrench adds 3% distance score.',.03),
+  ('runner_ranger','uncommon','Every 30 seconds, E zips to an on-screen 1v1 coin, gem, or melon; melons award double score.','Pixel Bow adds 4% distance score.',.04),
+  ('misc_broker','uncommon','Stores gems, coins, and melons in separate funds that move +1-50% on a 60% roll or -1-50% on a 40% roll each wave; death pays out gems and melon score, while coins can be claimed manually.','Coin Cane adds 4% distance score.',.04),
+  ('misc_prospector','uncommon','Warns five seconds before each gem and highlights its future lane.','Gem Pick adds 4% distance score.',.04),
+  ('misc_lantern','uncommon','Press E to freeze every obstacle for 2 seconds.','Glow Rod adds 4% distance score.',.04),
+  ('runner_fortune','rare','Adds gem spawn chance equal to gems collected this run, capped at 100%.','Lucky Compass adds 5% distance score.',.05),
+  ('misc_scribe','rare','At wave end chooses one hazard and caps its next-wave spawns at wave divided by 10, minimum 1.','Rune Quill adds 5% distance score.',.05),
+  ('misc_weaver','rare','After five snowflakes, E weaves permanent snowflake immunity; afterward every second snowflake heals 0.5 HP, capped at 1 HP per wave.','Thread Blades add 5% distance score.',.05),
+  ('trickster_wildcard','epic','Draws from a 54-card deck each wave: numbers grant rank x 5% score, face cards grant defense, Aces grant 60% score and defense, and Jokers ignore five hits; exhausting the deck permanently activates Ace and Joker.','Dice Fans add 6% distance score.',.06),
+  ('misc_mimic','epic','In 1v1 copies the opponent''s non-mythic character; in Endless selects two passives of Rare rarity or lower.','Copy Mask adds 6% distance score.',.06),
+  ('misc_catalyst','epic','Pickups two lanes away move 50% slower while pickups in the same or neighboring lane move 50% faster; E collects every pickup on screen.','Flux Vial adds 6% distance score.',.06),
+  ('misc_harvester','legendary','At 10 collected gems, melons, or individual attack coins unlocks separate 30-second E abilities to deflect, harvest, or plant a stealing fake coin; reaching 50 of a resource greatly upgrades its matching ability.','Crescent Sickle enables Harvester progression.',0),
+  ('misc_muse','mythic','Caps the field at five obstacles and once pauses for a 30-second rhythm challenge. Accuracy tiers unlock permanent score, slow, defense, healing music, notes, Disco Unleash, perfect revives, escalating replay challenges, and an 8-HP finale.','Dream Harp powers Muse Mix and rhythm abilities.',0),
+  ('tank_atlas','legendary','Can reach 7 HP and can fall below 1 normally. Every obstacle hit shortens Sky Crush by 0.5 seconds, to a 1-second minimum.','World Maul halves obstacle damage for 2 seconds after changing lanes.',0)
+)
+update public.extraction_catalog catalog
+set rarity=ability.rarity,
+    passive_ability=ability.passive_ability,
+    weapon_effect=ability.weapon_effect,
+    weapon_score_bonus=ability.weapon_score_bonus
+from finished_abilities ability
+where catalog.item_key=ability.item_key
+  and catalog.item_type='character';
+
+-- Existing ownership follows the catalog rarity without granting new items.
+update public.player_unlocks unlock
+set rarity=catalog.rarity
+from public.extraction_catalog catalog
+where catalog.item_key=unlock.item_key
+  and catalog.item_type=unlock.item_type
+  and unlock.rarity is distinct from catalog.rarity;
+
+-- Server-owned score modifiers apply equally to positive 1v1 attack-point
+-- awards. Spark reads only receipt-backed gems for the exact match.
+alter table public.multiplayer_players
+  add column if not exists last_damage_at timestamptz,
+  add column if not exists wave_started_at timestamptz not null default now(),
+  add column if not exists run_started_at timestamptz not null default now();
+
+create or replace function app_private.one_v_one_attack_point_multiplier(
+  p_character_key text,p_wave integer,p_hearts numeric,p_max_hearts numeric,
+  p_lane_index integer,p_lane_count integer,p_last_damage_at timestamptz,
+  p_wave_started_at timestamptz,p_run_started_at timestamptz
+)
+returns numeric language plpgsql volatile security definer set search_path='' as $$
+declare
+  v_multiplier numeric:=1; v_missing_ratio numeric:=0;
+  v_hitless_seconds numeric:=0; v_weapon_bonus numeric:=0;
+  v_character_class text:='runner';
+begin
+  select coalesce(weapon_score_bonus,0),character_class
+  into v_weapon_bonus,v_character_class
+  from public.extraction_catalog
+  where item_key=p_character_key and item_type='character' and active;
+  if p_max_hearts>0 then
+    v_missing_ratio:=greatest(0,least(1,(p_max_hearts-p_hearts)/p_max_hearts));
+  end if;
+  v_multiplier:=case p_character_key
+    when 'runner_ace' then 1.10
+    when 'runner_dash' then 1.06
+    when 'runner_courier' then 1.25
+    when 'runner_tempo' then case when mod(greatest(1,p_wave),2)=1
+      then 1.15 else 0.85 end
+    when 'tank_reactor' then 1+0.30*v_missing_ratio
+    when 'runner_vector' then case
+      when p_lane_index in(0,greatest(0,p_lane_count-1)) then 1.12 else 1 end
+    when 'medic_halo' then case when p_hearts>=p_max_hearts then 1.15 else 1 end
+    when 'runner_velocity' then 1
+    when 'runner_pacer' then case when statement_timestamp()<coalesce(
+      p_wave_started_at,statement_timestamp())+interval '15 seconds'
+      then 5 else 1 end
+    when 'runner_zenith' then
+      (1+least(0.60,greatest(0,p_wave-1)*0.02))
+      *case when p_wave>=7 and p_hearts>=p_max_hearts then 1.15 else 1 end
+      *case when p_wave>=12 then 1.10*1.06 else 1 end
+    when 'tank_guard' then 0.90
+    when 'tank_colossus' then 1+greatest(0,p_hearts-3)*0.05
+    when 'trickster_phantom' then case when mod(greatest(1,p_wave),2)=0
+      then 2 else 1 end
+    when 'trickster_pickpocket' then 2
+    when 'runner_comet' then 1.5
+    else 1
+  end;
+  if v_character_class='trickster' then
+    v_multiplier:=v_multiplier*1.15;
+  end if;
+  if p_character_key='runner_velocity' then
+    v_hitless_seconds:=least(100,greatest(0,extract(epoch from
+      statement_timestamp()-coalesce(
+        p_last_damage_at,p_run_started_at,statement_timestamp()
+      ))));
+    v_multiplier:=1+v_hitless_seconds*0.02;
+  end if;
+  v_weapon_bonus:=case p_character_key
+    when 'runner_velocity' then .10
+    when 'runner_pacer' then 0
+    when 'medic_lifeline' then 0
+    when 'medic_seraph' then 0
+    when 'tank_atlas' then 0
+    when 'medic_revive' then 0
+    when 'medic_oracle' then 0
+    when 'tank_hammer' then 0
+    when 'tank_sentinel' then 0
+    when 'tank_colossus' then 0
+    when 'trickster_phantom' then 0
+    when 'trickster_gambit' then 0
+    when 'runner_comet' then 0
+    when 'trickster_hex' then 0
+    when 'trickster_echo' then 0
+    when 'misc_harvester' then 0
+    when 'misc_muse' then 0
+    else v_weapon_bonus
+  end;
+  return greatest(.1,round(v_multiplier*(1+v_weapon_bonus),4));
+end;
+$$;
+revoke all on function app_private.one_v_one_attack_point_multiplier(
+  text,integer,numeric,numeric,integer,integer,timestamptz,timestamptz,timestamptz
+) from public,anon,authenticated;
+
+create or replace function app_private.one_v_one_attack_point_multiplier(
+  p_match_id uuid,p_user_id uuid,p_character_key text,p_wave integer,
+  p_hearts numeric,p_max_hearts numeric,p_lane_index integer,
+  p_lane_count integer,p_last_damage_at timestamptz,
+  p_wave_started_at timestamptz,p_run_started_at timestamptz
+)
+returns numeric language plpgsql volatile security definer set search_path='' as $$
+declare v_multiplier numeric; v_gems bigint:=0;
+begin
+  v_multiplier:=app_private.one_v_one_attack_point_multiplier(
+    p_character_key,p_wave,p_hearts,p_max_hearts,p_lane_index,p_lane_count,
+    p_last_damage_at,p_wave_started_at,p_run_started_at
+  );
+  if p_character_key='runner_spark' then
+    select count(*) into v_gems
+    from public.player_progression_events
+    where user_id=p_user_id and source='gem'
+      and metadata->>'context_id'=p_match_id::text;
+    v_multiplier:=v_multiplier*(1+v_gems*.01);
+  end if;
+  return greatest(.1,round(v_multiplier,4));
+end;
+$$;
+revoke all on function app_private.one_v_one_attack_point_multiplier(
+  uuid,uuid,text,integer,numeric,numeric,integer,integer,timestamptz,
+  timestamptz,timestamptz
+) from public,anon,authenticated;
+
+create or replace function app_private.multiply_1v1_attack_point_award()
+returns trigger language plpgsql security definer set search_path='' as $$
+declare v_lane_count integer:=5; v_multiplier numeric:=1;
+begin
+  if new.obstacle_points<=old.obstacle_points then return new; end if;
+  select coalesce(rules.lane_count,5) into v_lane_count
+  from public.multiplayer_matches match_row
+  left join app_private.one_v_one_map_rules rules on rules.map_key=match_row.map_key
+  where match_row.id=new.match_id;
+  v_multiplier:=app_private.one_v_one_attack_point_multiplier(
+    new.match_id,new.user_id,new.character_key,new.wave,new.hearts,
+    new.max_hearts,coalesce(new.lane_index,0),v_lane_count,
+    new.last_damage_at,new.wave_started_at,new.run_started_at
+  );
+  new.obstacle_points:=old.obstacle_points
+    +(new.obstacle_points-old.obstacle_points)*v_multiplier;
+  return new;
+end;
+$$;
+revoke all on function app_private.multiply_1v1_attack_point_award()
+  from public,anon,authenticated;
+
+create or replace function app_private.multiply_1v1_point_receipt()
+returns trigger language plpgsql security definer set search_path='' as $$
+declare v_player public.multiplayer_players; v_lane_count integer:=5;
+begin
+  select * into v_player from public.multiplayer_players
+  where match_id=new.match_id and user_id=new.user_id;
+  if v_player.user_id is null then return new; end if;
+  select coalesce(rules.lane_count,5) into v_lane_count
+  from public.multiplayer_matches match_row
+  left join app_private.one_v_one_map_rules rules on rules.map_key=match_row.map_key
+  where match_row.id=new.match_id;
+  new.points_awarded:=round(new.points_awarded*
+    app_private.one_v_one_attack_point_multiplier(
+      new.match_id,new.user_id,v_player.character_key,v_player.wave,
+      v_player.hearts,v_player.max_hearts,coalesce(v_player.lane_index,0),
+      v_lane_count,v_player.last_damage_at,v_player.wave_started_at,
+      v_player.run_started_at
+    ),4);
+  return new;
+end;
+$$;
+revoke all on function app_private.multiply_1v1_point_receipt()
+  from public,anon,authenticated;
+drop trigger if exists multiply_1v1_attack_point_award
+  on public.multiplayer_players;
+create trigger multiply_1v1_attack_point_award
+before update of obstacle_points on public.multiplayer_players
+for each row execute function app_private.multiply_1v1_attack_point_award();
+drop trigger if exists multiply_1v1_point_receipt
+  on public.multiplayer_point_events;
+create trigger multiply_1v1_point_receipt
+before insert on public.multiplayer_point_events
+for each row execute function app_private.multiply_1v1_point_receipt();
 
 create temporary table canonical_visual_cosmetics(
   item_key text primary key,
@@ -2973,7 +3218,7 @@ as $$
     when 'uncommon' then 10
     when 'rare' then 15
     when 'epic' then 25
-    when 'legendary' then 300
+    when 'legendary' then 175
     when 'mythic' then 2000
     else null
   end;
@@ -3593,7 +3838,7 @@ begin
      or app_private.direct_catalog_price('uncommon')<>10
      or app_private.direct_catalog_price('rare')<>15
      or app_private.direct_catalog_price('epic')<>25
-     or app_private.direct_catalog_price('legendary')<>300
+     or app_private.direct_catalog_price('legendary')<>175
      or app_private.direct_catalog_price('mythic')<>2000 then
     raise exception 'Player 08 shop prices are incorrect';
   end if;
@@ -3806,20 +4051,36 @@ begin
     raise exception 'Direct client high-score saving is still enabled';
   end if;
   if (select count(*) from public.extraction_catalog
-      where item_type='character' and character_class in ('runner','medic')
-        and active and passive_ability is not null
-        and weapon_effect is not null)<>32 then
-    raise exception 'Runner/Healer ability metadata is incomplete';
+      where item_type='character' and active
+        and passive_ability is not null
+        and weapon_effect is not null)<>80 then
+    raise exception 'Character ability metadata is incomplete';
   end if;
-  if to_regclass('app_private.one_v_one_map_rules') is not null and (
-       position('one_v_one_map_rules' in pg_get_functiondef(
-         to_regprocedure('public.award_1v1_points(uuid,text,integer,text)')
-       ))=0
-       or position('v_balance_before' in pg_get_functiondef(
-         to_regprocedure('public.award_1v1_points(uuid,text,integer,text)')
-       ))=0
+  if exists(
+    select 1 from(values
+      ('trickster_flicker','rare'),
+      ('runner_flare','epic'),
+      ('trickster_gambit','legendary'),
+      ('trickster_hex','mythic')
+    ) expected(item_key,rarity)
+    left join public.extraction_catalog catalog using(item_key)
+    where catalog.rarity is distinct from expected.rarity
+  ) then raise exception 'Attached character rarities are incomplete'; end if;
+  if to_regprocedure(
+       'public.sync_1v1_intermission_coins(uuid,text[])'
+     ) is not null and (
+       not has_function_privilege(
+         'authenticated',
+         'public.sync_1v1_intermission_coins(uuid,text[])',
+         'EXECUTE'
+       )
+       or has_function_privilege(
+         'authenticated',
+         'public.award_1v1_points(uuid,text,integer,text)',
+         'EXECUTE'
+       )
      ) then
-    raise exception 'Player 01 did not preserve MAPS MISC coin rewards';
+    raise exception 'Intermission coin RPC permissions are unsafe';
   end if;
   if to_regclass('public.multiplayer_mushroom_events') is not null and (
        position('multiplayer_mushroom_events' in pg_get_functiondef(
@@ -3952,22 +4213,26 @@ select
   ) and not has_function_privilege(
     'authenticated','public.increment_player_gems()','EXECUTE'
   ) as receipt_backed_gem_claims_only,
-  has_function_privilege(
+  coalesce(has_function_privilege(
+    'authenticated',to_regprocedure(
+      'public.sync_1v1_intermission_coins(uuid,text[])'), 'EXECUTE'
+  ),false) and coalesce(not has_function_privilege(
+    'anon',to_regprocedure(
+      'public.sync_1v1_intermission_coins(uuid,text[])'), 'EXECUTE'
+  ),true) and not has_function_privilege(
     'authenticated','public.award_1v1_points(uuid,text,integer,text)','EXECUTE'
-  ) and not has_function_privilege(
-    'anon','public.award_1v1_points(uuid,text,integer,text)','EXECUTE'
   ) and coalesce(not has_function_privilege(
     'authenticated',to_regprocedure(
       'public.award_1v1_points(uuid,text,integer)'), 'EXECUTE'
-  ),true) as receipt_only_coin_rpc,
-  position('Coin pickup allowance reached' in pg_get_functiondef(
-    to_regprocedure('public.award_1v1_points(uuid,text,integer,text)')
-  ))>0 as coin_rate_limits_installed,
+  ),true) as intermission_coin_rpc_secure,
+  coalesce(position('Coin pickup allowance reached' in pg_get_functiondef(
+    to_regprocedure('public.sync_1v1_intermission_coins(uuid,text[])')
+  ))>0,false) as coin_verified_envelope_installed,
   (to_regclass('app_private.one_v_one_map_rules') is null or (
     position('one_v_one_map_rules' in pg_get_functiondef(
-      to_regprocedure('public.award_1v1_points(uuid,text,integer,text)')
+      to_regprocedure('public.sync_1v1_intermission_coins(uuid,text[])')
     ))>0 and position('v_balance_before' in pg_get_functiondef(
-      to_regprocedure('public.award_1v1_points(uuid,text,integer,text)')
+      to_regprocedure('public.sync_1v1_intermission_coins(uuid,text[])')
     ))>0
   )) as map_coin_rewards_preserved,
   (to_regclass('public.multiplayer_mushroom_events') is null or (
@@ -3982,10 +4247,10 @@ select
     ))>0
   )) as map_score_bonuses_preserved,
   (select count(*) from public.extraction_catalog
-    where item_type='character' and character_class in ('runner','medic')
-      and active and passive_ability is not null
-      and weapon_effect is not null)=32
-    as runner_healer_metadata_complete,
+    where item_type='character' and active
+      and passive_ability is not null
+      and weapon_effect is not null)=80
+    as character_metadata_complete,
   position('Gem pickups arrived too quickly' in pg_get_functiondef(
     to_regprocedure('public.claim_player_gem(uuid,text)')
   ))>0 as gem_spawn_envelope_installed,
