@@ -1165,9 +1165,67 @@ export const resolveEchoKnowingDeath = (
 
 export const HEX_VOID_DURATION_MS = 15_000;
 export const HEX_CURRENT_COOLDOWN_MS = 5_000;
+export const HEX_VOID_CUT_SHIELD_MS = 500;
+export const HEX_CHAKRAM_COOLDOWN_MS = 10_000;
+export const HEX_DAMNATION_PER_VOID_CAP = 25;
+export const HEX_HADES_REQUIRED_DODGES = 20;
+export const HEX_HADES_DODGE_INTERVAL_MS = 600;
+export const HEX_HADES_MAX_MISSES = 3;
 export const HEX_THRONE_RETREAT_MS = 3_000;
 export const HEX_THRONE_INVINCIBILITY_MS = 10_000;
 export const HEX_OPPONENT_VOID_INPUT_DELAY_MS = 200;
+
+export type HexHadesRune = "A" | "S" | "D" | "F";
+
+export interface HexHadesChallenge {
+  readonly dodges: number;
+  readonly misses: number;
+  readonly prompt: HexHadesRune;
+  readonly nextDodgeAtMs: number;
+}
+
+export const createHexHadesChallenge = (
+  nowMs: number,
+  prompt: HexHadesRune = "A",
+): HexHadesChallenge => ({
+  dodges: 0,
+  misses: 0,
+  prompt,
+  nextDodgeAtMs: Math.max(0, finiteOr(nowMs)),
+});
+
+export const resolveHexHadesInput = (
+  challenge: HexHadesChallenge,
+  input: string,
+  nowMs: number,
+  nextPrompt: HexHadesRune,
+) => {
+  const now = Math.max(0, finiteOr(nowMs));
+  if (challenge.dodges >= HEX_HADES_REQUIRED_DODGES)
+    return { outcome: "won", challenge } as const;
+  if (challenge.misses >= HEX_HADES_MAX_MISSES)
+    return { outcome: "lost", challenge } as const;
+  if (now < challenge.nextDodgeAtMs)
+    return { outcome: "waiting", challenge } as const;
+  const correct = input.toUpperCase() === challenge.prompt;
+  const updated: HexHadesChallenge = {
+    dodges: challenge.dodges + Number(correct),
+    misses: challenge.misses + Number(!correct),
+    prompt: nextPrompt,
+    nextDodgeAtMs: now + HEX_HADES_DODGE_INTERVAL_MS,
+  };
+  return {
+    outcome:
+      updated.dodges >= HEX_HADES_REQUIRED_DODGES
+        ? "won"
+        : updated.misses >= HEX_HADES_MAX_MISSES
+          ? "lost"
+          : correct
+            ? "dodged"
+            : "missed",
+    challenge: updated,
+  } as const;
+};
 
 export interface HexDamnationBenefits {
   readonly damnation: number;
@@ -1300,6 +1358,31 @@ export const collectHexDamned = (
   ...state,
   damnation: state.damnation + nonNegativeInteger(amount),
 });
+
+export const collectHexDamnedForVoid = (
+  state: HexState,
+  collectedThisVoid: number,
+  amount = 1,
+) => {
+  const alreadyCollected = Math.min(
+    HEX_DAMNATION_PER_VOID_CAP,
+    nonNegativeInteger(collectedThisVoid),
+  );
+  const gained = Math.min(
+    HEX_DAMNATION_PER_VOID_CAP - alreadyCollected,
+    nonNegativeInteger(amount),
+  );
+  return {
+    gained,
+    collectedThisVoid: alreadyCollected + gained,
+    state: collectHexDamned(state, gained),
+  } as const;
+};
+
+export const getHexVoidCutEffect = () => ({
+  shieldDurationMs: HEX_VOID_CUT_SHIELD_MS,
+  removesObstacle: false,
+} as const);
 
 export type HexSoulResult =
   | {

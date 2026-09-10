@@ -1564,7 +1564,7 @@ with finished_abilities(item_key,passive_ability,weapon_effect) as (values
   ('medic_beacon','Can reach 5.5 HP. At 1 HP, glows, disables spikes, and slows all obstacles by 50%.','Adds 6% distance score.'),
   ('medic_lifeline','Once per run, lethal damage restores maximum HP and makes that obstacle harmless; can pause and choose another lane three times.','Activates the three-use lane Rescue Hook.'),
   ('medic_seraph','A hit can teleport to an empty lane; chance starts at 100% and drops 5% per activation. At 0%, Divine Recovery activates.','Each gem has a 10% chance to heal 1 HP.'),
-  ('tank_atlas','Keeps its healing passive, cannot fall below 1 HP, and must change lanes before the sky-crush timer expires.','Halves obstacle damage for 2 seconds after changing lanes.'),
+  ('tank_atlas','Starts at 4 HP, can reach 7 HP, and heals 1 HP after each wave. Every obstacle hit shortens Sky Crush by 0.5 seconds, to a 1-second minimum.','World Maul halves obstacle damage for 2 seconds after changing lanes.'),
   ('medic_revive','Lethal damage leaves 0.5 HP and starts permanent flight: logs and spikes miss, speed and score rise 50%, and healing is disabled.','After taking a hit, destroys the first obstacle of every later wave.'),
   ('medic_oracle','Chooses a prophecy each wave; successes grant its reward and 5% permanent score, while failure costs 1 HP.','Each wave, the first hit deals 0, the second half damage, and later hits full damage.')
 )
@@ -1606,12 +1606,12 @@ with finished_abilities(
   ('runner_flare','epic','Every 30 seconds press E to place a 15-second flare that burns logs, barrels, and snowflakes; every 10 burns reduces cooldown 5 seconds to a 15-second minimum, and burned hazards are sent to the opponent.','Signal Spear adds 6% distance score.',.06),
   ('trickster_pickpocket','rare','Doubles every source of score and gems. Once per 1v1 wave, E steals the ceiling of 10% of opponent attack coins, at least 1; no steal occurs when both players use Pickpocket.','Coin Dagger adds 5% distance score.',.05),
   ('trickster_switch','rare','At 50 cumulative lane changes gain 10% score; at 100, lane changes grant delayed 0.25-second invincibility; at 1000 in 1v1, spend 50 attack coins to secretly remap opponent purchases.','Twin Coins add 5% distance score.',.05),
-  ('trickster_gambit','legendary','Draws five cards per wave into a 10-card hand and pauses while managing it. Poker hands grant escalating one-wave and permanent HP, score, defense, revive, coin-steal, and 1v1 doubled-attack rewards, from High Card through Royal Flush.','Loaded Cards enable the poker-hand rewards.',0),
+  ('trickster_gambit','legendary','Draws five visible cards each wave into a 10-card hand. Poker hands grant escalating one-wave and permanent HP, score, defense, revive, coin-steal, and 1v1 doubled-attack rewards, from High Card through Royal Flush.','Loaded Cards stay visible between waves and enable the poker-hand rewards.',0),
   ('medic_vial','epic','Gem collection costs 1 HP and wave end heals to full. Once per 1v1, E changes obstacle allegiance for 30 seconds: hazards heal by type, melons damage and subtract score, currents pull, and gems damage both players; Endless applies the allegiance effect to Vial.','Tonic Flask adds 6% distance score.',.06),
   ('trickster_mirage','epic','Once per 1v1 wave, E enters the opponent field for 5 seconds invulnerably; sharing their lane every 0.5 seconds deals 1 HP, then Mirage takes 1 HP when it ends.','Prism Fans add 6% distance score.',.06),
   ('runner_comet','legendary','In 1v1 intermission, obstacle prices are halved and quantities doubled; E can remove natural incoming hazards at fixed costs. Shared HEATFEAST stores spent coins and unlocks coin, damage, tax, removal, sending, and split-attack bonuses as it is consumed.','Star Spear multiplies attack-coin income by 1.5.',0),
-  ('trickster_hex','mythic','On even waves, E enters a 15-second Void Realm to collect Damnation without advancing the wave. Thresholds unlock score, Current, Souls, damage reduction, Hades, god revives, throne invincibility, opponent Void effects, and doubled opponent damage.','Press R to throw Void Chakram, deleting one obstacle and tripling it toward the opponent in 1v1.',0),
-  ('trickster_echo','mythic','Completes ordered Mirror quests for six shards and selected non-mythic passives. The Knowing unlocks an 8-HP mirror phase with 80% reduction, reflected damage, shard-powered score, Mirror Realm healing, and a final reflective phase; Endless removes opponent-targeted effects.','Repeat Knives channel the Mirror quests and realm.',0),
+  ('trickster_hex','mythic','On even waves, E enters a 15-second Void Realm and can collect at most 25 Damnation per visit without advancing the wave. Void Cut phases through danger for 0.5 seconds without destroying obstacles. Hades requires 20 correctly timed rune dodges before three misses.','Press R to throw Void Chakram with a 10-second cooldown, deleting one obstacle and tripling it toward the opponent in 1v1.',0),
+  ('trickster_echo','mythic','Completes ordered Mirror quests for six shards and selected non-mythic passives. The Knowing unlocks an 8-HP mirror phase with 80% reduction, reflected damage, shard-powered score, Mirror Realm healing, and a final reflective phase; Mirror Realm lasts 10 seconds and closes automatically.','Repeat Knives channel the Mirror quests and the timed Mirror Realm.',0),
   ('runner_scout','common','Keeps Scout''s current ability. Every 50 seconds, E starts a timed input; success makes the next snowflake heal 0.5 HP.','Twin Blades add 3% distance score.',.03),
   ('tank_drag','common','Keeps Drag''s passive. Once per wave, E leaves a chain; pressing E again pulls Drag back to that lane with invincibility during the pull.','Chain Hook adds 3% distance score.',.03),
   ('misc_nomad','common','Lethal damage has a 50% chance to leave 0.5 HP and permanently slow all obstacles 20%.','Trail Hook adds 3% distance score.',.03),
@@ -1627,8 +1627,8 @@ with finished_abilities(
   ('misc_mimic','epic','In 1v1 copies the opponent''s non-mythic character; in Endless selects two passives of Rare rarity or lower.','Copy Mask adds 6% distance score.',.06),
   ('misc_catalyst','epic','Pickups two lanes away move 50% slower while pickups in the same or neighboring lane move 50% faster; E collects every pickup on screen.','Flux Vial adds 6% distance score.',.06),
   ('misc_harvester','legendary','At 10 collected gems, melons, or individual attack coins unlocks separate 30-second E abilities to deflect, harvest, or plant a stealing fake coin; reaching 50 of a resource greatly upgrades its matching ability.','Crescent Sickle enables Harvester progression.',0),
-  ('misc_muse','mythic','Caps the field at five obstacles and once pauses for a 30-second rhythm challenge. Accuracy tiers unlock permanent score, slow, defense, healing music, notes, Disco Unleash, perfect revives, escalating replay challenges, and an 8-HP finale.','Dream Harp powers Muse Mix and rhythm abilities.',0),
-  ('tank_atlas','legendary','Can reach 7 HP and can fall below 1 normally. Every obstacle hit shortens Sky Crush by 0.5 seconds, to a 1-second minimum.','World Maul halves obstacle damage for 2 seconds after changing lanes.',0)
+  ('misc_muse','mythic','Caps the field at five obstacles and once pauses for a 15-second rhythm challenge capped at 30 hits. Its separate Muse theme and accuracy tiers unlock permanent score, slow, defense, healing music, notes, Disco Unleash, perfect revives, escalating replay challenges, and an 8-HP finale.','Dream Harp powers the Muse-themed rhythm challenge and Muse Mix.',0),
+  ('tank_atlas','legendary','Starts at 4 HP, can reach 7 HP, and heals 1 HP after each wave. Every obstacle hit shortens Sky Crush by 0.5 seconds, to a 1-second minimum.','World Maul halves obstacle damage for 2 seconds after changing lanes.',0)
 )
 update public.extraction_catalog catalog
 set rarity=ability.rarity,
@@ -2570,9 +2570,8 @@ begin
 end;
 $$;
 
--- Private, per-run hitless-wave state. A wave change is also detected from
--- the server-verified progression receipt, so a forgotten client reset cannot
--- carry a streak between waves.
+-- Private hitless-run state. The chain carries between waves, caps internally
+-- once it reaches the maximum reward, and is reset only by damage or a new run.
 create table if not exists public.player_endless_gem_streaks(
   run_id uuid primary key references public.player_progression_runs(run_id)
     on delete cascade,
@@ -2585,6 +2584,26 @@ create index if not exists player_endless_gem_streaks_user_idx
   on public.player_endless_gem_streaks(user_id,updated_at desc);
 alter table public.player_endless_gem_streaks enable row level security;
 revoke all on table public.player_endless_gem_streaks
+  from public,anon,authenticated;
+
+create or replace function app_private.endless_gem_streak_award(
+  p_consecutive_pickups bigint
+)
+returns bigint
+language sql
+immutable
+security invoker
+set search_path=''
+as $$
+  select case
+    when coalesce(p_consecutive_pickups,0)<=0 then 0
+    when p_consecutive_pickups<=5 then p_consecutive_pickups
+    when p_consecutive_pickups<=10 then 5
+    when p_consecutive_pickups=11 then 6
+    else 7
+  end;
+$$;
+revoke all on function app_private.endless_gem_streak_award(bigint)
   from public,anon,authenticated;
 
 create or replace function public.reset_endless_gem_streak(
@@ -2638,8 +2657,8 @@ begin
 end;
 $$;
 
--- Compatibility signature retained. Endless pickups use the hitless-wave
--- currency streak; 1v1 pickups remain one gem. No pickup grants XP.
+-- Compatibility signature retained. Endless pickups use a hitless-run reward
+-- chain; 1v1 pickups remain one gem. No pickup grants XP immediately.
 create or replace function public.claim_player_gem(
   p_context_id uuid,
   p_pickup_id text
@@ -2668,7 +2687,6 @@ declare
   v_total bigint;
   v_now timestamptz;
   v_stored_metadata jsonb;
-  v_stored_wave integer;
   v_stored_streak bigint;
   v_streak bigint:=1;
   v_gems_awarded bigint:=1;
@@ -2783,8 +2801,8 @@ begin
   end if;
 
   if v_context_type='endless' then
-    select streak_row.wave,streak_row.streak
-    into v_stored_wave,v_stored_streak
+    select streak_row.streak
+    into v_stored_streak
     from public.player_endless_gem_streaks streak_row
     where streak_row.run_id=p_context_id and streak_row.user_id=v_uid
     for update;
@@ -2793,16 +2811,10 @@ begin
       from public.player_progression_events event
       where event.user_id=v_uid and event.source='gem'
         and event.metadata->>'context_id'=p_context_id::text
-        and event.metadata->>'context_type'='endless'
-        and coalesce(
-          (event.metadata->>'streak_wave')::integer,
-          (event.metadata->>'verified_wave')::integer
-        )=v_verified_wave;
-      v_stored_wave:=v_verified_wave;
+        and event.metadata->>'context_type'='endless';
     end if;
-    v_streak:=case when v_stored_wave=v_verified_wave
-      then greatest(coalesce(v_stored_streak,0),0)+1 else 1 end;
-    v_gems_awarded:=v_streak;
+    v_streak:=least(12,greatest(coalesce(v_stored_streak,0),0)+1);
+    v_gems_awarded:=app_private.endless_gem_streak_award(v_streak);
   else
     v_streak:=1;
     v_gems_awarded:=1;
@@ -3872,9 +3884,9 @@ grant execute on function public.set_loadout(text,text)
   to authenticated;
 
 comment on function public.claim_player_gem(uuid,text) is
-  'Receipt-backed gem claim. Endless awards the hitless-wave 1,2,3... gem streak; 1v1 awards one gem; neither awards XP immediately.';
+  'Receipt-backed gem claim. Endless awards 1-5, holds at 5 for five pickups, then awards 6 and caps at 7 until damage; 1v1 awards one gem.';
 comment on function public.reset_endless_gem_streak(uuid) is
-  'Clears the caller''s current verified Endless wave gem streak after a hit.';
+  'Clears the caller''s current verified Endless gem streak after damage.';
 comment on function public.extract_items(integer,text) is
   'Atomic QTY 1-100 Normal/ten-box extraction at 3 gems per item, with rarity-based duplicate refunds.';
 comment on function public.purchase_catalog_item(text) is
@@ -3899,6 +3911,13 @@ begin
      or (app_private.endless_run_xp_breakdown(8000,3)->>'total')::bigint
        <>16300000 then
     raise exception 'Player 08 Endless XP award formula is incorrect';
+  end if;
+  if array(
+       select app_private.endless_gem_streak_award(pickup)
+       from generate_series(1,14) pickup
+       order by pickup
+     )<>array[1,2,3,4,5,5,5,5,5,5,6,7,7,7]::bigint[] then
+    raise exception 'Endless gem streak reward curve is incorrect';
   end if;
   if app_private.duplicate_gem_refund('common')<>1
      or app_private.duplicate_gem_refund('epic')<>1
@@ -5037,6 +5056,7 @@ begin
     else 3
   end;
   v_base_start:=case
+    when v_key='tank_atlas' then 4
     when v_class='tank' then 4
     when v_class='trickster' then 2
     else 3
@@ -5145,6 +5165,11 @@ declare
   v_pickup_id text:=trim(p_pickup_id);
   v_total bigint;
   v_test_context_active boolean;
+  v_verified_wave integer;
+  v_result jsonb;
+  v_streak bigint;
+  v_raw_award bigint;
+  v_desired_award bigint;
 begin
   -- The private live implementation retains the verified heartbeat_active and
   -- active_seconds envelope, including "Gem pickups arrived too quickly".
@@ -5184,7 +5209,54 @@ begin
       'progression',public.get_player_progression()
     );
   end if;
-  return app_private.claim_player_gem_live(p_context_id,p_pickup_id);
+  perform pg_advisory_xact_lock(hashtextextended(v_uid::text,1));
+  -- Keep a hitless chain alive across wave boundaries before delegating to an
+  -- older private implementation that may still compare the stored wave.
+  select run.verified_wave into v_verified_wave
+  from public.player_progression_runs run
+  where run.run_id=p_context_id and run.user_id=v_uid
+    and run.completed_at is null;
+  if found then
+    update public.player_endless_gem_streaks streak
+    set wave=v_verified_wave,updated_at=now()
+    where streak.run_id=p_context_id and streak.user_id=v_uid;
+  end if;
+
+  v_result:=app_private.claim_player_gem_live(p_context_id,p_pickup_id);
+  if v_verified_wave is null
+     or not coalesce((v_result->>'is_new')::boolean,false) then
+    return v_result;
+  end if;
+
+  v_streak:=least(12,greatest(1,coalesce((v_result->>'streak')::bigint,1)));
+  v_raw_award:=greatest(0,coalesce((v_result->>'gems_awarded')::bigint,1));
+  v_desired_award:=app_private.endless_gem_streak_award(v_streak);
+
+  if v_raw_award<>v_desired_award then
+    update public.player_stats
+    set total_gems=greatest(0,total_gems+v_desired_award-v_raw_award),
+        updated_at=now()
+    where user_id=v_uid;
+    update public.player_progression_events event
+    set metadata=jsonb_set(
+      jsonb_set(event.metadata,'{streak}',to_jsonb(v_streak),true),
+      '{gems_awarded}',to_jsonb(v_desired_award),true
+    )
+    where event.user_id=v_uid and event.source='gem'
+      and event.source_key=p_context_id::text||':'||v_pickup_id;
+  end if;
+
+  update public.player_endless_gem_streaks streak
+  set streak=v_streak,wave=v_verified_wave,updated_at=now()
+  where streak.run_id=p_context_id and streak.user_id=v_uid;
+  select total_gems into v_total
+  from public.player_stats where user_id=v_uid;
+  return v_result||jsonb_build_object(
+    'total_gems',coalesce(v_total,0),
+    'gems_awarded',v_desired_award,
+    'streak',v_streak,
+    'streak_wave',v_verified_wave
+  );
 end;
 $$;
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ATLAS_STARTING_HEARTS,
   GAMBIT_REWARDS,
   INITIAL_DRIFT_STATE,
   advanceDriftLaneChange,
@@ -9,6 +10,7 @@ import {
   applyScoreMultiplierToAttackPoints,
   calculateTankDamage,
   canUseCharacterInMatch,
+  clampMuseRhythmHits,
   createStandard52CardDeck,
   createStandard54CardDeck,
   createWildcardDeckState,
@@ -39,6 +41,8 @@ import {
   getMuseRemainingObstacleSlots,
   getMuseReplayAccuracyRequirement,
   getMuseReward,
+  MUSE_RHYTHM_DURATION_MS,
+  MUSE_RHYTHM_MAX_HITS,
   getPickpocketCoinSteal,
   getRampartDamageReduction,
   getRogueActionForGrazes,
@@ -350,6 +354,7 @@ test("Hammer selects closest non-rock targets and doubles the sole edge neighbor
 });
 
 test("Atlas has seven max HP and Sky Crush loses 0.5s per hit down to 1s", () => {
+  assert.equal(ATLAS_STARTING_HEARTS, 4);
   assert.equal(getTankMaxHearts("tank_atlas"), 7);
   assert.equal(getAtlasSkyCrushSecondsAfterHits(4, 1), 3.5);
   assert.equal(getAtlasSkyCrushSecondsAfterHits(4, 4), 2);
@@ -637,6 +642,13 @@ test("Harvester exposes exact base and upgraded actions for each counter", () =>
 });
 
 test("Muse tiers use the requested accuracy boundaries", () => {
+  assert.equal(MUSE_RHYTHM_DURATION_MS, 15_000);
+  assert.equal(MUSE_RHYTHM_MAX_HITS, 30);
+  assert.equal(clampMuseRhythmHits(-1), 0);
+  assert.equal(clampMuseRhythmHits(29.99), 29);
+  assert.equal(clampMuseRhythmHits(30), 30);
+  assert.equal(clampMuseRhythmHits(31), 30);
+  assert.equal(clampMuseRhythmHits(Number.NaN), 0);
   assert.equal(getMuseReward(50).tier, "basic");
   assert.equal(getMuseReward(50.01).tier, "mix");
   assert.equal(getMuseReward(75).tier, "advanced");

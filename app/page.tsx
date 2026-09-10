@@ -2,6 +2,7 @@
 import {
   type CSSProperties,
   FormEvent,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useRef,
@@ -19,6 +20,11 @@ import {
 } from "./admin-test-mode-rules";
 import {
   ECHO_QUESTS,
+  HEX_CHAKRAM_COOLDOWN_MS,
+  HEX_DAMNATION_PER_VOID_CAP,
+  HEX_HADES_DODGE_INTERVAL_MS,
+  HEX_HADES_MAX_MISSES,
+  HEX_HADES_REQUIRED_DODGES,
   activateEchoMirrorRealm,
   advanceHexVoidCut,
   beginEchoKnowingCharge,
@@ -26,7 +32,7 @@ import {
   advanceEchoQuest,
   advanceMirageInvasion,
   becomeHexGod,
-  collectHexDamned,
+  collectHexDamnedForVoid,
   consumeHeatfeast,
   completeEchoKnowingCharge,
   cancelEchoKnowingCharge,
@@ -34,6 +40,7 @@ import {
   createEchoKnowingState,
   createGambitState,
   createHeatfeastState,
+  createHexHadesChallenge,
   createHexState,
   createHexVoidCutState,
   createWildcardState,
@@ -52,12 +59,14 @@ import {
   getGambitWaveEffects,
   getHeatfeastBenefits,
   getHexDamnationBenefits,
+  getHexVoidCutEffect,
   resolveHexGodDeath,
   resolveHexSoulHit,
   resolveEchoKnowingDeath,
   resolveEchoKnowingHit,
   resolveGambitVersusCoins,
   resolveHexChakram,
+  resolveHexHadesInput,
   splitCometIncomingObstacles,
   startMirageInvasion,
   summonHexSouls,
@@ -70,6 +79,7 @@ import {
   type GambitHand,
   type GambitRewardSchedule,
   type HexState,
+  type HexHadesRune,
   type HexVoidCutState,
   type HeatfeastState,
   type MirageInvasionState,
@@ -80,7 +90,11 @@ import {
   type WildcardState,
 } from "./advanced-character-rules";
 import {
+  ATLAS_STARTING_HEARTS,
+  MUSE_RHYTHM_DURATION_MS,
+  MUSE_RHYTHM_MAX_HITS,
   addToBrokerFund,
+  clampMuseRhythmHits,
   calculateTankDamage,
   claimBrokerCoinFund,
   generateJesterWaveEffect,
@@ -103,6 +117,7 @@ import {
   GROVE_RULES,
   MAP_IDS,
   MAP_RULES,
+  ONE_V_ONE_SCORING_RULES,
   PITCH_KATANA_RULES,
   VOLCANO_RULES,
   activatePitchKatana,
@@ -128,6 +143,17 @@ import {
   type MapPriorityList,
   type PitchKatanaState,
 } from "./arena-map-rules";
+import {
+  CONTROL_GUIDES,
+  ITEM_GUIDES,
+  MAP_GUIDES,
+  type GameplayItemId,
+} from "./gameplay-guide";
+import {
+  advanceGemStreak,
+  formatGemStreakNotice,
+} from "./gem-streak-rules";
+import { resolveMobileLaneIntent } from "./mobile-lane-controls";
 type Kind =
   | "gem"
   | "coin"
@@ -221,6 +247,16 @@ type HexVoidSession = {
   encounter: "damned" | "hades";
   collected: number;
   hadesDodges: number;
+  hadesMisses: number;
+  hadesPrompt: HexHadesRune;
+  hadesNextDodgeAt: number;
+};
+const HEX_HADES_RUNES: readonly HexHadesRune[] = ["A", "S", "D", "F"];
+const getNextHexHadesRune = (previous?: HexHadesRune): HexHadesRune => {
+  const choices = previous
+    ? HEX_HADES_RUNES.filter((rune) => rune !== previous)
+    : HEX_HADES_RUNES;
+  return choices[Math.floor(Math.random() * choices.length)] ?? "A";
 };
 type PlayerReport = {
   id: number;
@@ -591,16 +627,6 @@ const isMapId = (value: unknown): value is MapId =>
 const normalizeMapId = (value: unknown): MapId =>
   isMapId(value) ? value : "classic";
 const DEFAULT_MAP_PRIORITY: MapPriorityList = [...MAP_IDS];
-const MAP_SUMMARIES: Readonly<Record<MapId, string>> = {
-  classic: "5 lanes · standard rules",
-  alley: "3 lanes · dense traffic · double starting/max HP",
-  desert: "7 lanes · no healing · Runner or Trickster only",
-  skyway: "6 lanes · Current hazards · no Trickster",
-  pitch: "6 lanes · risk/reward Katana",
-  volcano: "7 lanes · Ace only · move before the heat hits",
-  factory: "4 lanes · changing conveyor speeds",
-  grove: "6 lanes · +1 HP · mushroom contest",
-};
 const TRACK_LANES = [0, 1, 2, 3, 4] as const;
 const getTrackLanes = (laneCount: number) =>
   Array.from({ length: Math.max(1, Math.round(laneCount)) }, (_, lane) => lane);
@@ -1020,7 +1046,7 @@ const VERSUS_ATTACKS: ReadonlyArray<{
     label: "CAR",
     cost: ATTACK_POINT_COSTS.car,
     icon: "▰",
-    description: "Fast lane pressure",
+    description: "Fast lane pressure · 1 HP",
   },
   {
     kind: "snowflake",
@@ -1041,7 +1067,7 @@ const VERSUS_ATTACKS: ReadonlyArray<{
     label: "SPIKES",
     cost: ATTACK_POINT_COSTS.spike,
     icon: "▲",
-    description: "Warning flash · ground trap",
+    description: "Warning flash · ground trap · 1 HP",
   },
   {
     kind: "rock",
@@ -1495,7 +1521,7 @@ const CHARACTER_ABILITIES = {
   },
   tank_atlas: {
     name: "WORLD BEARER",
-    description: "Can reach 7 HP and heal 1 HP each wave. Every obstacle hit shortens Sky Crush by 0.5 seconds, down to 1 second.",
+    description: "Starts at 4 HP, can reach 7 HP, and heals 1 HP each wave. Every obstacle hit shortens Sky Crush by 0.5 seconds, down to 1 second.",
   },
   tank_drag: {
     name: "CHAIN ANCHOR",
@@ -1537,7 +1563,7 @@ const CHARACTER_ABILITIES = {
   trickster_gambit: {
     name: "COUNTING CARDS",
     description:
-      "Draws five cards each wave and turns poker hands into temporary, permanent, healing, defense, and 1v1 rewards.",
+      "Draws five visible cards each wave, keeps up to 10, and turns poker hands into temporary, permanent, healing, defense, and 1v1 rewards.",
   },
   trickster_jester: {
     name: "WILD ENCORE",
@@ -1551,7 +1577,7 @@ const CHARACTER_ABILITIES = {
   trickster_hex: {
     name: "VOID REALM",
     description:
-      "E enters the Void on even waves to collect Damnation, unlock damage reduction and souls, and eventually challenge Hades. R throws a Void Chakram down the current lane.",
+      "E enters the Void on even waves to collect at most 25 Damnation, unlock a phasing Void Cut and souls, and face Hades in a 20-dodge rune trial. R throws a Void Chakram with a 10-second cooldown.",
   },
   trickster_phantom: {
     name: "MOON PHASE",
@@ -1618,7 +1644,7 @@ const CHARACTER_ABILITIES = {
   },
   misc_muse: {
     name: "RHYTHM BREAK",
-    description: "Caps the screen at 5 hazards and uses a one-time 30-second rhythm challenge to unlock lasting music, defense, score, healing, and revive tiers.",
+    description: "Caps the screen at 5 hazards and uses a one-time 15-second, 30-hit rhythm challenge with its own Muse theme to unlock lasting music, defense, score, healing, and revive tiers.",
   },
 } as const satisfies Record<
   RosterCharacterKey,
@@ -1688,7 +1714,9 @@ const getCharacterStartingHearts = (
   characterKey: string,
   characterClass: string,
 ) =>
-  characterKey === "trickster_phantom"
+  characterKey === "tank_atlas"
+    ? ATLAS_STARTING_HEARTS
+    : characterKey === "trickster_phantom"
     ? 3
     : characterClass === "tank"
       ? 4
@@ -1724,6 +1752,10 @@ const UNIQUE_WEAPON_EFFECTS: Partial<Record<CharacterKey, string>> = {
   medic_lifeline: "RESCUE HOOK · 3 TIME-STOP LANE ZIPS",
   medic_seraph: "10% GEM CHANCE · HEAL 1 HP",
   tank_atlas: "HALF DAMAGE FOR 2 SECONDS AFTER A LANE CHANGE",
+  trickster_gambit: "DRAWS 5 CARDS EACH WAVE · 10-CARD HAND LIMIT",
+  trickster_echo: "CHANNELS MIRROR QUESTS · OPENS A 10-SECOND MIRROR REALM",
+  trickster_hex: "R ERASES 1 LANE HAZARD · 10s COOLDOWN · SENDS 3 IN 1V1",
+  misc_muse: "POWERS RHYTHM BREAK AND THE UNIQUE MUSE MIX",
   medic_revive: "AFTER A HIT · DESTROY THE FIRST OBSTACLE EACH WAVE",
   medic_oracle: "1ST HIT 0 DAMAGE · 2ND HIT HALF · THEN FULL",
   tank_brace: "+15% DISTANCE SCORE",
@@ -2110,8 +2142,14 @@ export default function Home() {
     runIsTestModeRef = useRef(false),
     gemsRef = useRef(0),
     gemStreakRef = useRef(0),
+    gemStreakGenerationRef = useRef(0),
     gemStreakResetPendingRef = useRef(false),
     gemClaimQueueRef = useRef<Promise<void>>(Promise.resolve()),
+    mobileLaneGestureRef = useRef<{
+      pointerId: number;
+      startX: number;
+      startY: number;
+    } | null>(null),
     scoreRef = useRef(0),
     waveRef = useRef(1),
     highScoreRef = useRef(0),
@@ -2291,6 +2329,8 @@ export default function Home() {
     echoHeartTrackingActiveRef = useRef(false),
     hexStateRef = useRef<HexState>(createHexState()),
     hexVoidCutStateRef = useRef<HexVoidCutState>(createHexVoidCutState()),
+    hexVoidCollectedRef = useRef(0),
+    hexChakramCooldownUntilRef = useRef(0),
     hexThroneTimerRef = useRef<number | null>(null),
     heatfeastStateRef = useRef<HeatfeastState>(createHeatfeastState()),
     heatfeastConsumeBusyRef = useRef(false),
@@ -2949,6 +2989,23 @@ export default function Home() {
   const activeLaneCount = activeMapRules.laneCount;
   const activeCenterLane = Math.floor(activeLaneCount / 2);
   const healingEnabled = activeMapRules.health.healingMultiplier > 0;
+  const activeMapGuide = MAP_GUIDES[activeMapId];
+  const activeNaturalGuideItems = Object.keys(
+    activeMapRules.naturalObstacleWeights,
+  ).map((itemId) =>
+    itemId === "spike" ? "spikes" : (itemId as GameplayItemId),
+  );
+  const activePickupGuideItems: GameplayItemId[] = isVersusRun
+    ? activeMapId === "grove"
+      ? ["gem", "coin", "mushroom"]
+      : ["gem", "coin"]
+    : ["gem", "melon"];
+  const activeGuideItems = Array.from(
+    new Set<GameplayItemId>([
+      ...activePickupGuideItems,
+      ...activeNaturalGuideItems,
+    ]),
+  );
   const [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
     [inventoryCharacter, setInventoryCharacter] = useState<{
       classKey: keyof typeof CLASS_CHARACTERS;
@@ -3162,6 +3219,12 @@ export default function Home() {
       setEchoKnowingState(settled);
       setAbilityStateVersion((value) => value + 1);
       setAbilityNotice("MIRROR REALM CLOSED");
+      if (abilityNoticeTimerRef.current)
+        clearTimeout(abilityNoticeTimerRef.current);
+      abilityNoticeTimerRef.current = setTimeout(() => {
+        setAbilityNotice("");
+        abilityNoticeTimerRef.current = null;
+      }, 1200);
     }, delay);
     return () => window.clearTimeout(timer);
   }, [echoKnowingState.realmUntilMs]);
@@ -3477,6 +3540,7 @@ export default function Home() {
   ]);
   const queueGemClaim = useCallback(
     (contextId: string, pickupId: number, requestUserId: string) => {
+      const requestStreakGeneration = gemStreakGenerationRef.current;
       const claim = async () => {
         if (userIdRef.current !== requestUserId) return;
         if (
@@ -3533,13 +3597,19 @@ export default function Home() {
         }
         const awarded = Number(data?.gems_awarded);
         const authoritativeStreak = Number(data?.streak);
-        if (Number.isFinite(authoritativeStreak))
-          gemStreakRef.current = Math.max(0, Math.floor(authoritativeStreak));
-        if (Number.isFinite(awarded) && awarded > 1)
-          showAbilityNotice(
-            `GEM STREAK ×${Math.floor(awarded)} · +${Math.floor(awarded)} GEMS`,
-            950,
+        const streakResponseIsCurrent =
+          gemStreakGenerationRef.current === requestStreakGeneration;
+        if (Number.isFinite(authoritativeStreak) && streakResponseIsCurrent)
+          gemStreakRef.current = Math.max(
+            gemStreakRef.current,
+            Math.max(0, Math.floor(authoritativeStreak)),
           );
+        if (
+          Number.isFinite(awarded) &&
+          awarded > 1 &&
+          streakResponseIsCurrent
+        )
+          showAbilityNotice(formatGemStreakNotice(awarded), 950);
         applyProgressionPayload(data?.progression, requestUserId);
       };
       const queued = gemClaimQueueRef.current.then(claim, claim);
@@ -3548,8 +3618,9 @@ export default function Home() {
     [applyProgressionPayload, showAbilityNotice],
   );
   const queueEndlessGemStreakReset = useCallback(
-    (nextWave?: number) => {
+    () => {
       gemStreakRef.current = 0;
+      gemStreakGenerationRef.current += 1;
       const runId = progressionRunIdRef.current;
       const requestUserId = userIdRef.current;
       if (!runId || !requestUserId) return;
@@ -3568,7 +3639,7 @@ export default function Home() {
             "sync_progression_run",
             {
               p_run_id: runId,
-              p_wave: nextWave ?? waveRef.current,
+              p_wave: waveRef.current,
               p_active: true,
             },
           );
@@ -3737,6 +3808,7 @@ export default function Home() {
       flareDamageWaveRef.current = restoring ? restoredWave : 0;
       flareBoostWaveRef.current = 0;
       gemStreakRef.current = 0;
+      gemStreakGenerationRef.current += 1;
       gemStreakResetPendingRef.current = false;
       orbitCooldownRemainingRef.current = restoring ? 3000 : 0;
       rogueGrazeCooldownUntilRef.current = restoring ? now + 2500 : 0;
@@ -3874,6 +3946,8 @@ export default function Home() {
       const freshHexState = createHexState();
       hexStateRef.current = freshHexState;
       hexVoidCutStateRef.current = createHexVoidCutState();
+      hexVoidCollectedRef.current = 0;
+      hexChakramCooldownUntilRef.current = 0;
       if (hexThroneTimerRef.current) {
         clearTimeout(hexThroneTimerRef.current);
         hexThroneTimerRef.current = null;
@@ -4642,6 +4716,8 @@ export default function Home() {
   const applyCharacterSelfDamage = useCallback(
     (damage: number, notice: string) => {
       const safeDamage = Math.max(0, damage);
+      if (safeDamage > 0 && playScope === "single")
+        queueEndlessGemStreakReset();
       const nextHearts = Math.max(0, state.current.hearts - safeDamage);
       state.current.hearts = nextHearts;
       setHearts(nextHearts);
@@ -4687,6 +4763,8 @@ export default function Home() {
       guest,
       isBotPractice,
       isOnlineVersus,
+      playScope,
+      queueEndlessGemStreakReset,
       settleBrokerAtRunEnd,
       showAbilityNotice,
     ],
@@ -4901,25 +4979,9 @@ export default function Home() {
         hexVoidCutStateRef.current = voidCut.state;
         setAbilityStateVersion((value) => value + 1);
         if (voidCut.activated) {
-          const target = itemsSnapshotRef.current
-            .filter(
-              (item) =>
-                item.lane === destination &&
-                item.y >= -10 &&
-                item.y < 91 &&
-                isHazardKind(item.kind),
-            )
-            .sort((left, right) => right.y - left.y)[0];
-          if (target)
-            setItems((current) =>
-              current.filter((item) => item.id !== target.id),
-            );
-          showAbilityNotice(
-            target
-              ? `VOID CUT · ${target.kind.toUpperCase()} ERASED`
-              : "VOID CUT · NO OBSTACLE IN THE NEW LANE",
-            900,
-          );
+          const effect = getHexVoidCutEffect();
+          grantInvincibility(effect.shieldDurationMs);
+          showAbilityNotice("VOID CUT · 0.5 SECOND PHASE · HAZARDS STAY IN PLAY", 1000);
         }
       }
     },
@@ -5015,6 +5077,56 @@ export default function Home() {
       hasCharacterAbility,
       showAbilityNotice,
     ],
+  );
+  const startMobileLaneGesture = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.pointerType !== "touch" || !event.isPrimary) return;
+      const target = event.target as HTMLElement;
+      if (
+        target.closest(
+          'button,input,textarea,select,a,[role="button"],[contenteditable="true"]',
+        )
+      )
+        return;
+      mobileLaneGestureRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [],
+  );
+  const finishMobileLaneGesture = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const gesture = mobileLaneGestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId) return;
+      mobileLaneGestureRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId))
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      const roadBounds = event.currentTarget.getBoundingClientRect();
+      const direction = resolveMobileLaneIntent({
+        startX: gesture.startX,
+        startY: gesture.startY,
+        endX: event.clientX,
+        endY: event.clientY,
+        roadLeft: roadBounds.left,
+        roadWidth: roadBounds.width,
+        laneCount: activeLaneCount,
+        currentLane: state.current.lane,
+      });
+      if (direction !== 0) move(direction);
+    },
+    [activeLaneCount, move],
+  );
+  const cancelMobileLaneGesture = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (mobileLaneGestureRef.current?.pointerId === event.pointerId)
+        mobileLaneGestureRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId))
+        event.currentTarget.releasePointerCapture(event.pointerId);
+    },
+    [],
   );
   const triggerCharacterAction = useCallback(() => {
     const cometIntermission =
@@ -5237,14 +5349,23 @@ export default function Home() {
       }
       const voidEntry = enterHexVoid(currentHex, wave);
       if (voidEntry.ok) {
+        const now = Date.now();
+        const hadesChallenge = createHexHadesChallenge(
+          now,
+          getNextHexHadesRune(),
+        );
         hexStateRef.current = voidEntry.state;
         setHexState(voidEntry.state);
+        hexVoidCollectedRef.current = 0;
         setHexVoid({
-          endsAt: Date.now() + voidEntry.durationMs,
+          endsAt: now + voidEntry.durationMs,
           remaining: voidEntry.durationMs,
           encounter: voidEntry.encounter,
           collected: 0,
-          hadesDodges: 0,
+          hadesDodges: hadesChallenge.dodges,
+          hadesMisses: hadesChallenge.misses,
+          hadesPrompt: hadesChallenge.prompt,
+          hadesNextDodgeAt: hadesChallenge.nextDodgeAtMs,
         });
         setPaused(true);
         showAbilityNotice(
@@ -5290,10 +5411,11 @@ export default function Home() {
           hits: 0,
           attempts: 0,
           prompt: keys[Math.floor(Math.random() * keys.length)],
-          endsAt: now + 30000,
-          remaining: 30000,
+          endsAt: now + MUSE_RHYTHM_DURATION_MS,
+          remaining: MUSE_RHYTHM_DURATION_MS,
         });
-        showAbilityNotice("RHYTHM BREAK · 30 SECOND CHALLENGE", 1200);
+        audioEngine.setTrack("muse");
+        showAbilityNotice("RHYTHM BREAK · 15 SECONDS · MAX 30 HITS", 1200);
         return;
       }
       if (!museReward?.unlocksMuseMix) {
@@ -5308,7 +5430,7 @@ export default function Home() {
       museMixUntilRef.current = now + 30000;
       museMixCooldownUntilRef.current = now + 75000;
       museMixHealPulsesRef.current = 0;
-      audioEngine.setTrack("jazz");
+      audioEngine.setTrack("muse");
       showAbilityNotice("MUSE MIX · +1 HP EVERY 10 SECONDS · 30 SECONDS", 1500);
       setAbilityStateVersion((value) => value + 1);
       return;
@@ -5875,16 +5997,21 @@ export default function Home() {
       const normalized = pressed.toUpperCase();
       if (!["A", "S", "D", "F"].includes(normalized)) return;
       setMuseGame((current) => {
-        if (!current) return current;
+        if (!current || current.hits >= MUSE_RHYTHM_MAX_HITS) return current;
         const keys = ["A", "S", "D", "F"] as const;
         let nextPrompt = keys[Math.floor(Math.random() * keys.length)];
         if (nextPrompt === current.prompt)
           nextPrompt = keys[(keys.indexOf(nextPrompt) + 1) % keys.length];
+        const hits = clampMuseRhythmHits(
+          current.hits + Number(normalized === current.prompt),
+        );
         return {
           ...current,
           attempts: current.attempts + 1,
-          hits: current.hits + Number(normalized === current.prompt),
+          hits,
           prompt: nextPrompt,
+          endsAt:
+            hits >= MUSE_RHYTHM_MAX_HITS ? Date.now() : current.endsAt,
         };
       });
       void audioEngine.playSfx("click");
@@ -6062,32 +6189,92 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, [hexVoidEndsAt, showAbilityNotice]);
   const collectVoidTarget = useCallback(() => {
-    if (!hexVoid) return;
-    if (hexVoid.encounter === "damned") {
-      const nextHex = collectHexDamned(hexStateRef.current, 1);
-      hexStateRef.current = nextHex;
-      setHexState(nextHex);
-      setHexVoid((current) =>
-        current ? { ...current, collected: current.collected + 1 } : current,
-      );
-      setAbilityStateVersion((value) => value + 1);
+    if (!hexVoid || hexVoid.encounter !== "damned") return;
+    const result = collectHexDamnedForVoid(
+      hexStateRef.current,
+      hexVoidCollectedRef.current,
+      1,
+    );
+    if (result.gained <= 0) {
       showAbilityNotice(
-        `DAMNED COLLECTED · ${nextHex.damnation} DAMNATION`,
-        650,
+        `VOID LIMIT REACHED · ${HEX_DAMNATION_PER_VOID_CAP} DAMNATION THIS VISIT`,
+        900,
       );
-      void audioEngine.playSfx("gem");
       return;
     }
+    hexVoidCollectedRef.current = result.collectedThisVoid;
+    hexStateRef.current = result.state;
+    setHexState(result.state);
     setHexVoid((current) =>
       current
-        ? { ...current, hadesDodges: Math.min(8, current.hadesDodges + 1) }
+        ? { ...current, collected: result.collectedThisVoid }
         : current,
     );
-    showAbilityNotice("HADES ATTACK DODGED", 500);
-    void audioEngine.playSfx("move");
+    setAbilityStateVersion((value) => value + 1);
+    showAbilityNotice(
+      `DAMNED COLLECTED · ${result.collectedThisVoid}/${HEX_DAMNATION_PER_VOID_CAP} · ${result.state.damnation} TOTAL`,
+      650,
+    );
+    void audioEngine.playSfx("gem");
   }, [hexVoid, showAbilityNotice]);
+  const submitHexHadesInput = useCallback(
+    (pressed: string) => {
+      if (!hexVoid || hexVoid.encounter !== "hades") return;
+      const normalized = pressed.toUpperCase();
+      if (!HEX_HADES_RUNES.includes(normalized as HexHadesRune)) return;
+      const result = resolveHexHadesInput(
+        {
+          dodges: hexVoid.hadesDodges,
+          misses: hexVoid.hadesMisses,
+          prompt: hexVoid.hadesPrompt,
+          nextDodgeAtMs: hexVoid.hadesNextDodgeAt,
+        },
+        normalized,
+        Date.now(),
+        getNextHexHadesRune(hexVoid.hadesPrompt),
+      );
+      if (result.outcome === "waiting") return;
+      if (result.outcome === "lost") {
+        setHexVoid(null);
+        setPaused(false);
+        showAbilityNotice(
+          `HADES WON · ${HEX_HADES_MAX_MISSES} MISSES · WAVE RESUMED`,
+          1500,
+        );
+        void audioEngine.playSfx("hit");
+        return;
+      }
+      setHexVoid((current) =>
+        current?.encounter === "hades"
+          ? {
+              ...current,
+              hadesDodges: result.challenge.dodges,
+              hadesMisses: result.challenge.misses,
+              hadesPrompt: result.challenge.prompt,
+              hadesNextDodgeAt: result.challenge.nextDodgeAtMs,
+            }
+          : current,
+      );
+      showAbilityNotice(
+        result.outcome === "won"
+          ? "HADES EXPOSED · DESTROY THE VOID REALM"
+          : result.outcome === "dodged"
+            ? `HADES DODGED · ${result.challenge.dodges}/${HEX_HADES_REQUIRED_DODGES}`
+            : `HADES HIT · ${result.challenge.misses}/${HEX_HADES_MAX_MISSES} MISSES`,
+        result.outcome === "won" ? 1200 : 500,
+      );
+      void audioEngine.playSfx(
+        result.outcome === "missed" ? "hit" : "move",
+      );
+    },
+    [hexVoid, showAbilityNotice],
+  );
   const defeatHexHades = useCallback(() => {
-    if (!hexVoid || hexVoid.encounter !== "hades" || hexVoid.hadesDodges < 8)
+    if (
+      !hexVoid ||
+      hexVoid.encounter !== "hades" ||
+      hexVoid.hadesDodges < HEX_HADES_REQUIRED_DODGES
+    )
       return;
     const godState = becomeHexGod(hexStateRef.current);
     hexStateRef.current = godState;
@@ -6108,6 +6295,14 @@ export default function Home() {
       state.current.wavePause
     )
       return;
+    const now = Date.now();
+    if (hexChakramCooldownUntilRef.current > now) {
+      showAbilityNotice(
+        `VOID CHAKRAM · ${Math.ceil((hexChakramCooldownUntilRef.current - now) / 1000)}s COOLDOWN`,
+        700,
+      );
+      return;
+    }
     const candidates = itemsSnapshotRef.current
       .filter(
         (item) =>
@@ -6131,6 +6326,8 @@ export default function Home() {
       (item) => item.id === result.target?.id,
     );
     if (!target) return;
+    hexChakramCooldownUntilRef.current = now + HEX_CHAKRAM_COOLDOWN_MS;
+    setAbilityStateVersion((value) => value + 1);
     setItems((current) =>
       current.filter((item) => item.id !== result.target?.id),
     );
@@ -6769,11 +6966,7 @@ export default function Home() {
         ? normalizeVersusHearts(rawMaxHearts)
         : applyMapHealthModifiers(
             restoredMap,
-            characterClass === "tank"
-              ? 4
-              : characterClass === "trickster"
-                ? 2
-                : 3,
+            getCharacterStartingHearts(characterKey, characterClass),
             getCharacterMaxHearts(characterKey, characterClass),
           ).maxHp;
     const restoredWave = Math.max(1, Number(snapshot.self?.wave) || 1);
@@ -7516,9 +7709,14 @@ export default function Home() {
         )
       )
         return;
+      if (hexVoid?.encounter === "hades") {
+        e.preventDefault();
+        if (!e.repeat) submitHexHadesInput(e.key);
+        return;
+      }
       if (museGame) {
         e.preventDefault();
-        submitMuseInput(e.key);
+        if (!e.repeat) submitMuseInput(e.key);
         return;
       }
       if (pulseGame) {
@@ -7542,7 +7740,7 @@ export default function Home() {
       }
       if ((e.key === "r" || e.key === "R") && activeCharacter === "trickster_hex") {
         e.preventDefault();
-        throwHexChakram();
+        if (!e.repeat) throwHexChakram();
         return;
       }
       if (["ArrowLeft", "a", "A"].includes(e.key)) {
@@ -7567,6 +7765,7 @@ export default function Home() {
       }
       if (e.key === "e" || e.key === "E") {
         e.preventDefault();
+        if (e.repeat && activeCharacter === "trickster_echo") return;
         triggerCharacterAction();
       }
       if (
@@ -7608,11 +7807,13 @@ export default function Home() {
     mainView,
     move,
     museGame,
+    hexVoid,
     pulseGame,
     reset,
     settingsOpen,
     shopOpen,
     submitMuseInput,
+    submitHexHadesInput,
     throwHexChakram,
     toggleManualPause,
     triggerPitchKatana,
@@ -7696,10 +7897,10 @@ export default function Home() {
         `RHYTHM BREAK · ${Math.round(accuracy)}% · ${reward.tier.toUpperCase()} TIER`,
         2200,
       );
-      if (reward.tier === "perfect") audioEngine.setTrack("energetic");
+      audioEngine.setTrack(soundtrack);
     }, 100);
     return () => window.clearInterval(timer);
-  }, [museGame, showAbilityNotice]);
+  }, [museGame, showAbilityNotice, soundtrack]);
   useEffect(() => {
     if (!running || paused || wavePause) return;
     let raf = 0,
@@ -7836,6 +8037,7 @@ export default function Home() {
         atlasLaneElapsedRef.current += dt;
         if (atlasLaneElapsedRef.current >= atlasLaneLimitRef.current) {
           atlasLaneElapsedRef.current = 0;
+          if (playScope === "single") queueEndlessGemStreakReset();
           const nextHearts = Math.max(0, state.current.hearts - 2);
           const finalCrush = nextHearts <= 0;
           state.current.hearts = nextHearts;
@@ -8704,9 +8906,15 @@ export default function Home() {
                   });
             } else if (n.kind === "gem") {
               void audioEngine.playSfx("gem");
-              const gemAward = isVersusRun
-                ? 1
-                : (gemStreakRef.current += 1);
+              const streakPickup = isVersusRun
+                ? null
+                : advanceGemStreak({
+                    consecutivePickups: gemStreakRef.current,
+                  });
+              if (streakPickup)
+                gemStreakRef.current =
+                  streakPickup.state.consecutivePickups;
+              const gemAward = streakPickup?.gemsAwarded ?? 1;
               const adjustedGemAward =
                 hasCharacterAbility("trickster_pickpocket")
                   ? gemAward * 2
@@ -8736,7 +8944,7 @@ export default function Home() {
                 setTimeout(() => setGemBump(false), 500);
                 if (guest && adjustedGemAward > 1)
                   showAbilityNotice(
-                    `GEM STREAK · +${adjustedGemAward} GEMS`,
+                    `GEM STREAK ×${streakPickup?.multiplier ?? 1} · +${adjustedGemAward} GEMS`,
                     950,
                   );
               }
@@ -9854,8 +10062,10 @@ export default function Home() {
       if (cometRemovalQueueRef.current.wave <= completedWave)
         cometRemovalQueueRef.current = { wave: 0, counts: {} };
       setWave(next);
-      if (playScope === "single") queueEndlessGemStreakReset(next);
-      else gemStreakRef.current = 0;
+      if (playScope !== "single") {
+        gemStreakRef.current = 0;
+        gemStreakGenerationRef.current += 1;
+      }
       volcanoStationaryMsRef.current = 0;
       if (activeMapId === "pitch") {
         pitchKatanaRef.current = resetPitchKatanaAtWaveEnd(
@@ -10041,6 +10251,7 @@ export default function Home() {
               : waveEndHearts <= 1,
         );
         if (fulfilled.length === 0) {
+          if (playScope === "single") queueEndlessGemStreakReset();
           state.current.hearts = Math.max(0, state.current.hearts - 1);
           setHearts(state.current.hearts);
           showAbilityNotice("PROPHECY FAILED · -1 HP", 1400);
@@ -11732,6 +11943,23 @@ export default function Home() {
     lockedCatalogItems.find((item) => item.item_key === directPurchaseKey) ??
     lockedCatalogItems[0] ??
     null;
+  const directPurchaseCharacter =
+    directPurchaseItem?.item_type === "character" &&
+    Object.prototype.hasOwnProperty.call(
+      CHARACTER_ABILITIES,
+      directPurchaseItem.item_key,
+    )
+      ? getCharacterDefinition(directPurchaseItem.item_key)
+      : null;
+  const directPurchaseDescription = directPurchaseItem
+    ? directPurchaseCharacter
+      ? `${CHARACTER_ABILITIES[directPurchaseCharacter.key as CharacterKey].name}: ${CHARACTER_ABILITIES[directPurchaseCharacter.key as CharacterKey].description} ${directPurchaseCharacter.weapon}: ${getCharacterWeaponLabel(directPurchaseCharacter.key as CharacterKey, directPurchaseCharacter.rarity)}.`
+      : directPurchaseItem.item_type === "player"
+        ? "Changes your runner's appearance. Its listed cosmetic bonus applies while equipped."
+        : directPurchaseItem.item_type === "obstacle"
+          ? "Changes obstacle appearance. Its listed cosmetic bonus applies while equipped."
+          : "Changes the arena environment. Its listed cosmetic bonus applies while equipped."
+    : "";
   const focusedCharacter = CLASS_CHARACTERS[
     inventoryCharacter.classKey
   ].find((character) => character.key === inventoryCharacter.characterKey);
@@ -12092,7 +12320,7 @@ export default function Home() {
             ? `HOLD E · ${Math.floor(echoChargePercent)}% AWAKENED`
             : echoKnowingState.awakened
               ? echoKnowingState.realmUntilMs > Date.now()
-                ? "ACTIVE · HITS HEAL 0.5 HP"
+                ? `${Math.max(0, (echoKnowingState.realmUntilMs - Date.now()) / 1000).toFixed(1)}s ACTIVE · HITS HEAL 0.5 HP`
                 : "READY · OPEN FOR 10 SECONDS"
               : `${echoQuestState.mirrorShards} SHARDS · HOLD E FOR 10 SECONDS`,
         ready: true,
@@ -12141,7 +12369,7 @@ export default function Home() {
       return {
         label: museChallengeUsedRef.current ? "MUSE MIX" : "RHYTHM BREAK",
         status: !museChallengeUsedRef.current
-          ? "READY · 30 SECOND RHYTHM CHALLENGE"
+          ? `READY · ${MUSE_RHYTHM_DURATION_MS / 1000} SECOND / ${MUSE_RHYTHM_MAX_HITS} HIT CHALLENGE`
           : !museReward?.unlocksMuseMix
             ? "CHALLENGE COMPLETE"
             : museMixUntilRef.current > Date.now()
@@ -12692,9 +12920,6 @@ export default function Home() {
                     }}
                   />
                 </i>
-                <small className="player-xp-sources">
-                  ENDLESS SCORE² ÷ 4 · +100,000 PER GEM
-                </small>
                 <em>
                   {playerProgression.ranked_unlocked
                     ? "RANKED 1V1 UNLOCKED"
@@ -12985,6 +13210,28 @@ export default function Home() {
                           ))}
                         </select>
                       </label>
+                      <div className="practice-map-guide">
+                        {practiceMapChoice === "random" ? (
+                          <>
+                            <b>RANDOM ARENA</b>
+                            <p>
+                              Uses your saved priority when possible, then picks
+                              one of the eight Arena maps. Open the full map guide
+                              below before starting.
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <b>{MAP_GUIDES[practiceMapChoice].name}</b>
+                            <p>{MAP_GUIDES[practiceMapChoice].description}</p>
+                            <ul>
+                              {MAP_GUIDES[practiceMapChoice].rules.map((rule) => (
+                                <li key={rule}>{rule}</li>
+                              ))}
+                            </ul>
+                          </>
+                        )}
+                      </div>
                       <button
                         className="versus-practice"
                         onClick={startBotPractice}
@@ -13030,7 +13277,7 @@ export default function Home() {
                             <strong>{index + 1}</strong>
                             <span>
                               <b>{MAP_RULES[mapId].name}</b>
-                              <small>{MAP_SUMMARIES[mapId]}</small>
+                              <small>{MAP_GUIDES[mapId].description}</small>
                             </span>
                             <div>
                               <button
@@ -13080,6 +13327,22 @@ export default function Home() {
                       </small>
                     </>
                   )}
+                  <details className="arena-guide-list">
+                    <summary>OPEN FULL ARENA MAP GUIDE</summary>
+                    <div className="gameplay-guide-grid">
+                      {MAP_IDS.map((mapId) => (
+                        <article className="gameplay-guide-item" key={mapId}>
+                          <b>{MAP_GUIDES[mapId].name}</b>
+                          <p>{MAP_GUIDES[mapId].description}</p>
+                          <ul>
+                            {MAP_GUIDES[mapId].rules.map((rule) => (
+                              <li key={rule}>{rule}</li>
+                            ))}
+                          </ul>
+                        </article>
+                      ))}
+                    </div>
+                  </details>
                 </section>
 
                 <section
@@ -13100,7 +13363,7 @@ export default function Home() {
                       their run ends too.
                     </li>
                     <li>
-                      The second runner to fall receives <b>+280 score</b>, then
+                      The second runner to fall receives <b>+{ONE_V_ONE_SCORING_RULES.secondDeathBonus} score</b>, then
                       the higher final score wins. Equal scores are a draw.
                     </li>
                     <li>
@@ -13117,7 +13380,7 @@ export default function Home() {
                     </li>
                     <li>
                       Casual never shows or changes Elo. Ranked unlocks at level
-                      25, starts every player at 1500 Elo, and displays ratings
+                      {RANKED_UNLOCK_LEVEL}, starts every player at 1500 Elo, and displays ratings
                       as whole numbers.
                     </li>
                   </ol>
@@ -13288,18 +13551,55 @@ export default function Home() {
                 </em>
               </div>
             )}
-            {isVersusRun && (
-              <div className="arena-map-badge">
-                <small>ARENA MAP</small>
-                <b>{activeMapRules.name.toUpperCase()}</b>
-                <span>{activeLaneCount} LANES</span>
+            <details className="gameplay-guide-drawer">
+              <summary>
+                <span>
+                  <small>{isVersusRun ? "ARENA GUIDE" : "RUN GUIDE"}</small>
+                  <b>{activeMapGuide.name.toUpperCase()}</b>
+                </span>
+                <strong>{activeLaneCount} LANES</strong>
                 {activeMapId === "grove" && (
                   <em>
                     🍄 {versusSelfMushrooms} — {versusOpponentMushrooms} 🍄
                   </em>
                 )}
+              </summary>
+              <div className="gameplay-guide-body">
+                <p className="gameplay-guide-intro">
+                  {activeMapGuide.description}
+                </p>
+                <section className="gameplay-guide-section">
+                  <b>MAP RULES</b>
+                  <ul>
+                    {activeMapGuide.rules.map((rule) => (
+                      <li key={rule}>{rule}</li>
+                    ))}
+                  </ul>
+                </section>
+                <section className="gameplay-guide-section">
+                  <b>PICKUPS &amp; HAZARDS ON THIS MAP</b>
+                  <div className="gameplay-guide-grid">
+                    {activeGuideItems.map((itemId) => (
+                      <article className="gameplay-guide-item" key={itemId}>
+                        <b>{ITEM_GUIDES[itemId].name}</b>
+                        <p>{ITEM_GUIDES[itemId].description}</p>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+                <section className="gameplay-guide-section">
+                  <b>CONTROLS</b>
+                  <div className="gameplay-guide-grid">
+                    {CONTROL_GUIDES.map((control) => (
+                      <article className="gameplay-guide-item" key={control.name}>
+                        <b>{control.name}</b>
+                        <p>{control.description}</p>
+                      </article>
+                    ))}
+                  </div>
+                </section>
               </div>
-            )}
+            </details>
             {isVersusRun &&
               versusResult &&
               !over &&
@@ -13468,6 +13768,33 @@ export default function Home() {
                       <div data-ability-version={abilityStateVersion}>
                         <p className="ability-panel-note">COUNTING CARDS · {gambitState.hand.length}/10 HELD</p>
                         <p className="ability-panel-note">{gambitRunReward?.label ?? "FIVE CARDS ARE DRAWN AT EACH WAVE START"}</p>
+                        <div
+                          className="gambit-mini-hand"
+                          aria-label={`Gambit hand: ${gambitState.hand.map((card) => `${card.rank} of ${card.suit}`).join(", ") || "empty"}`}
+                        >
+                          {gambitState.hand.map((card: StandardCard) => (
+                            <span
+                              key={card.id}
+                              className={`gambit-mini-card ${card.suit}`}
+                            >
+                              <b>{card.rank}</b>
+                              <i aria-hidden="true">
+                                {card.suit === "hearts"
+                                  ? "♥"
+                                  : card.suit === "diamonds"
+                                    ? "♦"
+                                    : card.suit === "clubs"
+                                      ? "♣"
+                                      : "♠"}
+                              </i>
+                            </span>
+                          ))}
+                        </div>
+                        <p className="gambit-mini-hand-label">
+                          BEST HAND · {(evaluateGambitHand(gambitState.hand) ?? "none")
+                            .replaceAll("-", " ")
+                            .toUpperCase()}
+                        </p>
                         <div className="ability-preview-grid">
                           <div className="ability-preview-card">
                             <small>SCORE</small>
@@ -13537,14 +13864,21 @@ export default function Home() {
                           <div className="ability-preview-card"><small>DAMAGE TAKEN</small><b>×{getHexDamnationBenefits(hexState.damnation).damageMultiplier.toFixed(3)}</b></div>
                           <div className="ability-preview-card"><small>NEXT UNLOCK</small><b>{hexState.damnation < 10 ? "10 · SCORE" : hexState.damnation < 30 ? "30 · CURRENT" : hexState.damnation < 60 ? "60 · SOULS" : hexState.damnation < 100 ? "100 · HADES" : hexState.godMode ? "VOID GOD" : "ENTER VOID FOR HADES"}</b></div>
                           <div className="ability-preview-card"><small>VOID CUT</small><b>{!getHexDamnationBenefits(hexState.damnation).currentUnlocked ? "LOCKED · 30" : hexVoidCutStateRef.current.cooldownUntilMs > Date.now() ? `${Math.ceil((hexVoidCutStateRef.current.cooldownUntilMs - Date.now()) / 1000)}s COOLDOWN` : `${hexVoidCutStateRef.current.movesSinceCut}/3 MOVES`}</b></div>
+                          <div className="ability-preview-card"><small>VOID CHAKRAM</small><b>{hexChakramCooldownUntilRef.current > Date.now() ? `${Math.ceil((hexChakramCooldownUntilRef.current - Date.now()) / 1000)}s COOLDOWN` : "READY · R"}</b></div>
                         </div>
                         <button
                           type="button"
                           className="ability-confirm"
-                          disabled={paused || wavePause}
+                          disabled={
+                            paused ||
+                            wavePause ||
+                            hexChakramCooldownUntilRef.current > Date.now()
+                          }
                           onClick={throwHexChakram}
                         >
-                          THROW VOID CHAKRAM (R)
+                          {hexChakramCooldownUntilRef.current > Date.now()
+                            ? `VOID CHAKRAM · ${Math.ceil((hexChakramCooldownUntilRef.current - Date.now()) / 1000)}s`
+                            : "THROW VOID CHAKRAM (R)"}
                         </button>
                       </div>
                     )}
@@ -13615,7 +13949,12 @@ export default function Home() {
                 {abilityNotice}
               </div>
             )}
-            <div className={`road road-${activeMapId}`}>
+            <div
+              className={`road road-${activeMapId}`}
+              onPointerDown={startMobileLaneGesture}
+              onPointerUp={finishMobileLaneGesture}
+              onPointerCancel={cancelMobileLaneGesture}
+            >
               {Array.from({ length: activeLaneCount - 1 }, (_, n) => (
                 <i
                   className="line lane-divider"
@@ -13768,6 +14107,8 @@ export default function Home() {
                     katanaCooldownSeconds > 0
                   }
                   onClick={triggerPitchKatana}
+                  title={MAP_GUIDES.pitch.rules.join(" ")}
+                  aria-label="Katana: press Space or click for a 0.4-second guard. It reflects non-rock hazards. Missing costs 0.5 HP; rocks break it for the match."
                 >
                   <span aria-hidden="true">刀</span>
                   <b>KATANA</b>
@@ -13780,6 +14121,9 @@ export default function Home() {
                           ? `${katanaCooldownSeconds}s`
                           : "READY"}
                   </small>
+                  <em className="pitch-katana-description">
+                    0.4s GUARD · REFLECTS NON-ROCKS · MISS COSTS 0.5 HP
+                  </em>
                 </button>
               )}
             </div>
@@ -13793,7 +14137,7 @@ export default function Home() {
             )}
             {abilityChoice?.kind === "pacer-character" && (
               <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Pass the baton">
-                <section className="ability-panel runner-panel"><header><div><small>ONE LAST RELAY</small><b>PASS THE BATON</b></div></header><div className="ability-panel-body"><p className="ability-panel-note">Continue from this wave as any owned non-Runner character.</p><div className="ability-option-grid">{pacerCharacterOptions.map((character) => <button key={character.key} className="ability-option" onClick={() => choosePacerCharacter(character.key as CharacterKey)}><span>↗</span><span><b>{character.name}</b><small>{getCharacterClassKey(character.key).toUpperCase()} · {character.rarity.toUpperCase()}</small></span></button>)}</div></div></section>
+                <section className="ability-panel runner-panel"><header><div><small>ONE LAST RELAY</small><b>PASS THE BATON</b></div></header><div className="ability-panel-body"><p className="ability-panel-note">Continue from this wave as any owned non-Runner character.</p><div className="ability-option-grid">{pacerCharacterOptions.map((character) => <button key={character.key} className="ability-option" onClick={() => choosePacerCharacter(character.key as CharacterKey)}><span>↗</span><span><b>{character.name}</b><small>{getCharacterClassKey(character.key).toUpperCase()} · {character.rarity.toUpperCase()} · {CHARACTER_ABILITIES[character.key as CharacterKey].name}</small><em>{CHARACTER_ABILITIES[character.key as CharacterKey].description}</em></span></button>)}</div></div></section>
               </div>
             )}
             {abilityChoice?.kind === "oracle-prophecy" && (
@@ -13803,7 +14147,7 @@ export default function Home() {
             )}
             {abilityChoice?.kind === "oracle-passive" && (
               <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose a Healer passive">
-                <section className="ability-panel mythic-panel"><header><div><small>NEAR-DEATH REWARD</small><b>TAKE A HEALER PASSIVE</b></div></header><div className="ability-panel-body"><div className="ability-option-grid">{abilityChoice.options.map((characterKey) => { const definition = getCharacterDefinition(characterKey); return <button key={characterKey} className="ability-option reward" onClick={() => chooseOraclePassive(characterKey)}><span>+</span><span><b>{definition.name}</b><small>{CHARACTER_ABILITIES[characterKey].name}</small><em>KEEP FOR THIS RUN</em></span></button>; })}</div></div></section>
+                <section className="ability-panel mythic-panel"><header><div><small>NEAR-DEATH REWARD</small><b>TAKE A HEALER PASSIVE</b></div></header><div className="ability-panel-body"><div className="ability-option-grid">{abilityChoice.options.map((characterKey) => { const definition = getCharacterDefinition(characterKey); return <button key={characterKey} className="ability-option reward" onClick={() => chooseOraclePassive(characterKey)}><span>+</span><span><b>{definition.name}</b><small>{CHARACTER_ABILITIES[characterKey].name}</small><em>{CHARACTER_ABILITIES[characterKey].description} · KEEP FOR THIS RUN</em></span></button>; })}</div></div></section>
               </div>
             )}
             {abilityChoice?.kind === "mimic-passives" && (
@@ -13965,22 +14309,40 @@ export default function Home() {
                   <div className="ability-panel-body">
                     {hexVoid.encounter === "damned" ? (
                       <>
-                        <p className="ability-panel-note">Collect the Damned before the realm closes. Each one permanently adds 1 Damnation this run.</p>
-                        <button type="button" className="void-target damned-target" onClick={collectVoidTarget}>
+                        <p className="ability-panel-note">Collect up to {HEX_DAMNATION_PER_VOID_CAP} Damned before the realm closes. Each one permanently adds 1 Damnation this run.</p>
+                        <button type="button" className="void-target damned-target" disabled={hexVoid.collected >= HEX_DAMNATION_PER_VOID_CAP} onClick={collectVoidTarget}>
                           <span aria-hidden="true">◆</span>
-                          <b>COLLECT DAMNED</b>
-                          <small>{hexVoid.collected} COLLECTED · {hexState.damnation} TOTAL DAMNATION</small>
+                          <b>{hexVoid.collected >= HEX_DAMNATION_PER_VOID_CAP ? "VOID LIMIT REACHED" : "COLLECT DAMNED"}</b>
+                          <small>{hexVoid.collected}/{HEX_DAMNATION_PER_VOID_CAP} COLLECTED · {hexState.damnation} TOTAL DAMNATION</small>
                         </button>
                       </>
                     ) : (
                       <>
-                        <p className="ability-panel-note">Dodge eight Hades attacks, then destroy the realm to become a Void God.</p>
-                        <button type="button" className="void-target hades-target" disabled={hexVoid.hadesDodges >= 8} onClick={collectVoidTarget}>
+                        <p className="ability-panel-note">
+                          Match {HEX_HADES_REQUIRED_DODGES} runes before the realm closes. Hades attacks every {HEX_HADES_DODGE_INTERVAL_MS / 1000} seconds; {HEX_HADES_MAX_MISSES} misses end the fight.
+                        </p>
+                        <div className="void-target hades-target">
                           <span aria-hidden="true">♆</span>
-                          <b>{hexVoid.hadesDodges >= 8 ? "HADES EXPOSED" : "DODGE HADES ATTACK"}</b>
-                          <small>{hexVoid.hadesDodges}/8 DODGES</small>
-                        </button>
-                        <button className="ability-confirm" disabled={hexVoid.hadesDodges < 8} onClick={defeatHexHades}>DESTROY THE VOID REALM</button>
+                          <b>{hexVoid.hadesDodges >= HEX_HADES_REQUIRED_DODGES ? "HADES EXPOSED" : `DODGE · ${hexVoid.hadesPrompt}`}</b>
+                          <small>{hexVoid.hadesDodges}/{HEX_HADES_REQUIRED_DODGES} DODGES · {hexVoid.hadesMisses}/{HEX_HADES_MAX_MISSES} MISSES</small>
+                        </div>
+                        <div className="ability-key-sequence">
+                          {HEX_HADES_RUNES.map((rune) => (
+                            <button
+                              type="button"
+                              key={rune}
+                              className={`ability-option ${hexVoid.hadesPrompt === rune ? "selected" : ""}`}
+                              disabled={
+                                hexVoid.hadesDodges >= HEX_HADES_REQUIRED_DODGES ||
+                                Date.now() < hexVoid.hadesNextDodgeAt
+                              }
+                              onClick={() => submitHexHadesInput(rune)}
+                            >
+                              <kbd>{rune}</kbd>
+                            </button>
+                          ))}
+                        </div>
+                        <button className="ability-confirm" disabled={hexVoid.hadesDodges < HEX_HADES_REQUIRED_DODGES} onClick={defeatHexHades}>DESTROY THE VOID REALM</button>
                       </>
                     )}
                   </div>
@@ -13994,13 +14356,16 @@ export default function Home() {
             )}
             {museGame && (
               <div className="ability-overlay muse-rhythm-overlay" role="dialog" aria-modal="true" aria-label="Muse rhythm challenge">
-                <section className="ability-panel mythic-panel">
-                  <header><div><small>{(museGame.remaining / 1000).toFixed(1)} SECONDS LEFT</small><b>RHYTHM BREAK · {museGame.hits}/{museGame.attempts}</b></div></header>
+                <section className="ability-panel muse-rhythm-panel">
+                  <div className="muse-equalizer" aria-hidden="true">
+                    {Array.from({ length: 12 }, (_, index) => <i key={index} />)}
+                  </div>
+                  <header><div><small>{(museGame.remaining / 1000).toFixed(1)} SECONDS LEFT</small><b>RHYTHM BREAK · {museGame.hits}/{MUSE_RHYTHM_MAX_HITS} HITS</b></div></header>
                   <div className="ability-panel-body">
-                    <p className="ability-panel-note">Press or tap the glowing note. Accuracy unlocks Muse&apos;s permanent run buffs and stronger music abilities.</p>
+                    <p className="ability-panel-note">Press or tap the glowing note. Reach at most {MUSE_RHYTHM_MAX_HITS} hits before the {MUSE_RHYTHM_DURATION_MS / 1000}-second Muse set ends. Accuracy unlocks permanent run buffs.</p>
                     <div className="ability-key-sequence">
                       {(["A", "S", "D", "F"] as const).map((key) => (
-                        <button key={key} className={`ability-option ${museGame.prompt === key ? "selected" : ""}`} onClick={() => submitMuseInput(key)}>
+                        <button key={key} disabled={museGame.hits >= MUSE_RHYTHM_MAX_HITS} className={`ability-option ${museGame.prompt === key ? "selected" : ""}`} onClick={() => submitMuseInput(key)}>
                           <kbd>{key}</kbd>
                         </button>
                       ))}
@@ -14042,8 +14407,8 @@ export default function Home() {
                     </span>
                     <em>
                       {waitingForVersusResult
-                        ? "The second runner to finish receives +280, then the final scores decide the match."
-                        : "Final scores include the +280 second-finish bonus. Equal scores finish as a draw."}
+                        ? `The second runner to finish receives +${ONE_V_ONE_SCORING_RULES.secondDeathBonus}, then the final scores decide the match.`
+                        : `Final scores include the +${ONE_V_ONE_SCORING_RULES.secondDeathBonus} second-finish bonus. Equal scores finish as a draw.`}
                     </em>
                   </div>
                 )}
@@ -14075,23 +14440,19 @@ export default function Home() {
                     >
                       <b>IMPOSSIBLE</b>
                       <small>
-                        1 HP · no healing · Ace forced · 3.30× total score
+                        1 HP · no healing · Ace forced · {GAME_MODE_RULES.impossible.scoreMultiplier.toFixed(2)}× total score
                       </small>
                     </button>
                   </div>
                 )}
                 {over && !guest && lastRunXpBreakdown && (
-                  <div className="run-xp-summary" aria-label="Run XP earned">
+                  <div
+                    className="run-xp-summary"
+                    aria-label={`${lastRunXpBreakdown.total.toLocaleString()} XP earned this run`}
+                  >
                     <strong>
                       +{lastRunXpBreakdown.total.toLocaleString()} XP
                     </strong>
-                    <small>
-                      SCORE² ÷ 4 +
-                      {lastRunXpBreakdown.score.toLocaleString()} ·{" "}
-                      {lastRunXpBreakdown.gem_count.toLocaleString()} GEM
-                      {lastRunXpBreakdown.gem_count === 1 ? "" : "S"} +
-                      {lastRunXpBreakdown.gems.toLocaleString()}
-                    </small>
                   </div>
                 )}
                 {!waitingForVersusResult && (
@@ -14112,7 +14473,7 @@ export default function Home() {
                   </button>
                 )}
                 {!waitingForVersusResult && (
-                  <small>← → / A D &nbsp; TO SWITCH LANES</small>
+                  <small>← → / A D / SWIPE OR TAP A LANE</small>
                 )}
               </div>
             )}
@@ -14162,7 +14523,9 @@ export default function Home() {
                         >
                           <span aria-hidden="true">{attack.icon}</span>
                           {attack.label} ×{offer.amount}{" "}
-                          <small>{offer.price} COINS</small>
+                          <small>
+                            {offer.price} COINS · {attack.description}
+                          </small>
                         </button>
                       );
                     })}
@@ -14273,7 +14636,7 @@ export default function Home() {
             </button>
             <p>
               <b>SWITCH LANES</b>
-              <small>Use arrows, A / D, or tap</small>
+              <small>Use arrows, A / D, swipe, or tap a lane</small>
             </p>
             <button onClick={() => move(1)} aria-label="Move right">
               →
@@ -14895,6 +15258,9 @@ export default function Home() {
                             ))}
                           </select>
                         </label>
+                        <p className="direct-unlock-description">
+                          {directPurchaseDescription}
+                        </p>
                         <button
                           type="button"
                           disabled={

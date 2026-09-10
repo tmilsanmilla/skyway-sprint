@@ -2,10 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ECHO_MIRROR_REALM_DURATION_MS,
   ECHO_QUEST_ORDER,
   GAMBIT_MAX_HAND_SIZE,
   GAMBIT_REWARDS,
   HEATFEAST_CONSUME_LIMIT_PER_WAVE,
+  HEX_CHAKRAM_COOLDOWN_MS,
+  HEX_DAMNATION_PER_VOID_CAP,
+  HEX_HADES_DODGE_INTERVAL_MS,
+  HEX_HADES_MAX_MISSES,
+  HEX_HADES_REQUIRED_DODGES,
+  HEX_VOID_CUT_SHIELD_MS,
   MIRAGE_INVASION_DURATION_MS,
   WILDCARD_PERMANENT_EFFECT,
   activateEchoMirrorRealm,
@@ -18,11 +25,13 @@ import {
   beginEchoKnowingCharge,
   cancelEchoKnowingCharge,
   collectHexDamned,
+  collectHexDamnedForVoid,
   consumeHeatfeast,
   createEchoQuestState,
   createEchoKnowingState,
   createGambitState,
   createHeatfeastState,
+  createHexHadesChallenge,
   createHexVoidCutState,
   createStandardDeck,
   createWildcardDeck,
@@ -45,12 +54,14 @@ import {
   getHexConstructedVoidDamage,
   getHexDamnationBenefits,
   getHexOpponentVoidEffect,
+  getHexVoidCutEffect,
   getWildcardEffect,
   normalizeHeatfeastState,
   resolveGambitVersusCoins,
   resolveEchoKnowingDeath,
   resolveEchoKnowingHit,
   resolveHexChakram,
+  resolveHexHadesInput,
   resolveHexGodDeath,
   resolveHexSoulHit,
   splitCometIncomingObstacles,
@@ -397,6 +408,41 @@ test("Echo's Knowing charge, realm, damage, healing, and shard revives are expli
   assert.equal(resolveEchoKnowingDeath(awakened, 1, false).revived, false);
 });
 
+test("Echo's Mirror Realm is active before, but not at, its exact end time", () => {
+  const awakened = {
+    ...createEchoKnowingState(),
+    awakened: true,
+    startingShards: 6,
+  };
+  const startedAt = 25_000;
+  const realm = activateEchoMirrorRealm(awakened, startedAt);
+  assert.equal(
+    realm.realmUntilMs,
+    startedAt + ECHO_MIRROR_REALM_DURATION_MS,
+  );
+  assert.equal(
+    resolveEchoKnowingHit(
+      realm,
+      1,
+      realm.realmUntilMs - 1,
+      true,
+    ).realmActive,
+    true,
+  );
+  assert.equal(
+    resolveEchoKnowingHit(realm, 1, realm.realmUntilMs, true).realmActive,
+    false,
+  );
+
+  // Repeated activation while the realm is live must not extend the timer.
+  assert.strictEqual(activateEchoMirrorRealm(realm, startedAt + 1), realm);
+  const restarted = activateEchoMirrorRealm(realm, realm.realmUntilMs);
+  assert.equal(
+    restarted.realmUntilMs,
+    realm.realmUntilMs + ECHO_MIRROR_REALM_DURATION_MS,
+  );
+});
+
 test("Hex damnation thresholds activate at exact documented boundaries", () => {
   assert.equal(getHexDamnationBenefits(9).scoreMultiplier, 1);
   assert.equal(getHexDamnationBenefits(10).scoreMultiplier, 1.3);
@@ -409,6 +455,109 @@ test("Hex damnation thresholds activate at exact documented boundaries", () => {
   closeTo(getHexDamnationBenefits(100).damageMultiplier, 0.5);
   closeTo(getHexDamnationBenefits(120).damageMultiplier, 0.4);
   closeTo(getHexDamnationBenefits(999).damageMultiplier, 0.4);
+});
+
+test("Hex caps each Void at 25 Damnation without discarding existing Damnation", () => {
+  const initial = {
+    damnation: 10,
+    voidUsedWave: 2,
+    soulsRemaining: 0,
+    godMode: false,
+    godMaxHearts: 0,
+    throneUsedWave: null,
+  };
+  let result = collectHexDamnedForVoid(initial, 0, 24);
+  assert.deepEqual(
+    {
+      gained: result.gained,
+      collectedThisVoid: result.collectedThisVoid,
+      damnation: result.state.damnation,
+    },
+    { gained: 24, collectedThisVoid: 24, damnation: 34 },
+  );
+
+  result = collectHexDamnedForVoid(result.state, result.collectedThisVoid, 10);
+  assert.deepEqual(
+    {
+      gained: result.gained,
+      collectedThisVoid: result.collectedThisVoid,
+      damnation: result.state.damnation,
+    },
+    {
+      gained: 1,
+      collectedThisVoid: HEX_DAMNATION_PER_VOID_CAP,
+      damnation: 35,
+    },
+  );
+  const capped = collectHexDamnedForVoid(
+    result.state,
+    result.collectedThisVoid,
+    1,
+  );
+  assert.equal(capped.gained, 0);
+  assert.strictEqual(capped.state.damnation, result.state.damnation);
+});
+
+test("Hex's Hades trial enforces pacing, twenty dodges, and three misses", () => {
+  const runes = ["A", "S", "D", "F"];
+  const startedAt = 1_000;
+  let challenge = createHexHadesChallenge(startedAt, "A");
+  let result = resolveHexHadesInput(challenge, "a", startedAt, "S");
+  assert.equal(result.outcome, "dodged");
+  assert.equal(result.challenge.dodges, 1);
+  assert.equal(
+    result.challenge.nextDodgeAtMs,
+    startedAt + HEX_HADES_DODGE_INTERVAL_MS,
+  );
+
+  const tooEarly = resolveHexHadesInput(
+    result.challenge,
+    "S",
+    result.challenge.nextDodgeAtMs - 1,
+    "D",
+  );
+  assert.equal(tooEarly.outcome, "waiting");
+  assert.strictEqual(tooEarly.challenge, result.challenge);
+  challenge = result.challenge;
+
+  for (let dodge = 1; dodge < HEX_HADES_REQUIRED_DODGES; dodge += 1) {
+    const now = startedAt + dodge * HEX_HADES_DODGE_INTERVAL_MS;
+    const nextPrompt = runes[(dodge + 1) % runes.length];
+    result = resolveHexHadesInput(
+      challenge,
+      challenge.prompt,
+      now,
+      nextPrompt,
+    );
+    challenge = result.challenge;
+  }
+  assert.equal(result.outcome, "won");
+  assert.equal(challenge.dodges, HEX_HADES_REQUIRED_DODGES);
+
+  let failed = createHexHadesChallenge(0, "A");
+  for (let miss = 0; miss < HEX_HADES_MAX_MISSES; miss += 1) {
+    const missResult = resolveHexHadesInput(
+      failed,
+      "F",
+      miss * HEX_HADES_DODGE_INTERVAL_MS,
+      "A",
+    );
+    failed = missResult.challenge;
+    assert.equal(
+      missResult.outcome,
+      miss + 1 === HEX_HADES_MAX_MISSES ? "lost" : "missed",
+    );
+  }
+  assert.equal(failed.misses, HEX_HADES_MAX_MISSES);
+});
+
+test("Hex Void Cut phases briefly without deleting hazards and Chakram has cooldown", () => {
+  assert.deepEqual(getHexVoidCutEffect(), {
+    shieldDurationMs: HEX_VOID_CUT_SHIELD_MS,
+    removesObstacle: false,
+  });
+  assert.equal(HEX_VOID_CUT_SHIELD_MS, 500);
+  assert.equal(HEX_CHAKRAM_COOLDOWN_MS, 10_000);
 });
 
 test("Hex restores its three-move Void Cut at 30 Damnation with a cooldown", () => {

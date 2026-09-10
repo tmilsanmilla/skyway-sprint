@@ -1,4 +1,5 @@
 export type Soundtrack = "jazz" | "calm" | "energetic";
+export type GameTrack = Soundtrack | "muse";
 
 export type SfxName =
   | "move"
@@ -12,10 +13,11 @@ export type SfxName =
 
 type AudioContextConstructor = typeof AudioContext;
 
-const TRACK_TEMPO: Record<Soundtrack, number> = {
+const TRACK_TEMPO: Record<GameTrack, number> = {
   jazz: 104,
   calm: 74,
   energetic: 152,
+  muse: 128,
 };
 const MUSIC_PITCH_MULTIPLIER = 1.1;
 
@@ -33,7 +35,7 @@ export class AudioEngine {
   private limiter: DynamicsCompressorNode | null = null;
   private noiseBuffer: AudioBuffer | null = null;
 
-  private selectedTrack: Soundtrack = "calm";
+  private selectedTrack: GameTrack = "calm";
   private musicVolume = 0.55;
   private sfxVolume = 0.75;
   private playing = false;
@@ -43,7 +45,7 @@ export class AudioEngine {
   private readonly scheduledMusic = new Set<AudioScheduledSourceNode>();
   private readonly scheduledSfx = new Set<AudioScheduledSourceNode>();
 
-  get track(): Soundtrack {
+  get track(): GameTrack {
     return this.selectedTrack;
   }
 
@@ -94,7 +96,7 @@ export class AudioEngine {
   }
 
   /** Switch tracks without allowing the old track's scheduled notes to leak. */
-  setTrack(track: Soundtrack): void {
+  setTrack(track: GameTrack): void {
     if (track === this.selectedTrack) return;
     this.selectedTrack = track;
     if (this.playing) this.restartSequence(true);
@@ -240,7 +242,7 @@ export class AudioEngine {
     }
   }
 
-  private scheduleTrackStep(track: Soundtrack, step: number, time: number): void {
+  private scheduleTrackStep(track: GameTrack, step: number, time: number): void {
     if (track === "jazz") {
       const bass = [36, 40, 43, 45, 38, 41, 45, 47];
       const chordRoots = [60, 65, 62, 67];
@@ -273,6 +275,31 @@ export class AudioEngine {
         this.tone("music", midiFrequency(note), time, 0.5, 0.045, "triangle");
       }
       if (step % 8 === 0) this.kick(time, 0.035);
+      return;
+    }
+
+    if (track === "muse") {
+      const roots = [52, 57, 55, 59];
+      const root = roots[Math.floor(step / 8)];
+      if (step % 8 === 0) {
+        [root, root + 7, root + 12, root + 16].forEach((note, index) => {
+          this.tone(
+            "music",
+            midiFrequency(note),
+            time + index * 0.025,
+            0.7,
+            index === 0 ? 0.075 : 0.045,
+            index % 2 === 0 ? "triangle" : "sine",
+          );
+        });
+      }
+      if (step % 2 === 0) {
+        const melody = [12, 16, 19, 24, 21, 19, 16, 14];
+        const note = root + melody[(step / 2) % melody.length];
+        this.tone("music", midiFrequency(note), time, 0.2, 0.08, "triangle");
+      }
+      if (step % 4 === 0) this.kick(time, 0.075);
+      if (step % 2 === 1) this.hat(time, 0.012);
       return;
     }
 

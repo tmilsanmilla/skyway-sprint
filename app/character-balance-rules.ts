@@ -320,6 +320,8 @@ export const getTankMaxHearts = (character: TankCharacterKey) => {
   return 4;
 };
 
+export const ATLAS_STARTING_HEARTS = 4;
+
 export const getTankScoreMultiplier = (
   character: TankCharacterKey,
   currentHearts: number,
@@ -1275,6 +1277,11 @@ export const getHarvesterAbilities = (
 ];
 
 export const MUSE_MAX_VISIBLE_OBSTACLES = 5;
+export const MUSE_RHYTHM_DURATION_MS = 15_000;
+export const MUSE_RHYTHM_MAX_HITS = 30;
+
+export const clampMuseRhythmHits = (hits: number) =>
+  clamp(Math.floor(finiteOr(hits)), 0, MUSE_RHYTHM_MAX_HITS);
 
 export const getMuseRemainingObstacleSlots = (visibleObstacles: number) =>
   Math.max(
