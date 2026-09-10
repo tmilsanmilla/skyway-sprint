@@ -11,12 +11,89 @@ import { createBrowserClient } from "@supabase/ssr";
 import { audioEngine, type Soundtrack } from "./audio-engine";
 import { AdminPlayerEditor } from "./admin-player-editor";
 import {
+  getEffectiveCharacterTestMode,
+  getEffectiveOneVOneMode,
+  isAdminTestModeActive,
+  isCharacterAvailable,
+  isRankedAvailable,
+} from "./admin-test-mode-rules";
+import {
+  ECHO_QUESTS,
+  activateEchoMirrorRealm,
+  advanceHexVoidCut,
+  beginEchoKnowingCharge,
+  addHeatfeastSpending,
+  advanceEchoQuest,
+  advanceMirageInvasion,
+  becomeHexGod,
+  collectHexDamned,
+  consumeHeatfeast,
+  completeEchoKnowingCharge,
+  cancelEchoKnowingCharge,
+  createEchoQuestState,
+  createEchoKnowingState,
+  createGambitState,
+  createHeatfeastState,
+  createHexState,
+  createHexVoidCutState,
+  createWildcardState,
+  discardGambitCards,
+  drawGambitWave,
+  drawWildcard,
+  enterHexVoid,
+  evaluateGambitHand,
+  getEchoEligiblePassives,
+  getEchoKnowingBenefits,
+  getEchoKnowingChargeProgress,
+  getCometNaturalRemovalPrice,
+  getCometSendPurchase,
+  getGambitReward,
+  getGambitRewardSchedule,
+  getGambitWaveEffects,
+  getHeatfeastBenefits,
+  getHexDamnationBenefits,
+  resolveHexGodDeath,
+  resolveHexSoulHit,
+  resolveEchoKnowingDeath,
+  resolveEchoKnowingHit,
+  resolveGambitVersusCoins,
+  resolveHexChakram,
+  splitCometIncomingObstacles,
+  startMirageInvasion,
+  summonHexSouls,
+  activateHexThrone,
+  type EchoQuestId,
+  type EchoQuestProgress,
+  type EchoQuestState,
+  type EchoKnowingState,
+  type GambitState,
+  type GambitHand,
+  type GambitRewardSchedule,
+  type HexState,
+  type HexVoidCutState,
+  type HeatfeastState,
+  type MirageInvasionState,
+  type PassiveCandidate,
+  type StandardCard,
+  type WildcardCard,
+  type WildcardRoundEffect,
+  type WildcardState,
+} from "./advanced-character-rules";
+import {
+  addToBrokerFund,
   calculateTankDamage,
+  claimBrokerCoinFund,
   generateJesterWaveEffect,
   getCitadelOpeningBlocks,
   getFortuneGemSpawnChance,
+  getMuseReward,
+  getMuseRemainingObstacleSlots,
+  getProspectorGemWarningSchedule,
+  getScribeHazardCap,
+  moveBrokerFundsForWave,
   resolveWeaverSnowflake,
   selectSentinelAnalyzedSource,
+  settleBrokerFundsOnDeath,
   type HazardKind,
   type TankCharacterKey,
 } from "./character-balance-rules";
@@ -75,6 +152,7 @@ type Item = {
   formationSpeed?: number;
   seededUntilWave?: number;
   deactivated?: boolean;
+  scheduledAt?: number;
 };
 type GameMode = "normal" | "hardcore" | "impossible";
 type OracleProphecy = "no-hit" | "completion" | "near-death";
@@ -103,12 +181,46 @@ type AbilityChoice =
   | { kind: "pacer-character" }
   | { kind: "oracle-prophecy" }
   | { kind: "oracle-passive"; options: CharacterKey[] }
+  | {
+      kind: "mimic-passives";
+      options: CharacterKey[];
+      selected: CharacterKey[];
+    }
+  | {
+      kind: "echo-passives";
+      quest: EchoQuestId;
+      options: CharacterKey[];
+      selected: CharacterKey[];
+      nextWave: number;
+    }
+  | { kind: "scribe-hazard"; options: Kind[]; nextWave: number }
+  | { kind: "comet-remove"; options: Kind[]; targetWave: number }
   | null;
 type PulseGameState = {
   hits: number;
   prompt: "A" | "S" | "D" | "F";
   endsAt: number;
   remaining: number;
+};
+type MuseGameState = {
+  hits: number;
+  attempts: number;
+  prompt: "A" | "S" | "D" | "F";
+  endsAt: number;
+  remaining: number;
+};
+type ProspectorWarning = {
+  itemId: number;
+  lane: number;
+  spawnAt: number;
+};
+type GambitRunReward = GambitRewardSchedule;
+type HexVoidSession = {
+  endsAt: number;
+  remaining: number;
+  encounter: "damned" | "hades";
+  collected: number;
+  hadesDodges: number;
 };
 type PlayerReport = {
   id: number;
@@ -274,6 +386,79 @@ type PendingVersusAttack = {
   lanePosition?: number;
   escapeLane?: number;
 };
+type CometRemovalReceipt = {
+  receiptId: string;
+  kind: Exclude<
+    Kind,
+    "gem" | "coin" | "melon" | "mushroom" | "current"
+  >;
+  wave: number;
+};
+type HeatfeastPayload = {
+  stored?: number;
+  consumed?: number;
+  tracked_wave?: number;
+  consumed_this_wave?: number;
+};
+type VersusAbilityStatePayload = {
+  heatfeast?: HeatfeastPayload | null;
+  pending_comet_removals?: Array<{
+    receipt_id?: string;
+    obstacle_type?: string;
+    spawn_wave?: number;
+  }>;
+  self?: {
+    lane_index?: number | null;
+    hearts?: number;
+    mirage_active?: boolean;
+    mirage_used_wave?: number | null;
+    mirage_started_at?: string | null;
+    mirage_ends_at?: string | null;
+    mirage_damage_dealt?: number;
+  };
+  opponent?: {
+    lane_index?: number | null;
+    hearts?: number;
+    mirage_active?: boolean;
+    mirage_started_at?: string | null;
+    mirage_ends_at?: string | null;
+    mirage_damage_dealt?: number;
+  };
+};
+type OnlineGambitPayload = {
+  hand?: StandardCard[];
+  hand_size?: number;
+  draw_remaining?: number;
+  discard_count?: number;
+  deck_cycle?: number;
+  last_draw_wave?: number;
+  best_hand?: ReturnType<typeof evaluateGambitHand>;
+  discard_required?: number;
+  reward_applied?: boolean;
+  reward_wave?: number;
+  reward_hand?: NonNullable<ReturnType<typeof evaluateGambitHand>>;
+  reward_label?: string;
+  stolen_coins?: number;
+  doubled_coins?: number;
+  self_coins?: number;
+  opponent_coins?: number;
+  reward_history?: Array<{
+    wave?: number;
+    hand?: NonNullable<ReturnType<typeof evaluateGambitHand>>;
+    label?: string;
+    stolen_coins?: number;
+    doubled_coins?: number;
+  }>;
+};
+const GAMBIT_HANDS = new Set<GambitHand>([
+  "high-card", "pair", "two-pair", "three-of-a-kind", "straight",
+  "flush", "full-house", "four-of-a-kind", "straight-flush",
+  "royal-flush",
+]);
+const asGambitHand = (value: unknown): GambitHand | null =>
+  typeof value === "string" && GAMBIT_HANDS.has(value as GambitHand)
+    ? (value as GambitHand)
+    : null;
 type VersusStatePayload = {
   map_rules?: Record<string, unknown> | null;
   wave_rules?: {
@@ -315,9 +500,13 @@ type VersusStatePayload = {
     zenith_time_stop_until?: string | null;
     zenith_time_stop_used?: boolean;
     obstacle_speed_multiplier?: number;
+    lane_index?: number | null;
+    test_mode?: boolean;
   };
   opponent?: {
     username?: string;
+    character_key?: string | null;
+    character_class?: string | null;
     hearts?: number;
     score?: number;
     status?: string;
@@ -330,6 +519,7 @@ type VersusStatePayload = {
     zenith_time_stop_until?: string | null;
     zenith_time_stop_used?: boolean;
     obstacle_speed_multiplier?: number;
+    lane_index?: number | null;
   };
   pending_attacks?: Array<{
     id?: string;
@@ -340,6 +530,32 @@ type VersusStatePayload = {
     escape_lane_index?: number | null;
     source?: string | null;
   }>;
+};
+const parseServerTime = (value: unknown, fallback: number) => {
+  const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+const readHeatfeastState = (
+  value: unknown,
+  fallbackWave: number,
+): HeatfeastState | null => {
+  if (!value || typeof value !== "object") return null;
+  const payload = value as HeatfeastPayload;
+  const stored = Number(payload.stored);
+  const consumed = Number(payload.consumed);
+  const trackedWave = Number(payload.tracked_wave);
+  const consumedThisWave = Number(payload.consumed_this_wave);
+  if (!Number.isFinite(stored) || !Number.isFinite(consumed)) return null;
+  return {
+    stored: Math.max(0, stored),
+    consumed: Math.max(0, consumed),
+    trackedWave: Number.isFinite(trackedWave)
+      ? Math.max(1, Math.floor(trackedWave))
+      : Math.max(1, Math.floor(fallbackWave)),
+    consumedThisWave: Number.isFinite(consumedThisWave)
+      ? Math.max(0, Math.min(100, consumedThisWave))
+      : 0,
+  };
 };
 const readFactoryConveyorFromWaveRules = (
   value: VersusStatePayload["wave_rules"],
@@ -693,24 +909,40 @@ const buildWaveHazardPlan = (
   sameHazardLimit: number,
   startingStreak: { kind: Kind | null; count: number },
   random: () => number = Math.random,
+  cappedKind: Kind | null = null,
+  cappedCount = Number.POSITIVE_INFINITY,
 ) => {
   const kinds: Kind[] = [];
   let streak = { ...startingStreak };
+  const canSelect = (kind: Kind) =>
+    kind !== cappedKind ||
+    kinds.filter((plannedKind) => plannedKind === cappedKind).length <
+      cappedCount;
   for (let index = 0; index < WAVE_HAZARD_PLAN_SIZE; index += 1) {
     let selected: Kind = "log";
     if (versusRun) {
       for (let attempt = 0; attempt < 8; attempt += 1) {
         const natural = chooseNaturalObstacle(mapId, random);
         selected = natural === "spike" ? "spikes" : natural;
-        if (streak.count < sameHazardLimit || selected !== streak.kind) break;
+        if (
+          (streak.count < sameHazardLimit || selected !== streak.kind) &&
+          canSelect(selected)
+        )
+          break;
       }
-      if (streak.count >= sameHazardLimit && selected === streak.kind) {
+      if (
+        !canSelect(selected) ||
+        (streak.count >= sameHazardLimit && selected === streak.kind)
+      ) {
         const weightedFallback = Object.entries(
           getMapRules(mapId).naturalObstacleWeights,
         ).find(
           ([obstacle, weight]) =>
             Number(weight) > 0 &&
-            (obstacle === "spike" ? "spikes" : obstacle) !== streak.kind,
+            (obstacle === "spike" ? "spikes" : obstacle) !== streak.kind &&
+            canSelect(
+              (obstacle === "spike" ? "spikes" : obstacle) as Kind,
+            ),
         )?.[0];
         if (weightedFallback)
           selected = weightedFallback === "spike" ? "spikes" : weightedFallback as Kind;
@@ -720,7 +952,11 @@ const buildWaveHazardPlan = (
         streak.count >= sameHazardLimit
           ? AMBIENT_HAZARDS.filter((hazard) => hazard !== streak.kind)
           : AMBIENT_HAZARDS;
-      selected = choices[Math.floor(random() * choices.length)] ?? "log";
+      const allowedChoices = choices.filter(canSelect);
+      selected =
+        allowedChoices[Math.floor(random() * allowedChoices.length)] ??
+        choices.find(canSelect) ??
+        "log";
     }
     kinds.push(selected);
     streak =
@@ -857,6 +1093,8 @@ const normalizeVersusObstacle = (value: unknown): Kind | null => {
 const BOT_MAX_HEARTS = 3;
 const STRIDE_SHIELD_MS = 250;
 const BLITZ_COOLDOWN_MS = 10000;
+const HAMMER_COOLDOWN_MS = 20000;
+const VIAL_ENDLESS_COOLDOWN_MS = 120000;
 const VERSUS_ATTACK_DAMAGE: Readonly<Record<VersusAttackKind, number>> = {
   barrel: 0.5,
   log: 1,
@@ -871,6 +1109,7 @@ const simulateBotWave = (
   attacks: readonly VersusAttackKind[],
   waveNumber: number,
   maximumHearts: number = BOT_MAX_HEARTS,
+  sentDamageMultiplier = 1,
   random: () => number = Math.random,
 ) => {
   let nextHearts = currentHearts;
@@ -897,7 +1136,7 @@ const simulateBotWave = (
       chilled = true;
       return;
     }
-    nextHearts -= VERSUS_ATTACK_DAMAGE[attack];
+    nextHearts -= VERSUS_ATTACK_DAMAGE[attack] * sentDamageMultiplier;
   });
   const heartsAfterDamage = Math.max(0, nextHearts);
   const heartsAfterHealing =
@@ -1174,7 +1413,7 @@ const CHARACTER_ABILITIES = {
   },
   medic_vial: {
     name: "SWITCH ALLEGIANCE",
-    description: "Gems cost 1 HP and each wave heals to full. Press E once to reverse obstacle effects for 30 seconds.",
+    description: "Gems cost 1 HP and each wave heals to full. Press E to reverse obstacle effects for 30 seconds; once per 1v1 or every 120 seconds in Endless.",
   },
   medic_lifeline: {
     name: "LIFELINE",
@@ -1240,7 +1479,7 @@ const CHARACTER_ABILITIES = {
   tank_hammer: {
     name: "DEMOLITION",
     description:
-      "Takes 10% less damage. Press E to destroy the nearest non-rock in the current lane and its neighboring lanes.",
+      "Takes 10% less damage. Press E every 20 seconds to destroy the nearest non-rock in the current lane and its neighboring lanes.",
   },
   tank_anchor: {
     name: "GROUND HOOK",
@@ -1259,8 +1498,8 @@ const CHARACTER_ABILITIES = {
     description: "Can reach 7 HP and heal 1 HP each wave. Every obstacle hit shortens Sky Crush by 0.5 seconds, down to 1 second.",
   },
   tank_drag: {
-    name: "HEAVY DRAG",
-    description: "Can make barrels and logs move 15% slower.",
+    name: "CHAIN ANCHOR",
+    description: "Makes barrels and logs 15% slower. Once per wave, press E to set a chain and E again to return to it safely.",
   },
   tank_plow: {
     name: "LANE PLOW",
@@ -1312,7 +1551,7 @@ const CHARACTER_ABILITIES = {
   trickster_hex: {
     name: "VOID REALM",
     description:
-      "Enters the Void on even waves to collect Damnation, unlock damage reduction and souls, and eventually challenge Hades.",
+      "E enters the Void on even waves to collect Damnation, unlock damage reduction and souls, and eventually challenge Hades. R throws a Void Chakram down the current lane.",
   },
   trickster_phantom: {
     name: "MOON PHASE",
@@ -1335,7 +1574,7 @@ const CHARACTER_ABILITIES = {
   trickster_wildcard: {
     name: "LUCKY DRAW",
     description:
-      "Can draw one wave-long bonus: 15% more score, 50% more gem spawns, or 15% slower hazards.",
+      "Draws through a shuffled 54-card deck: number cards add score, face cards reduce damage, Aces do both, and Jokers block five hits.",
   },
   misc_nomad: {
     name: "SURVIVAL INSTINCT",
@@ -1387,6 +1626,19 @@ const CHARACTER_ABILITIES = {
 >;
 type CharacterKey = RosterCharacterKey;
 const CHARACTER_ROSTER = Object.values(CLASS_CHARACTERS).flat();
+const ECHO_PASSIVE_CANDIDATES: readonly PassiveCandidate[] =
+  CHARACTER_ROSTER.map((character) => {
+    const classKey = getCharacterClassKey(character.key);
+    return {
+      key: character.key,
+      name: character.name,
+      category: classKey === "medic" ? "healer" : classKey,
+      rarity: character.rarity,
+    };
+  });
+const MIMIC_PASSIVE_KEYS = CHARACTER_ROSTER.filter(
+  (character) => RARITY_ORDER[character.rarity] <= RARITY_ORDER.rare,
+).map((character) => character.key as CharacterKey);
 const getValidatedVersusCharacter = (
   characterValue: unknown,
   classValue: unknown,
@@ -1515,7 +1767,11 @@ const isCharacterOwned = (
             item.item_key === characterKey,
         )),
   );
-const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
+const normalizeOwnedLoadout = (
+  owned: Unlock[],
+  loadout: StoredLoadout,
+  allowAnyCharacter = false,
+) => {
   const owns = (itemType: Unlock["item_type"], itemKey?: string | null) =>
     Boolean(
       itemKey &&
@@ -1527,7 +1783,7 @@ const normalizeOwnedLoadout = (owned: Unlock[], loadout: StoredLoadout) => {
   const requestedCharacter = loadout?.character_key ?? "runner_ace";
   const characterKey =
     requestedCharacter in CHARACTER_ABILITIES &&
-    isCharacterOwned(owned, requestedCharacter)
+    (allowAnyCharacter || isCharacterOwned(owned, requestedCharacter))
       ? requestedCharacter
       : "runner_ace";
   const classKey = getCharacterClassKey(characterKey);
@@ -1752,6 +2008,7 @@ export default function Home() {
     [hearts, setHearts] = useState(3),
     [wave, setWave] = useState(1),
     [running, setRunning] = useState(false),
+    [runIsTestMode, setRunIsTestMode] = useState(false),
     [paused, setPaused] = useState(false),
     [pauseMenuOpen, setPauseMenuOpen] = useState(false),
     [wavePause, setWavePause] = useState(false),
@@ -1788,6 +2045,57 @@ export default function Home() {
     [oracleProphecies, setOracleProphecies] = useState<OracleProphecy[]>([]),
     [oracleCompleted, setOracleCompleted] = useState(0),
     [pulseGame, setPulseGame] = useState<PulseGameState | null>(null),
+    [museGame, setMuseGame] = useState<MuseGameState | null>(null),
+    [museReward, setMuseReward] = useState<ReturnType<
+      typeof getMuseReward
+    > | null>(null),
+    [mimicSelectedAbilities, setMimicSelectedAbilities] = useState<
+      CharacterKey[]
+    >([]),
+    [scribeHazard, setScribeHazard] = useState<Kind | null>(null),
+    [prospectorWarnings, setProspectorWarnings] =
+      useState<ProspectorWarning[]>([]),
+    [wildcardCard, setWildcardCard] = useState<WildcardCard | null>(null),
+    [wildcardEffect, setWildcardEffect] =
+      useState<WildcardRoundEffect | null>(null),
+    [gambitState, setGambitState] = useState<GambitState>(() =>
+      createGambitState("initial"),
+    ),
+    [gambitPanelOpen, setGambitPanelOpen] = useState(false),
+    [gambitSelectedCards, setGambitSelectedCards] = useState<string[]>([]),
+    [gambitRunReward, setGambitRunReward] =
+      useState<GambitRunReward | null>(null),
+    [gambitMaxHeartsOverride, setGambitMaxHeartsOverride] = useState<
+      number | null
+    >(null),
+    [echoQuestState, setEchoQuestState] = useState<EchoQuestState>(() =>
+      createEchoQuestState(),
+    ),
+    [echoSelectedAbilities, setEchoSelectedAbilities] = useState<
+      CharacterKey[]
+    >([]),
+    [echoProgress, setEchoProgress] = useState<EchoQuestProgress>({
+      highestWaveReached: 0,
+      totalHeartsHealed: 0,
+      totalDamageTaken: 0,
+      allTrickstersUnlocked: false,
+      wavesCompletedAfterUnlockingAllTricksters: 0,
+      ideaCompletedByGameRule: false,
+      allCharactersUnlocked: false,
+    }),
+    [echoKnowingState, setEchoKnowingState] = useState<EchoKnowingState>(() =>
+      createEchoKnowingState(),
+    ),
+    [echoChargePercent, setEchoChargePercent] = useState(0),
+    [hexState, setHexState] = useState<HexState>(() => createHexState()),
+    [hexVoid, setHexVoid] = useState<HexVoidSession | null>(null),
+    [heatfeastState, setHeatfeastState] = useState<HeatfeastState>(() =>
+      createHeatfeastState(),
+    ),
+    [mirageInvasion, setMirageInvasion] =
+      useState<MirageInvasionState | null>(null),
+    [versusOpponentMirageUntil, setVersusOpponentMirageUntil] = useState(0),
+    [versusOpponentLane, setVersusOpponentLane] = useState(0),
     [waveForecast, setWaveForecast] = useState<string[]>([]),
     [waveForecastCollapsed, setWaveForecastCollapsed] = useState(false),
     [deferredAttackGroups, setDeferredAttackGroups] = useState<Item[][]>([]),
@@ -1799,6 +2107,7 @@ export default function Home() {
     itemsSnapshotRef = useRef<Item[]>(items),
     deferredAttackGroupsRef = useRef<Item[][]>(deferredAttackGroups),
     userIdRef = useRef<string | null>(null),
+    runIsTestModeRef = useRef(false),
     gemsRef = useRef(0),
     gemStreakRef = useRef(0),
     gemStreakResetPendingRef = useRef(false),
@@ -1842,8 +2151,6 @@ export default function Home() {
     flareDamageWaveRef = useRef(0),
     flareBoostWaveRef = useRef(0),
     orbitCooldownRemainingRef = useRef(0),
-    cometChargeRemainingRef = useRef(8000),
-    cometChargedRef = useRef(false),
     invincibleUntilRef = useRef(0),
     invincibilityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     abilityNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
@@ -1880,11 +2187,6 @@ export default function Home() {
     flickerShieldWaveRef = useRef(0),
     switchLastDirectionRef = useRef(0),
     switchShieldCooldownUntilRef = useRef(0),
-    gambitBoostRemainingRef = useRef(0),
-    gambitCooldownUntilRef = useRef(0),
-    echoGrazeCooldownUntilRef = useRef(0),
-    mirageShieldCooldownUntilRef = useRef(0),
-    hexMoveCountRef = useRef(0),
     turnLockedRef = useRef(false),
     delayedMoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     freezeEffectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
@@ -1892,7 +2194,7 @@ export default function Home() {
     frozenUntilRef = useRef(0),
     firstGuardWaveRef = useRef(0),
     mercyChainActiveRef = useRef(true),
-    hammerBreakWaveRef = useRef(0),
+    hammerCooldownUntilRef = useRef(0),
     wardenBlockWaveRef = useRef(0),
     citadelBlockWaveRef = useRef(0),
     bastionChargeRemainingRef = useRef(6000),
@@ -1934,6 +2236,7 @@ export default function Home() {
     flareBurnCountRef = useRef(0),
     vialAllegianceUntilRef = useRef(0),
     vialUsedRef = useRef(false),
+    vialCooldownUntilRef = useRef(0),
     mirageUsedWaveRef = useRef(0),
     obstacleFreezeUntilRef = useRef(0),
     lanternCooldownUntilRef = useRef(0),
@@ -1941,19 +2244,65 @@ export default function Home() {
     scoutSnowflakeHealReadyRef = useRef(false),
     scoutCooldownUntilRef = useRef(0),
     dragChainRef = useRef<{ wave: number; lane: number } | null>(null),
+    dragUsedWaveRef = useRef(0),
     nomadSurvivalUsedRef = useRef(false),
     tinkerInspirationRef = useRef(0),
     tinkerClickedSpikeIdsRef = useRef<Set<number>>(new Set()),
     rangerCooldownUntilRef = useRef(0),
     brokerFundsRef = useRef({ gems: 0, coins: 0, melons: 0 }),
-    prospectorNoticeWaveRef = useRef(0),
+    prospectorWarningRef = useRef<ProspectorWarning[]>([]),
+    scribeSpawnCountsRef = useRef<Partial<Record<Kind, number>>>({}),
     weaverSnowflakeCountRef = useRef(0),
     weaverJacketRef = useRef(false),
     weaverHealWaveRef = useRef(0),
     weaverHealedAmountRef = useRef(0),
     harvesterCountsRef = useRef({ gems: 0, coins: 0, melons: 0 }),
     harvesterCooldownUntilRef = useRef(0),
-    wildcardBuffRef = useRef<"score" | "gems" | "slow" | null>(null),
+    museChallengeUsedRef = useRef(false),
+    museMixStartedAtRef = useRef(0),
+    museMixUntilRef = useRef(0),
+    museMixCooldownUntilRef = useRef(0),
+    museMixHealPulsesRef = useRef(0),
+    wildcardStateRef = useRef<WildcardState | null>(null),
+    wildcardIgnoredHitsRef = useRef(0),
+    wildcardPermanentEffectRef = useRef<WildcardRoundEffect | null>(null),
+    gambitStateRef = useRef<GambitState>(createGambitState("initial")),
+    onlineGambitBusyRef = useRef(false),
+    gambitRewardSchedulesRef = useRef<GambitRewardSchedule[]>([]),
+    gambitPendingDrawWaveRef = useRef(0),
+    gambitDiscardRequiredRef = useRef(0),
+    gambitInvincibleThroughWaveRef = useRef(0),
+    gambitPermanentDamageMultiplierRef = useRef(1),
+    gambitPermanentScoreMultiplierRef = useRef(1),
+    gambitMaxHeartsRef = useRef<number | null>(null),
+    gambitRevivesRef = useRef(0),
+    echoProgressRef = useRef<EchoQuestProgress>({
+      highestWaveReached: 0,
+      totalHeartsHealed: 0,
+      totalDamageTaken: 0,
+      allTrickstersUnlocked: false,
+      wavesCompletedAfterUnlockingAllTricksters: 0,
+      ideaCompletedByGameRule: false,
+      allCharactersUnlocked: false,
+    }),
+    echoQuestStateRef = useRef<EchoQuestState>(createEchoQuestState()),
+    echoKnowingStateRef = useRef<EchoKnowingState>(createEchoKnowingState()),
+    echoTrackedHeartsRef = useRef(0),
+    echoHeartTrackingActiveRef = useRef(false),
+    hexStateRef = useRef<HexState>(createHexState()),
+    hexVoidCutStateRef = useRef<HexVoidCutState>(createHexVoidCutState()),
+    hexThroneTimerRef = useRef<number | null>(null),
+    heatfeastStateRef = useRef<HeatfeastState>(createHeatfeastState()),
+    heatfeastConsumeBusyRef = useRef(false),
+    cometRemovalQueueRef = useRef<{
+      wave: number;
+      counts: Partial<Record<Kind, number>>;
+    }>({ wave: 0, counts: {} }),
+    cometRemovalReceiptsRef = useRef<CometRemovalReceipt[]>([]),
+    cometRemovalBusyRef = useRef(false),
+    mirageInvasionRef = useRef<MirageInvasionState | null>(null),
+    mirageDamageBusyRef = useRef(false),
+    mirageActionBusyRef = useRef(false),
     ambientHazardStreakRef = useRef<{ kind: Kind | null; count: number }>({
       kind: null,
       count: 0,
@@ -2050,6 +2399,8 @@ export default function Home() {
         clearTimeout(waveAnnouncementTimerRef.current);
       if (pitchKatanaTimerRef.current)
         clearTimeout(pitchKatanaTimerRef.current);
+      if (hexThroneTimerRef.current)
+        clearTimeout(hexThroneTimerRef.current);
       versusSearchingRef.current = false;
       versusSearchTokenRef.current += 1;
       if (versusPollTimerRef.current)
@@ -2160,6 +2511,9 @@ export default function Home() {
     [adminOpen, setAdminOpen] = useState(false),
     [isAdmin, setIsAdmin] = useState(false),
     [adminRole, setAdminRole] = useState<string | null>(null),
+    [adminTestModeEnabled, setAdminTestModeEnabled] = useState(false),
+    [adminTestModeBusy, setAdminTestModeBusy] = useState(false),
+    [adminTestModeStatus, setAdminTestModeStatus] = useState(""),
     [adminTab, setAdminTab] = useState<
       "reports" | "admins" | "players" | "appeals"
     >("reports"),
@@ -2214,6 +2568,8 @@ export default function Home() {
     [mapPriorityStatus, setMapPriorityStatus] = useState(""),
     [versusPhase, setVersusPhase] = useState<VersusPhase>("idle"),
     [versusOpponent, setVersusOpponent] = useState("WAITING…"),
+    [versusOpponentCharacter, setVersusOpponentCharacter] =
+      useState<CharacterKey | null>(null),
     [versusPoints, setVersusPoints] = useState(0),
     [versusCountdown, setVersusCountdown] = useState(
       VERSUS_INTERMISSION_SECONDS,
@@ -2430,6 +2786,25 @@ export default function Home() {
     versusPointsRef.current = points;
     setVersusPoints(points);
   }, []);
+  const applyHeatfeastPayload = useCallback(
+    (value: unknown, fallbackWave = waveRef.current) => {
+      const next = readHeatfeastState(value, fallbackWave);
+      if (!next) return false;
+      const current = heatfeastStateRef.current;
+      if (
+        current.stored === next.stored &&
+        current.consumed === next.consumed &&
+        current.trackedWave === next.trackedWave &&
+        current.consumedThisWave === next.consumedThisWave
+      )
+        return true;
+      heatfeastStateRef.current = next;
+      setHeatfeastState(next);
+      setAbilityStateVersion((version) => version + 1);
+      return true;
+    },
+    [],
+  );
   const loadMapPriority = useCallback(async () => {
     const requestUserId = userIdRef.current;
     if (!requestUserId) return;
@@ -2502,6 +2877,12 @@ export default function Home() {
     versusStateSyncIntentRef.current += 1;
     versusHydrationIntentRef.current += 1;
     versusRunHydratedRef.current = false;
+    heatfeastConsumeBusyRef.current = false;
+    cometRemovalReceiptsRef.current = [];
+    cometRemovalBusyRef.current = false;
+    mirageActionBusyRef.current = false;
+    mirageDamageBusyRef.current = false;
+    setVersusOpponentMirageUntil(0);
     setVersusServerMaxHearts(null);
     if (versusSyncRetryTimerRef.current) {
       clearTimeout(versusSyncRetryTimerRef.current);
@@ -2582,29 +2963,70 @@ export default function Home() {
   // Treat the four included starter kits as the only client-side defaults.
   // Every other character must have a matching account unlock before it can
   // affect gameplay, even if stale loadout or multiplayer state names it.
-  const selectedCharacterOwned = isCharacterOwned(unlocks, selectedCharacter);
-  const availableCharacter = selectedCharacterOwned
+  const adminTestModeContext = {
+    isAdmin,
+    testModeEnabled: adminTestModeEnabled,
+  };
+  const adminTestModeActive = isAdminTestModeActive(adminTestModeContext);
+  // Once play has started, character access follows the run snapshot instead
+  // of the live preference. This keeps a normal rewarded run normal even when
+  // an admin turns Test Mode on from a menu mid-run, and keeps a test run
+  // fully test-only if the saved preference is turned off before it ends.
+  const effectiveCharacterTestMode = getEffectiveCharacterTestMode(
+    running,
+    runIsTestMode,
+    adminTestModeContext,
+  );
+  const testCharacterAccessContext = {
+    isAdmin,
+    testModeEnabled: effectiveCharacterTestMode,
+  };
+  const canUseCharacter = useCallback(
+    (characterKey?: string | null) =>
+      isCharacterAvailable(
+        isCharacterOwned(unlocks, characterKey),
+        {
+          isAdmin,
+          testModeEnabled: effectiveCharacterTestMode,
+        },
+      ),
+    [effectiveCharacterTestMode, isAdmin, unlocks],
+  );
+  const selectedCharacterAvailable = canUseCharacter(selectedCharacter);
+  const availableCharacter = selectedCharacterAvailable
     ? selectedCharacter
     : "runner_ace";
   const availableClass = getCharacterClassKey(availableCharacter);
   const classBlockedByGameMode =
-    mode === "impossible" ||
-    (mode === "hardcore" &&
-      (availableClass === "medic" || availableClass === "tank"));
+    !effectiveCharacterTestMode &&
+    (mode === "impossible" ||
+      (mode === "hardcore" &&
+        (availableClass === "medic" || availableClass === "tank")));
   const classBlockedByMap =
+    !effectiveCharacterTestMode &&
     isVersusRun &&
     !isCharacterClassAllowed(activeMapId, availableClass);
-  const forcedMapCharacter = isVersusRun
+  const forcedMapCharacter = isVersusRun && !effectiveCharacterTestMode
     ? activeMapRules.forcedCharacterId
     : null;
   const equippedCharacter =
-    mode === "impossible" || classBlockedByGameMode || classBlockedByMap
+    classBlockedByGameMode || classBlockedByMap
       ? "runner_ace"
       : forcedMapCharacter ?? availableCharacter;
   const activeCharacter = (runCharacterOverride ?? equippedCharacter) as CharacterKey;
   const activeClass = getCharacterClassKey(activeCharacter);
   const hasCharacterAbility = useCallback((characterKey: CharacterKey) => {
     if (activeCharacter === characterKey) return true;
+    if (
+      activeCharacter === "misc_mimic" &&
+      mimicSelectedAbilities.includes(characterKey)
+    )
+      return true;
+    if (
+      activeCharacter === "trickster_echo" &&
+      echoSelectedAbilities.includes(characterKey)
+    )
+      return true;
     if (
       activeCharacter === "medic_oracle" &&
       oracleBorrowedAbilitiesRef.current.has(characterKey)
@@ -2623,7 +3045,12 @@ export default function Home() {
     };
     const requiredWave = unlockWave[characterKey];
     return requiredWave !== undefined && wave >= requiredWave;
-  }, [activeCharacter, wave]);
+  }, [
+    activeCharacter,
+    echoSelectedAbilities,
+    mimicSelectedAbilities,
+    wave,
+  ]);
   const baseStartingHearts = getCharacterStartingHearts(
     activeCharacter,
     activeClass,
@@ -2647,12 +3074,107 @@ export default function Home() {
     mode === "impossible" || mode === "hardcore"
       ? 1
       : mapHealth.maxHp;
+  const echoKnowingBenefits = getEchoKnowingBenefits(
+    echoKnowingState,
+    echoQuestState.mirrorShards,
+  );
   const maxHearts =
     activeCharacter === "trickster_phantom"
       ? phantomHealthCap
+      : activeCharacter === "trickster_gambit" &&
+          gambitMaxHeartsOverride !== null
+        ? gambitMaxHeartsOverride
+      : activeCharacter === "trickster_echo" &&
+          !isOnlineVersus &&
+          echoKnowingBenefits.maxHearts !== null
+        ? echoKnowingBenefits.maxHearts
+      : activeCharacter === "trickster_hex" && hexState.godMode
+        ? hexState.godMaxHearts
       : isOnlineVersus && versusServerMaxHearts !== null
       ? versusServerMaxHearts
       : localMaxHearts;
+  useEffect(() => {
+    if (!running || activeCharacter !== "trickster_echo") {
+      echoTrackedHeartsRef.current = hearts;
+      echoHeartTrackingActiveRef.current = false;
+      return;
+    }
+    if (!echoHeartTrackingActiveRef.current) {
+      echoTrackedHeartsRef.current = hearts;
+      echoHeartTrackingActiveRef.current = true;
+      return;
+    }
+    const healed = Math.max(0, hearts - echoTrackedHeartsRef.current);
+    echoTrackedHeartsRef.current = hearts;
+    if (healed <= 0) return;
+    const progress = {
+      ...echoProgressRef.current,
+      totalHeartsHealed:
+        echoProgressRef.current.totalHeartsHealed + healed,
+    };
+    echoProgressRef.current = progress;
+    setEchoProgress(progress);
+  }, [activeCharacter, hearts, running]);
+  const echoChargeStartedAt = echoKnowingState.chargingSinceMs;
+  useEffect(() => {
+    if (echoChargeStartedAt === null) return;
+    const tick = () => {
+      const progress = getEchoKnowingChargeProgress(
+        echoKnowingStateRef.current,
+        Date.now(),
+      );
+      setEchoChargePercent(progress * 100);
+      if (progress < 1) return;
+      const completed = completeEchoKnowingCharge(
+        echoKnowingStateRef.current,
+        Date.now(),
+      );
+      echoKnowingStateRef.current = completed;
+      setEchoKnowingState(completed);
+      setEchoChargePercent(100);
+      setPaused(false);
+      if (!isOnlineVersus) {
+        state.current.hearts = 8;
+        setHearts(8);
+      }
+      setAbilityStateVersion((value) => value + 1);
+      setAbilityNotice(
+        isOnlineVersus
+          ? "THE KNOWING AWAKENED · ONLINE REFLECTION AWAITS SERVER RULES"
+          : "THE KNOWING AWAKENED · 8 HP · DAMAGE -80%",
+      );
+    };
+    tick();
+    const timer = window.setInterval(tick, 100);
+    return () => window.clearInterval(timer);
+  }, [echoChargeStartedAt, isOnlineVersus]);
+  useEffect(() => {
+    if (echoKnowingState.realmUntilMs <= 0) return;
+    const delay = Math.max(0, echoKnowingState.realmUntilMs - Date.now());
+    const timer = window.setTimeout(() => {
+      if (echoKnowingStateRef.current.realmUntilMs !== echoKnowingState.realmUntilMs)
+        return;
+      const settled = {
+        ...echoKnowingStateRef.current,
+        realmUntilMs: 0,
+      };
+      echoKnowingStateRef.current = settled;
+      setEchoKnowingState(settled);
+      setAbilityStateVersion((value) => value + 1);
+      setAbilityNotice("MIRROR REALM CLOSED");
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [echoKnowingState.realmUntilMs]);
+  const cancelEchoKnowingHold = useCallback(() => {
+    const current = echoKnowingStateRef.current;
+    if (current.chargingSinceMs === null || current.awakened) return;
+    const cancelled = cancelEchoKnowingCharge(current);
+    echoKnowingStateRef.current = cancelled;
+    setEchoKnowingState(cancelled);
+    setEchoChargePercent(0);
+    setPaused(isVersusRun && versusPhase === "intermission");
+    setAbilityNotice("THE KNOWING · HOLD CANCELLED");
+  }, [isVersusRun, versusPhase]);
   const phantomNightActive =
     activeCharacter === "trickster_phantom" &&
     !phantomLord &&
@@ -2679,6 +3201,34 @@ export default function Home() {
     activeCharacterDefinition.rarity,
   );
   const activeWeaponScoreMultiplier = 1 + activeWeaponScoreBonus;
+  const getActiveGambitEffects = useCallback((
+    targetWave: number,
+    currentHearts: number,
+  ) =>
+    gambitRewardSchedulesRef.current.reduce(
+      (combined, schedule) => {
+        const effect = getGambitWaveEffects(
+          schedule,
+          targetWave,
+          currentHearts,
+        );
+        return {
+          scoreMultiplier:
+            combined.scoreMultiplier * effect.scoreMultiplier,
+          damageMultiplier:
+            combined.damageMultiplier * effect.damageMultiplier,
+          invincible: combined.invincible || effect.invincible,
+          sentObstacleMultiplier:
+            combined.sentObstacleMultiplier * effect.sentObstacleMultiplier,
+        };
+      },
+      {
+        scoreMultiplier: 1,
+        damageMultiplier: 1,
+        invincible: false,
+        sentObstacleMultiplier: 1,
+      },
+    ), []);
   useEffect(() => {
     const awardUserId = userIdRef.current;
     if (
@@ -2883,6 +3433,48 @@ export default function Home() {
     },
     [],
   );
+  useEffect(() => {
+    if (
+      !isVersusRun ||
+      activeCharacter !== "misc_mimic" ||
+      !versusOpponentCharacter
+    )
+      return;
+    const opponentDefinition = CHARACTER_ROSTER.find(
+      (character) => character.key === versusOpponentCharacter,
+    );
+    if (!opponentDefinition) return;
+    if (opponentDefinition.rarity === "mythic") {
+      if (
+        mimicSelectedAbilities.length < 2 &&
+        abilityChoice?.kind !== "mimic-passives"
+      ) {
+        setPaused(true);
+        setAbilityChoice({
+          kind: "mimic-passives",
+          options: [...MIMIC_PASSIVE_KEYS],
+          selected: [],
+        });
+        showAbilityNotice(
+          "COPYCAT · MYTHIC RIVAL · CHOOSE TWO RARE-OR-LOWER PASSIVES",
+          1600,
+        );
+      }
+      return;
+    }
+    setRunCharacterOverride(versusOpponentCharacter);
+    showAbilityNotice(
+      `COPYCAT · ${opponentDefinition.name.toUpperCase()} COPIED`,
+      1500,
+    );
+  }, [
+    abilityChoice,
+    activeCharacter,
+    isVersusRun,
+    mimicSelectedAbilities.length,
+    showAbilityNotice,
+    versusOpponentCharacter,
+  ]);
   const queueGemClaim = useCallback(
     (contextId: string, pickupId: number, requestUserId: string) => {
       const claim = async () => {
@@ -3106,7 +3698,9 @@ export default function Home() {
       const restoring = restoredWave !== undefined;
       const now = Date.now();
       firstGuardWaveRef.current = restoring ? restoredWave : 0;
-      hammerBreakWaveRef.current = restoring ? restoredWave : 0;
+      hammerCooldownUntilRef.current = restoring
+        ? now + HAMMER_COOLDOWN_MS
+        : 0;
       sentinelLastStandUsedRef.current = restoring;
       phantomPhaseWaveRef.current = restoring ? restoredWave : 0;
       scoreCarryRef.current = 0;
@@ -3145,8 +3739,6 @@ export default function Home() {
       gemStreakRef.current = 0;
       gemStreakResetPendingRef.current = false;
       orbitCooldownRemainingRef.current = restoring ? 3000 : 0;
-      cometChargeRemainingRef.current = 8000;
-      cometChargedRef.current = false;
       rogueGrazeCooldownUntilRef.current = restoring ? now + 2500 : 0;
       rogueGrazeMeterRef.current = 0;
       rogueGrazedItemIdsRef.current.clear();
@@ -3178,11 +3770,6 @@ export default function Home() {
       flickerShieldWaveRef.current = restoring ? restoredWave : 0;
       switchLastDirectionRef.current = 0;
       switchShieldCooldownUntilRef.current = restoring ? now + 2000 : 0;
-      gambitBoostRemainingRef.current = 0;
-      gambitCooldownUntilRef.current = restoring ? now + 2500 : 0;
-      echoGrazeCooldownUntilRef.current = restoring ? now + 2000 : 0;
-      mirageShieldCooldownUntilRef.current = restoring ? now + 2500 : 0;
-      hexMoveCountRef.current = 0;
       wardenBlockWaveRef.current = restoring ? restoredWave : 0;
       citadelBlockWaveRef.current = restoring ? restoredWave : 0;
       bastionChargeRemainingRef.current = 20000;
@@ -3224,6 +3811,9 @@ export default function Home() {
       flareBurnCountRef.current = 0;
       vialAllegianceUntilRef.current = 0;
       vialUsedRef.current = restoring;
+      vialCooldownUntilRef.current = restoring
+        ? now + VIAL_ENDLESS_COOLDOWN_MS
+        : 0;
       mirageUsedWaveRef.current = restoring ? restoredWave : 0;
       obstacleFreezeUntilRef.current = 0;
       lanternCooldownUntilRef.current = restoring ? now + 10000 : 0;
@@ -3231,30 +3821,280 @@ export default function Home() {
       scoutSnowflakeHealReadyRef.current = false;
       scoutCooldownUntilRef.current = restoring ? now + 50000 : 0;
       dragChainRef.current = null;
+      dragUsedWaveRef.current = restoring ? restoredWave : 0;
       nomadSurvivalUsedRef.current = restoring;
       tinkerInspirationRef.current = 0;
       tinkerClickedSpikeIdsRef.current.clear();
       rangerCooldownUntilRef.current = restoring ? now + 30000 : 0;
       brokerFundsRef.current = { gems: 0, coins: 0, melons: 0 };
-      prospectorNoticeWaveRef.current = 0;
+      prospectorWarningRef.current = [];
+      scribeSpawnCountsRef.current = {};
       weaverSnowflakeCountRef.current = 0;
       weaverJacketRef.current = false;
       weaverHealWaveRef.current = 0;
       weaverHealedAmountRef.current = 0;
       harvesterCountsRef.current = { gems: 0, coins: 0, melons: 0 };
       harvesterCooldownUntilRef.current = 0;
-      wildcardBuffRef.current = null;
+      // Muse's challenge result is not persisted yet, so a restored run must
+      // offer the challenge again instead of leaving E permanently unusable.
+      museChallengeUsedRef.current = false;
+      museMixStartedAtRef.current = 0;
+      museMixUntilRef.current = 0;
+      museMixCooldownUntilRef.current = 0;
+      museMixHealPulsesRef.current = 0;
+      const abilitySeed = `${userIdRef.current ?? "guest"}:${now}`;
+      wildcardStateRef.current = createWildcardState(abilitySeed);
+      wildcardIgnoredHitsRef.current = 0;
+      wildcardPermanentEffectRef.current = null;
+      gambitPermanentDamageMultiplierRef.current = 1;
+      gambitPermanentScoreMultiplierRef.current = 1;
+      gambitMaxHeartsRef.current = null;
+      gambitRevivesRef.current = 0;
+      gambitStateRef.current = createGambitState(abilitySeed);
+      onlineGambitBusyRef.current = false;
+      gambitRewardSchedulesRef.current = [];
+      gambitPendingDrawWaveRef.current = 0;
+      gambitDiscardRequiredRef.current = 0;
+      gambitInvincibleThroughWaveRef.current = 0;
+      const freshEchoProgress: EchoQuestProgress = {
+        highestWaveReached: 0,
+        totalHeartsHealed: 0,
+        totalDamageTaken: 0,
+        allTrickstersUnlocked: false,
+        wavesCompletedAfterUnlockingAllTricksters: 0,
+        ideaCompletedByGameRule: false,
+        allCharactersUnlocked: false,
+      };
+      echoProgressRef.current = freshEchoProgress;
+      echoQuestStateRef.current = createEchoQuestState();
+      const freshEchoKnowing = createEchoKnowingState();
+      echoKnowingStateRef.current = freshEchoKnowing;
+      echoTrackedHeartsRef.current = state.current.hearts;
+      echoHeartTrackingActiveRef.current = false;
+      const freshHexState = createHexState();
+      hexStateRef.current = freshHexState;
+      hexVoidCutStateRef.current = createHexVoidCutState();
+      if (hexThroneTimerRef.current) {
+        clearTimeout(hexThroneTimerRef.current);
+        hexThroneTimerRef.current = null;
+      }
+      const freshHeatfeast = createHeatfeastState();
+      heatfeastStateRef.current = freshHeatfeast;
+      heatfeastConsumeBusyRef.current = false;
+      cometRemovalQueueRef.current = { wave: 0, counts: {} };
+      cometRemovalReceiptsRef.current = [];
+      cometRemovalBusyRef.current = false;
+      mirageInvasionRef.current = null;
+      mirageDamageBusyRef.current = false;
+      mirageActionBusyRef.current = false;
       setAbilityChoice(null);
       setTonicIngredients(0);
       setTonicPotion(0);
       setOracleProphecies([]);
       setOracleCompleted(0);
       setPulseGame(null);
+      setMuseGame(null);
+      setMuseReward(null);
+      setMimicSelectedAbilities([]);
+      setScribeHazard(null);
+      setProspectorWarnings([]);
+      setWildcardCard(null);
+      setWildcardEffect(null);
+      setGambitState(gambitStateRef.current);
+      setGambitPanelOpen(false);
+      setGambitSelectedCards([]);
+      setGambitRunReward(null);
+      setGambitMaxHeartsOverride(null);
+      setEchoQuestState(echoQuestStateRef.current);
+      setEchoSelectedAbilities([]);
+      setEchoProgress(freshEchoProgress);
+      setEchoKnowingState(freshEchoKnowing);
+      setEchoChargePercent(0);
+      setHexState(freshHexState);
+      setHexVoid(null);
+      setHeatfeastState(freshHeatfeast);
+      setMirageInvasion(null);
+      setVersusOpponentMirageUntil(0);
       setWaveForecast([]);
       setWaveForecastCollapsed(false);
       setAbilityStateVersion((value) => value + 1);
     },
     [],
+  );
+  const applyGambitHandReward = useCallback(
+    (
+      hand: NonNullable<ReturnType<typeof evaluateGambitHand>>,
+      rewardWave: number,
+      recordSchedule = true,
+    ) => {
+      const reward = getGambitReward(hand);
+      const schedule = getGambitRewardSchedule(hand, rewardWave);
+      if (recordSchedule)
+        gambitRewardSchedulesRef.current = [
+          ...gambitRewardSchedulesRef.current,
+          schedule,
+        ];
+      const immediate = reward.immediate;
+      if (!isOnlineVersus && immediate?.setMaxHearts !== undefined) {
+        gambitMaxHeartsRef.current = immediate.setMaxHearts;
+        setGambitMaxHeartsOverride(immediate.setMaxHearts);
+      }
+      if (immediate?.healToFull) {
+        const target = isOnlineVersus
+          ? Math.min(
+              versusServerMaxHearts ?? maxHearts,
+              gambitMaxHeartsRef.current ?? maxHearts,
+            )
+          : gambitMaxHeartsRef.current ?? maxHearts;
+        state.current.hearts = target;
+        setHearts(target);
+      } else if (immediate?.setHearts !== undefined) {
+        const target = isOnlineVersus
+          ? Math.min(
+              immediate.setHearts,
+              versusServerMaxHearts ?? maxHearts,
+            )
+          : immediate.setHearts;
+        state.current.hearts = target;
+        setHearts(target);
+      }
+      setGambitRunReward(schedule);
+      if (schedule.invincibilityWindow)
+        gambitInvincibleThroughWaveRef.current = Math.max(
+          gambitInvincibleThroughWaveRef.current,
+          schedule.invincibilityWindow.throughWave,
+        );
+      if (!isOnlineVersus && reward.permanent?.setMaxHearts !== undefined) {
+        gambitMaxHeartsRef.current = reward.permanent.setMaxHearts;
+        setGambitMaxHeartsOverride(reward.permanent.setMaxHearts);
+      }
+      if (reward.permanent?.damageMultiplier !== undefined)
+        gambitPermanentDamageMultiplierRef.current = Math.min(
+          gambitPermanentDamageMultiplierRef.current,
+          reward.permanent.damageMultiplier,
+        );
+      if (reward.permanent?.scoreMultiplier !== undefined)
+        gambitPermanentScoreMultiplierRef.current = Math.max(
+          gambitPermanentScoreMultiplierRef.current,
+          reward.permanent.scoreMultiplier,
+        );
+      if (reward.permanent?.revivesAtFullHealth !== undefined)
+        gambitRevivesRef.current = Math.max(
+          gambitRevivesRef.current,
+          reward.permanent.revivesAtFullHealth,
+        );
+      if (isBotPractice && reward.versus) {
+        const coins = resolveGambitVersusCoins(
+          hand,
+          versusPointsRef.current,
+          botAttackPointsRef.current,
+        );
+        versusPointsRef.current = coins.selfCoins;
+        botAttackPointsRef.current = coins.opponentCoins;
+        setVersusPoints(coins.selfCoins);
+        if (coins.stolenCoins > 0 || coins.doubledCoins > 0)
+          showAbilityNotice(
+            `COUNTING CARDS · +${coins.stolenCoins.toFixed(2)} STOLEN · +${coins.doubledCoins.toFixed(2)} DOUBLED`,
+            1800,
+          );
+      }
+      setAbilityStateVersion((value) => value + 1);
+      showAbilityNotice(`COUNTING CARDS · ${reward.label}`, 2200);
+    },
+    [
+      isBotPractice,
+      isOnlineVersus,
+      maxHearts,
+      showAbilityNotice,
+      versusServerMaxHearts,
+    ],
+  );
+  const applyOnlineGambitPayload = useCallback(
+    (payload: OnlineGambitPayload, applyFreshReward = false) => {
+      const hand = Array.isArray(payload.hand)
+        ? payload.hand.filter(
+            (card): card is StandardCard =>
+              Boolean(card) &&
+              typeof card.id === "string" &&
+              ["clubs", "diamonds", "hearts", "spades"].includes(card.suit) &&
+              ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"].includes(card.rank),
+          )
+        : [];
+      const nextState: GambitState = {
+        seed: "server-owned",
+        cycle: Math.max(0, Math.floor(Number(payload.deck_cycle) || 0)),
+        drawPile: [],
+        discardPile: [],
+        hand,
+      };
+      gambitStateRef.current = nextState;
+      setGambitState(nextState);
+      const schedules = (payload.reward_history ?? []).flatMap((entry) => {
+        const rewardHand = asGambitHand(entry.hand);
+        const rewardWave = Math.max(1, Math.floor(Number(entry.wave) || 0));
+        return rewardHand && rewardWave > 0
+          ? [getGambitRewardSchedule(rewardHand, rewardWave)]
+          : [];
+      });
+      gambitRewardSchedulesRef.current = schedules;
+      setGambitRunReward(schedules.at(-1) ?? null);
+      const selfCoins = Number(payload.self_coins);
+      if (Number.isFinite(selfCoins))
+        applyAuthoritativeVersusPoints(Math.max(0, selfCoins));
+      const rewardHand = asGambitHand(payload.reward_hand);
+      const rewardWave = Math.max(1, Math.floor(Number(payload.reward_wave) || 0));
+      if (applyFreshReward && payload.reward_applied && rewardHand)
+        applyGambitHandReward(rewardHand, rewardWave, false);
+      setAbilityStateVersion((value) => value + 1);
+    },
+    [applyAuthoritativeVersusPoints, applyGambitHandReward],
+  );
+  const drawOnlineGambitWave = useCallback(
+    async (targetWave: number) => {
+      const matchId = versusMatchRef.current;
+      if (!matchId || onlineGambitBusyRef.current) return;
+      onlineGambitBusyRef.current = true;
+      setPaused(true);
+      try {
+        const { data, error } = await supabase.rpc("draw_1v1_gambit_wave", {
+          p_match_id: matchId,
+          p_wave: targetWave,
+        });
+        if (versusMatchRef.current !== matchId) return;
+        if (error) {
+          setVersusResult(error.message);
+          setPaused(false);
+          return;
+        }
+        const payload = (data ?? {}) as OnlineGambitPayload;
+        applyOnlineGambitPayload(payload, true);
+        const required = Math.max(
+          0,
+          Math.floor(Number(payload.discard_required) || 0),
+        );
+        if (required > 0) {
+          gambitPendingDrawWaveRef.current = targetWave;
+          gambitDiscardRequiredRef.current = required;
+          setGambitSelectedCards([]);
+          setGambitPanelOpen(true);
+          showAbilityNotice(
+            `COUNTING CARDS · DISCARD ${required} TO DRAW`,
+            1800,
+          );
+        } else {
+          gambitPendingDrawWaveRef.current = 0;
+          gambitDiscardRequiredRef.current = 0;
+          setPaused(false);
+        }
+      } catch {
+        if (versusMatchRef.current === matchId) {
+          setVersusResult("COUNTING CARDS DATABASE SETUP IS MISSING");
+          setPaused(false);
+        }
+      } finally {
+        onlineGambitBusyRef.current = false;
+      }
+    }, [applyOnlineGambitPayload, showAbilityNotice],
   );
   const announceWave = useCallback(
     (
@@ -3263,25 +4103,29 @@ export default function Home() {
       characterOverride?: string,
       mapOverride?: MapId,
       versusRunOverride?: boolean,
+      scribeHazardOverride?: Kind | null,
     ) => {
       const announcedCharacter = characterOverride ?? activeCharacter;
       const announcedAbility =
         CHARACTER_ABILITIES[announcedCharacter as CharacterKey] ??
         CHARACTER_ABILITIES.runner_ace;
       oracleHitCountRef.current = 0;
+      scribeSpawnCountsRef.current = {};
       const forecastMapId = mapOverride ?? activeMapId;
       const forecastVersusRun = versusRunOverride ?? isVersusRun;
-      const sameHazardLimit =
-        announcedCharacter === "misc_muse"
-          ? 2
-          : announcedCharacter === "misc_scribe"
-            ? 3
-            : MAX_SAME_HAZARD_STREAK;
+      const sameHazardLimit = MAX_SAME_HAZARD_STREAK;
       const plannedKinds = buildWaveHazardPlan(
         forecastMapId,
         forecastVersusRun,
         sameHazardLimit,
         ambientHazardStreakRef.current,
+        Math.random,
+        announcedCharacter === "misc_scribe"
+          ? (scribeHazardOverride ?? scribeHazard)
+          : null,
+        announcedCharacter === "misc_scribe"
+          ? getScribeHazardCap(number)
+          : Number.POSITIVE_INFINITY,
       );
       waveSpawnPlanRef.current = {
         wave: number,
@@ -3399,6 +4243,32 @@ export default function Home() {
           1500,
         );
       }
+      if (
+        applyCharacterEffects &&
+        announcedCharacter === "trickster_gambit"
+      ) {
+        if (isOnlineVersus && versusMatchRef.current) {
+          void drawOnlineGambitWave(number);
+        } else {
+          const draw = drawGambitWave(gambitStateRef.current);
+          if (!draw.ok) {
+            gambitPendingDrawWaveRef.current = number;
+            gambitDiscardRequiredRef.current = draw.discardRequired;
+            setGambitSelectedCards([]);
+            setGambitPanelOpen(true);
+            setPaused(true);
+            showAbilityNotice(
+              `COUNTING CARDS · DISCARD ${draw.discardRequired} TO DRAW`,
+              1800,
+            );
+          } else {
+            gambitStateRef.current = draw.state;
+            setGambitState(draw.state);
+            const hand = evaluateGambitHand(draw.state.hand);
+            if (hand) applyGambitHandReward(hand, number);
+          }
+        }
+      }
       void audioEngine.playSfx("wave");
       setWaveMessage(`WAVE ${number}`);
       setWavePause(true);
@@ -3423,26 +4293,35 @@ export default function Home() {
           grantInvincibility(10000);
           showAbilityNotice("MERGED NO-HIT REWARD · 10 SECOND SHIELD", 1500);
         }
-        if (announcedCharacter === "trickster_wildcard") {
-          const matchId = versusMatchRef.current;
-          const seed = `${matchId ?? "solo"}:${userIdRef.current ?? "guest"}:${number}`;
-          let hash = 0;
-          for (let index = 0; index < seed.length; index += 1)
-            hash = (hash * 31 + seed.charCodeAt(index)) | 0;
-          const roll = matchId
-            ? Math.abs(hash) % 3
-            : Math.floor(Math.random() * 3);
-          const buff = roll === 0 ? "score" : roll === 1 ? "gems" : "slow";
-          wildcardBuffRef.current = buff;
-          if (applyCharacterEffects)
-            showAbilityNotice(
-              buff === "score"
-                ? "LUCKY DRAW · SCORE ×1.15"
-                : buff === "gems"
-                  ? "LUCKY DRAW · GEM CHANCE ×1.50"
-                  : "LUCKY DRAW · HAZARDS 15% SLOWER",
-              1800,
+        if (hasCharacterAbility("trickster_wildcard")) {
+          const initialState =
+            wildcardStateRef.current ??
+            createWildcardState(
+              `${versusMatchRef.current ?? "solo"}:${userIdRef.current ?? "guest"}`,
             );
+          const draw = drawWildcard(initialState);
+          wildcardStateRef.current = draw.state;
+          wildcardPermanentEffectRef.current = draw.permanentEffect;
+          const permanent = draw.permanentEffect;
+          const combinedEffect: WildcardRoundEffect = {
+            scoreMultiplier:
+              draw.roundEffect.scoreMultiplier *
+              (permanent?.scoreMultiplier ?? 1),
+            damageMultiplier:
+              draw.roundEffect.damageMultiplier *
+              (permanent?.damageMultiplier ?? 1),
+            ignoredHits:
+              draw.roundEffect.ignoredHits + (permanent?.ignoredHits ?? 0),
+            label: permanent
+              ? `${draw.roundEffect.label} · ACE + JOKER PERMANENT`
+              : draw.roundEffect.label,
+          };
+          wildcardIgnoredHitsRef.current = combinedEffect.ignoredHits;
+          setWildcardCard(draw.card);
+          setWildcardEffect(combinedEffect);
+          setAbilityStateVersion((value) => value + 1);
+          if (applyCharacterEffects)
+            showAbilityNotice(`LUCKY DRAW · ${combinedEffect.label}`, 1900);
         }
         if (announcedCharacter === "trickster_phantom") {
           const isLord = phantomLordRef.current;
@@ -3481,8 +4360,13 @@ export default function Home() {
     [
       activeCharacter,
       activeMapId,
+      applyGambitHandReward,
+      drawOnlineGambitWave,
       grantInvincibility,
+      hasCharacterAbility,
+      isOnlineVersus,
       isVersusRun,
+      scribeHazard,
       showAbilityNotice,
     ],
   );
@@ -3516,18 +4400,22 @@ export default function Home() {
       progressionAwardedRunIdRef.current = null;
     }
     const runMapId = mapOverride ?? activeMapId;
+    const nextRunIsTestMode = trackProgression && adminTestModeActive;
+    runIsTestModeRef.current = nextRunIsTestMode;
+    setRunIsTestMode(nextRunIsTestMode);
     const runMapRules = getMapRules(runMapId);
     const candidateCharacter = availableCharacter;
     const candidateClass = getCharacterClassKey(candidateCharacter);
     const candidateBlockedByMode =
-      mode === "impossible" ||
-      (mode === "hardcore" &&
-        (candidateClass === "medic" || candidateClass === "tank"));
+      !nextRunIsTestMode &&
+      (mode === "impossible" ||
+        (mode === "hardcore" &&
+          (candidateClass === "medic" || candidateClass === "tank")));
     const runCharacter =
       candidateBlockedByMode
         ? "runner_ace"
-        : runMapRules.forcedCharacterId ??
-          (isCharacterClassAllowed(runMapId, candidateClass)
+        : (!nextRunIsTestMode ? runMapRules.forcedCharacterId : null) ??
+          (nextRunIsTestMode || isCharacterClassAllowed(runMapId, candidateClass)
             ? candidateCharacter
             : "runner_ace");
     const runClass = getCharacterClassKey(runCharacter);
@@ -3589,6 +4477,19 @@ export default function Home() {
       waveAnnouncementTimerRef.current = null;
     }
     resetCharacterAbilityState();
+    if (runCharacter === "trickster_echo") {
+      const progress = {
+        ...echoProgressRef.current,
+        allTrickstersUnlocked: CLASS_CHARACTERS.trickster.every((character) =>
+          canUseCharacter(character.key),
+        ),
+        allCharactersUnlocked: CHARACTER_ROSTER.every((character) =>
+          canUseCharacter(character.key),
+        ),
+      };
+      echoProgressRef.current = progress;
+      setEchoProgress(progress);
+    }
     botAttackPointsRef.current = 0;
     botScoreRef.current = 0;
     botScoreCarryRef.current = 0;
@@ -3607,11 +4508,20 @@ export default function Home() {
     if (runCharacter === "medic_oracle") {
       setPaused(true);
       setAbilityChoice({ kind: "oracle-prophecy" });
+    } else if (runCharacter === "misc_mimic" && mapOverride === undefined) {
+      setPaused(true);
+      setAbilityChoice({
+        kind: "mimic-passives",
+        options: [...MIMIC_PASSIVE_KEYS],
+        selected: [],
+      });
     }
   }, [
     activeMapId,
+    adminTestModeActive,
     announceWave,
     availableCharacter,
+    canUseCharacter,
     clearFreezeEffect,
     mode,
     resetCharacterAbilityState,
@@ -3632,6 +4542,8 @@ export default function Home() {
     deferredAttackGroupsRef.current = [];
     setDeferredAttackGroups([]);
     setLastRunXpBreakdown(null);
+    runIsTestModeRef.current = false;
+    setRunIsTestMode(false);
     setRunning(false);
     setPaused(false);
     setPauseMenuOpen(false);
@@ -3692,6 +4604,41 @@ export default function Home() {
       setVersusIntermissionReady(false);
     }
   };
+  const settleBrokerAtRunEnd = useCallback(() => {
+    if (!hasCharacterAbility("misc_broker")) return;
+    const funds = brokerFundsRef.current;
+    if (funds.gems <= 0 && funds.coins <= 0 && funds.melons <= 0) return;
+
+    // Ranked/online balances are owned by the server. Online pickups settle
+    // directly as they are collected, so a stale client fund must never be
+    // added to (and then overwritten by) the authoritative balance.
+    if (isOnlineVersus) {
+      brokerFundsRef.current = { gems: 0, coins: 0, melons: 0 };
+      setAbilityStateVersion((value) => value + 1);
+      return;
+    }
+
+    const settled = settleBrokerFundsOnDeath(funds, {
+      gems: gemsRef.current,
+      attackPoints: versusPointsRef.current,
+      score: scoreRef.current,
+    });
+    brokerFundsRef.current = settled.funds;
+    const nextGems = runIsTestModeRef.current
+      ? gemsRef.current
+      : settled.totals.gems;
+    gemsRef.current = nextGems;
+    versusPointsRef.current = settled.totals.attackPoints;
+    scoreRef.current = settled.totals.score;
+    setGems(nextGems);
+    setVersusPoints(settled.totals.attackPoints);
+    setScore(settled.totals.score);
+    setAbilityStateVersion((value) => value + 1);
+    showAbilityNotice(
+      `BROKER SETTLED · +${settled.payout.gems.toFixed(2)} ${runIsTestModeRef.current ? "TEST GEMS" : "GEMS"} · +${settled.payout.attackPoints.toFixed(2)} COINS · +${Math.floor(settled.payout.score).toLocaleString()} SCORE`,
+      1900,
+    );
+  }, [hasCharacterAbility, isOnlineVersus, showAbilityNotice]);
   const applyCharacterSelfDamage = useCallback(
     (damage: number, notice: string) => {
       const safeDamage = Math.max(0, damage);
@@ -3711,6 +4658,7 @@ export default function Home() {
         );
       }, 480);
       if (nextHearts > 0) return false;
+      settleBrokerAtRunEnd();
       setRunning(false);
       setPaused(false);
       setPauseMenuOpen(false);
@@ -3728,14 +4676,20 @@ export default function Home() {
       } else if (guest) {
         gemsRef.current = 0;
         setGems(0);
-      } else {
+      } else if (!runIsTestModeRef.current) {
         const best = Math.max(highScoreRef.current, scoreRef.current);
         highScoreRef.current = best;
         setHighScore(best);
       }
       return true;
     },
-    [guest, isBotPractice, isOnlineVersus, showAbilityNotice],
+    [
+      guest,
+      isBotPractice,
+      isOnlineVersus,
+      settleBrokerAtRunEnd,
+      showAbilityNotice,
+    ],
   );
   const applyDirectMapDamage = useCallback(
     (damage: number, notice: string) => {
@@ -3756,6 +4710,7 @@ export default function Home() {
       setFlash(damage <= 0.5 ? "life-half" : "life-lost");
       showAbilityNotice(notice, 900);
       if (nextHearts <= 0) {
+        settleBrokerAtRunEnd();
         setRunning(false);
         setPaused(false);
         setPauseMenuOpen(false);
@@ -3772,7 +4727,7 @@ export default function Home() {
         } else if (guest) {
           gemsRef.current = 0;
           setGems(0);
-        } else {
+        } else if (!runIsTestModeRef.current) {
           const best = Math.max(highScoreRef.current, scoreRef.current);
           highScoreRef.current = best;
           setHighScore(best);
@@ -3790,6 +4745,7 @@ export default function Home() {
       playScope,
       preserveFreezeThroughHit,
       queueEndlessGemStreakReset,
+      settleBrokerAtRunEnd,
       showAbilityNotice,
     ],
   );
@@ -3913,13 +4869,11 @@ export default function Home() {
           showAbilityNotice("FLOW STRIDE · 0.25 SECOND SHIELD", 650);
         }
       }
-      if (
-        activeCharacter === "tank_bastion"
-      ) {
+      if (hasCharacterAbility("tank_bastion")) {
         bastionChargeRemainingRef.current = 20000;
         bastionArmorChargedRef.current = false;
       }
-      if (activeCharacter === "runner_drift") {
+      if (hasCharacterAbility("runner_drift")) {
         driftStackPercentRef.current =
           now - driftLastMoveAtRef.current <= 500
             ? Math.min(2, driftStackPercentRef.current + 0.15)
@@ -3931,34 +4885,41 @@ export default function Home() {
           700,
         );
       }
-      if (activeCharacter === "trickster_switch") {
+      if (hasCharacterAbility("trickster_switch")) {
         switchLaneChangesRef.current += 1;
         if (switchLaneChangesRef.current >= 100)
           window.setTimeout(() => grantInvincibility(250), 10);
         switchLastDirectionRef.current = direction;
         setAbilityStateVersion((value) => value + 1);
       }
-      if (activeCharacter === "trickster_hex") {
-        hexMoveCountRef.current += 1;
-        if (hexMoveCountRef.current % 3 === 0) {
-          showAbilityNotice("VOID CUT · THIRD MOVE", 900);
-          setItems((current) => {
-            const target = current
-              .filter(
-                (item) =>
-                  item.lane === destination &&
-                  item.y >= -10 &&
-                  item.y < 91 &&
-                  item.kind !== "gem" &&
-                  item.kind !== "coin" &&
-                  item.kind !== "melon" &&
-                  item.kind !== "snowflake",
-              )
-              .sort((left, right) => right.y - left.y)[0];
-            return target
-              ? current.filter((item) => item.id !== target.id)
-              : current;
-          });
+      if (activeCharacter === "trickster_hex" && !isOnlineVersus) {
+        const voidCut = advanceHexVoidCut(
+          hexVoidCutStateRef.current,
+          hexStateRef.current.damnation,
+          now,
+        );
+        hexVoidCutStateRef.current = voidCut.state;
+        setAbilityStateVersion((value) => value + 1);
+        if (voidCut.activated) {
+          const target = itemsSnapshotRef.current
+            .filter(
+              (item) =>
+                item.lane === destination &&
+                item.y >= -10 &&
+                item.y < 91 &&
+                isHazardKind(item.kind),
+            )
+            .sort((left, right) => right.y - left.y)[0];
+          if (target)
+            setItems((current) =>
+              current.filter((item) => item.id !== target.id),
+            );
+          showAbilityNotice(
+            target
+              ? `VOID CUT · ${target.kind.toUpperCase()} ERASED`
+              : "VOID CUT · NO OBSTACLE IN THE NEW LANE",
+            900,
+          );
         }
       }
     },
@@ -4056,12 +5017,32 @@ export default function Home() {
     ],
   );
   const triggerCharacterAction = useCallback(() => {
+    const cometIntermission =
+      activeCharacter === "runner_comet" &&
+      isVersusRun &&
+      state.current.running &&
+      state.current.paused &&
+      versusPhase === "intermission" &&
+      versusIntermissionReady;
+    if (cometIntermission && !abilityChoice) {
+      setAbilityChoice({
+        kind: "comet-remove",
+        options: ["barrel", "log", "snowflake", "car", "spikes", "rock"],
+        targetWave: wave,
+      });
+      showAbilityNotice(
+        "COMET DEFENSE · REMOVE NATURAL HAZARDS FROM THE NEXT WAVE",
+        1200,
+      );
+      return;
+    }
     if (
       !state.current.running ||
       state.current.paused ||
       state.current.wavePause ||
       abilityChoice ||
-      pulseGame
+      pulseGame ||
+      museGame
     )
       return;
     if (
@@ -4151,6 +5132,23 @@ export default function Home() {
       void audioEngine.playSfx("shield");
       return;
     }
+    // Mimic owns the E key itself. Borrowed passives must never intercept the
+    // picker (Dash is also checked through hasCharacterAbility below).
+    if (activeCharacter === "misc_mimic") {
+      setPaused(true);
+      setAbilityChoice({
+        kind: "mimic-passives",
+        options: [...MIMIC_PASSIVE_KEYS],
+        selected: [...mimicSelectedAbilities],
+      });
+      showAbilityNotice(
+        isVersusRun
+          ? "COPYCAT · CHOOSE TWO PASSIVES WHEN A MYTHIC CANNOT BE COPIED"
+          : "COPYCAT · CHOOSE TWO RARE-OR-LOWER PASSIVES",
+        1200,
+      );
+      return;
+    }
     if (hasCharacterAbility("runner_dash")) {
       if (dashCooldownRemainingRef.current > 0) {
         showAbilityNotice("JET DASH · RECHARGING", 700);
@@ -4163,7 +5161,164 @@ export default function Home() {
       void audioEngine.playSfx("move");
       return;
     }
+    if (activeCharacter === "trickster_gambit") {
+      setGambitSelectedCards([]);
+      setGambitPanelOpen(true);
+      setPaused(true);
+      showAbilityNotice("COUNTING CARDS · GAME PAUSED", 900);
+      return;
+    }
+    if (activeCharacter === "trickster_echo") {
+      const currentQuest = echoQuestStateRef.current.currentQuest;
+      if (currentQuest) {
+        showAbilityNotice(
+          `THE MIRROR · ${ECHO_QUESTS[currentQuest].label} · ${ECHO_QUESTS[currentQuest].requirementLabel}`,
+          1800,
+        );
+        setAbilityStateVersion((value) => value + 1);
+        return;
+      }
+      if (!echoKnowingStateRef.current.awakened) {
+        const charging = beginEchoKnowingCharge(
+          echoKnowingStateRef.current,
+          echoQuestStateRef.current,
+          Date.now(),
+        );
+        if (!charging.ok) {
+          showAbilityNotice("THE KNOWING · MIRROR SHARDS REQUIRED", 900);
+          return;
+        }
+        echoKnowingStateRef.current = charging.state;
+        setEchoKnowingState(charging.state);
+        setEchoChargePercent(0);
+        setPaused(true);
+        showAbilityNotice("THE KNOWING · KEEP HOLDING E FOR 10 SECONDS", 1600);
+        return;
+      }
+      const activated = activateEchoMirrorRealm(
+        echoKnowingStateRef.current,
+        Date.now(),
+      );
+      if (activated === echoKnowingStateRef.current) {
+        showAbilityNotice("MIRROR REALM · ALREADY ACTIVE", 750);
+        return;
+      }
+      echoKnowingStateRef.current = activated;
+      setEchoKnowingState(activated);
+      showAbilityNotice(
+        isOnlineVersus
+          ? "MIRROR REALM · SELF HEALING ACTIVE · ONLINE REFLECTION AWAITS SERVER RULES"
+          : "MIRROR REALM · HITS HEAL 0.5 HP · 10 SECONDS",
+        1600,
+      );
+      setAbilityStateVersion((value) => value + 1);
+      return;
+    }
+    if (activeCharacter === "trickster_hex") {
+      const currentHex = hexStateRef.current;
+      if (currentHex.godMode) {
+        const throne = activateHexThrone(currentHex, wave);
+        if (!throne.ok) {
+          showAbilityNotice("VOID THRONE · USED THIS WAVE", 800);
+          return;
+        }
+        hexStateRef.current = throne.state;
+        setHexState(throne.state);
+        setPaused(true);
+        showAbilityNotice("VOID THRONE · RETREATING FOR 3 SECONDS", 1200);
+        hexThroneTimerRef.current = window.setTimeout(() => {
+          hexThroneTimerRef.current = null;
+          if (!state.current.running) return;
+          setPaused(false);
+          grantInvincibility(throne.invincibilityAfterReturnMs);
+          showAbilityNotice("VOID THRONE · 10 SECOND INVINCIBILITY", 1400);
+        }, throne.retreatDurationMs);
+        return;
+      }
+      const voidEntry = enterHexVoid(currentHex, wave);
+      if (voidEntry.ok) {
+        hexStateRef.current = voidEntry.state;
+        setHexState(voidEntry.state);
+        setHexVoid({
+          endsAt: Date.now() + voidEntry.durationMs,
+          remaining: voidEntry.durationMs,
+          encounter: voidEntry.encounter,
+          collected: 0,
+          hadesDodges: 0,
+        });
+        setPaused(true);
+        showAbilityNotice(
+          voidEntry.encounter === "hades"
+            ? "VOID REALM · HADES AWAITS"
+            : "VOID REALM · COLLECT THE DAMNED",
+          1400,
+        );
+        return;
+      }
+      const souls = summonHexSouls(currentHex);
+      if (souls.ok) {
+        hexStateRef.current = souls.state;
+        setHexState(souls.state);
+        setAbilityStateVersion((value) => value + 1);
+        showAbilityNotice("SOULS OF THE DEAD · 3 HITS BLOCKED · -15 DAMNATION", 1400);
+        return;
+      }
+      showAbilityNotice(
+        wave % 2 === 1
+          ? currentHex.damnation >= 60
+            ? "SOULS OF THE DEAD · ACTIVE SOULS MUST BREAK FIRST"
+            : "VOID REALM · AVAILABLE ON EVEN WAVES"
+          : "VOID REALM · ALREADY USED THIS WAVE",
+        1000,
+      );
+      return;
+    }
+    if (activeCharacter === "runner_comet") {
+      showAbilityNotice(
+        `HEATFEAST · ${Math.floor(heatfeastStateRef.current.stored)} STORED · PRESS R TO CONSUME`,
+        1500,
+      );
+      return;
+    }
+    if (activeCharacter === "misc_muse") {
+      const now = Date.now();
+      if (!museChallengeUsedRef.current) {
+        museChallengeUsedRef.current = true;
+        const keys = ["A", "S", "D", "F"] as const;
+        setPaused(true);
+        setMuseGame({
+          hits: 0,
+          attempts: 0,
+          prompt: keys[Math.floor(Math.random() * keys.length)],
+          endsAt: now + 30000,
+          remaining: 30000,
+        });
+        showAbilityNotice("RHYTHM BREAK · 30 SECOND CHALLENGE", 1200);
+        return;
+      }
+      if (!museReward?.unlocksMuseMix) {
+        showAbilityNotice("RHYTHM BREAK · CHALLENGE ALREADY USED", 800);
+        return;
+      }
+      if (museMixCooldownUntilRef.current > now) {
+        showAbilityNotice("MUSE MIX · RECHARGING", 700);
+        return;
+      }
+      museMixStartedAtRef.current = now;
+      museMixUntilRef.current = now + 30000;
+      museMixCooldownUntilRef.current = now + 75000;
+      museMixHealPulsesRef.current = 0;
+      audioEngine.setTrack("jazz");
+      showAbilityNotice("MUSE MIX · +1 HP EVERY 10 SECONDS · 30 SECONDS", 1500);
+      setAbilityStateVersion((value) => value + 1);
+      return;
+    }
     if (activeCharacter === "tank_hammer") {
+      if (hammerCooldownUntilRef.current > Date.now()) {
+        showAbilityNotice("HAMMER · RECHARGING", 700);
+        return;
+      }
+      hammerCooldownUntilRef.current = Date.now() + HAMMER_COOLDOWN_MS;
       const currentLane = state.current.lane;
       const neighboring = getTrackLanes(activeLaneCount).filter(
         (candidate) => Math.abs(candidate - currentLane) === 1,
@@ -4195,6 +5350,7 @@ export default function Home() {
           : "HAMMER · NO NON-ROCK TARGETS",
         1000,
       );
+      setAbilityStateVersion((value) => value + 1);
       return;
     }
     if (activeCharacter === "tank_anchor") {
@@ -4314,25 +5470,127 @@ export default function Home() {
       void audioEngine.playSfx("shield");
       return;
     }
-    if (activeCharacter === "medic_vial" && !vialUsedRef.current) {
-      vialUsedRef.current = true;
+    if (activeCharacter === "medic_vial") {
+      const now = Date.now();
+      if (
+        (isVersusRun && vialUsedRef.current) ||
+        (!isVersusRun && vialCooldownUntilRef.current > now)
+      ) {
+        showAbilityNotice("SWITCH ALLEGIANCE · RECHARGING", 750);
+        return;
+      }
+      if (isVersusRun) vialUsedRef.current = true;
+      else vialCooldownUntilRef.current = now + VIAL_ENDLESS_COOLDOWN_MS;
       vialAllegianceUntilRef.current = Date.now() + 30000;
       showAbilityNotice("SWITCH ALLEGIANCE · OBSTACLE EFFECTS REVERSED · 30 SECONDS", 1400);
+      setAbilityStateVersion((value) => value + 1);
       return;
     }
-    if (
-      activeCharacter === "trickster_mirage" &&
-      mirageUsedWaveRef.current !== wave
-    ) {
+    if (activeCharacter === "trickster_mirage") {
+      if (mirageActionBusyRef.current) {
+        showAbilityNotice("MIRAGE INVASION · SYNCHRONIZING", 700);
+        return;
+      }
+      const startingLane =
+        state.current.lane === versusOpponentLane
+          ? getTrackLanes(activeLaneCount).find(
+              (candidate) => candidate !== versusOpponentLane,
+            ) ?? state.current.lane
+          : state.current.lane;
+      const invasion = startMirageInvasion({
+        isVersus: isVersusRun,
+        wave,
+        nowMs: Date.now(),
+        mirageLane: startingLane,
+        opponentLane: versusOpponentLane,
+        lastUsedWave:
+          mirageUsedWaveRef.current > 0
+            ? mirageUsedWaveRef.current
+            : null,
+      });
+      if (!invasion.ok) {
+        showAbilityNotice(
+          invasion.reason === "versus-only"
+            ? "MIRAGE INVASION · 1V1 ONLY"
+            : "MIRAGE INVASION · USED THIS WAVE",
+          900,
+        );
+        return;
+      }
+      if (isOnlineVersus && versusMatchRef.current) {
+        const matchId = versusMatchRef.current;
+        mirageActionBusyRef.current = true;
+        setAbilityStateVersion((version) => version + 1);
+        void supabase
+          .rpc("activate_1v1_mirage", {
+            p_match_id: matchId,
+            p_lane_index: startingLane,
+          })
+          .then(({ data, error }) => {
+            mirageActionBusyRef.current = false;
+            if (versusMatchRef.current !== matchId) return;
+            if (error) {
+              setVersusResult(error.message);
+              showAbilityNotice("MIRAGE INVASION · COULD NOT START", 1100);
+              setAbilityStateVersion((version) => version + 1);
+              return;
+            }
+            const now = Date.now();
+            const restoredLane = Number.isInteger(data?.lane_index)
+              ? Math.max(
+                  0,
+                  Math.min(activeLaneCount - 1, Number(data.lane_index)),
+                )
+              : startingLane;
+            const opponentLane = Number.isInteger(data?.opponent_lane_index)
+              ? Math.max(
+                  0,
+                  Math.min(
+                    activeLaneCount - 1,
+                    Number(data.opponent_lane_index),
+                  ),
+                )
+              : versusOpponentLane;
+            const serverInvasion: MirageInvasionState = {
+              ...invasion.state,
+              startedAtMs: parseServerTime(data?.started_at, now),
+              endsAtMs: parseServerTime(data?.ends_at, now + 5000),
+              mirageLane: restoredLane,
+              opponentLane,
+              damageDealt: Math.max(0, Number(data?.damage_dealt) || 0),
+            };
+            mirageUsedWaveRef.current = wave;
+            mirageInvasionRef.current = serverInvasion;
+            setMirageInvasion(serverInvasion);
+            state.current.lane = restoredLane;
+            setLane(restoredLane);
+            setVersusOpponentLane(opponentLane);
+            setVersusResult("");
+            setAbilityStateVersion((version) => version + 1);
+            showAbilityNotice(
+              "MIRAGE INVASION · MATCH THE RIVAL'S LANE TO DEAL DAMAGE",
+              1500,
+            );
+          });
+        return;
+      }
       mirageUsedWaveRef.current = wave;
-      grantInvincibility(5000);
-      showAbilityNotice("MIRAGE INVASION · INVINCIBLE FOR 5 SECONDS", 1200);
-      window.setTimeout(() => {
-        if (!state.current.running) return;
-        state.current.hearts = Math.max(0, state.current.hearts - 1);
-        setHearts(state.current.hearts);
-        showAbilityNotice("MIRAGE RETURN · -1 HP", 900);
-      }, 5000);
+      mirageInvasionRef.current = invasion.state;
+      setMirageInvasion(invasion.state);
+      if (startingLane !== state.current.lane) {
+        state.current.lane = startingLane;
+        setLane(startingLane);
+        if (isOnlineVersus && versusMatchRef.current)
+          void supabase.rpc("update_1v1_position", {
+            p_match_id: versusMatchRef.current,
+            p_lane_index: startingLane,
+          });
+      }
+      setAbilityStateVersion((value) => value + 1);
+      showAbilityNotice(
+        "MIRAGE INVASION · MATCH THE RIVAL'S LANE TO DEAL DAMAGE",
+        1500,
+      );
       return;
     }
     if (activeCharacter === "runner_scout") {
@@ -4349,16 +5607,56 @@ export default function Home() {
       return;
     }
     if (activeCharacter === "tank_drag") {
+      if (
+        dragUsedWaveRef.current === wave &&
+        (!dragChainRef.current || dragChainRef.current.wave !== wave)
+      ) {
+        showAbilityNotice("CHAIN LEAP · USED THIS WAVE", 700);
+        return;
+      }
       if (!dragChainRef.current || dragChainRef.current.wave !== wave) {
         dragChainRef.current = { wave, lane: state.current.lane };
         showAbilityNotice(`CHAIN SET · LANE ${state.current.lane + 1}`, 850);
       } else {
         state.current.lane = dragChainRef.current.lane;
         setLane(dragChainRef.current.lane);
+        if (isOnlineVersus && versusMatchRef.current)
+          void supabase.rpc("update_1v1_position", {
+            p_match_id: versusMatchRef.current,
+            p_lane_index: dragChainRef.current.lane,
+          });
         grantInvincibility(700);
         dragChainRef.current = null;
+        dragUsedWaveRef.current = wave;
         showAbilityNotice("CHAIN RETURN · COLLISION-PROOF PULL", 1000);
       }
+      setAbilityStateVersion((value) => value + 1);
+      return;
+    }
+    if (activeCharacter === "misc_broker") {
+      if (isOnlineVersus) {
+        showAbilityNotice(
+          "ONLINE 1V1 · ATTACK COINS SETTLE DIRECTLY THROUGH THE SERVER",
+          1200,
+        );
+        return;
+      }
+      const result = claimBrokerCoinFund(
+        brokerFundsRef.current,
+        versusPointsRef.current,
+      );
+      if (result.claimed <= 0) {
+        showAbilityNotice("COIN FUND · NOTHING TO CLAIM", 750);
+        return;
+      }
+      brokerFundsRef.current = result.funds;
+      versusPointsRef.current = result.attackPoints;
+      setVersusPoints(result.attackPoints);
+      setAbilityStateVersion((value) => value + 1);
+      showAbilityNotice(
+        `COIN FUND CLAIMED · +${result.claimed.toFixed(2)} ATTACK COINS`,
+        1100,
+      );
       return;
     }
     if (activeCharacter === "misc_tinker") {
@@ -4388,7 +5686,11 @@ export default function Home() {
         return;
       }
       const target = itemsSnapshotRef.current
-        .filter((item) => ["gem", "coin", "melon"].includes(item.kind))
+        .filter(
+          (item) =>
+            ["gem", "coin", "melon"].includes(item.kind) &&
+            (!item.scheduledAt || item.scheduledAt <= Date.now()),
+        )
         .sort((left, right) => right.y - left.y)[0];
       if (!target) {
         showAbilityNotice("PICKUP ZIP · NO PICKUP ON SCREEN", 700);
@@ -4426,7 +5728,8 @@ export default function Home() {
     if (activeCharacter === "misc_catalyst") {
       setItems((current) =>
         current.map((item) =>
-          ["gem", "coin", "melon"].includes(item.kind)
+          ["gem", "coin", "melon"].includes(item.kind) &&
+          (!item.scheduledAt || item.scheduledAt <= Date.now())
             ? { ...item, lane: state.current.lane, y: 90 }
             : item,
         ),
@@ -4556,11 +5859,469 @@ export default function Home() {
     isOnlineVersus,
     isVersusRun,
     maxHearts,
+    mimicSelectedAbilities,
+    museGame,
+    museReward,
     pulseGame,
     showAbilityNotice,
     tonicPotion,
+    versusIntermissionReady,
+    versusPhase,
+    versusOpponentLane,
     wave,
   ]);
+  const submitMuseInput = useCallback(
+    (pressed: string) => {
+      const normalized = pressed.toUpperCase();
+      if (!["A", "S", "D", "F"].includes(normalized)) return;
+      setMuseGame((current) => {
+        if (!current) return current;
+        const keys = ["A", "S", "D", "F"] as const;
+        let nextPrompt = keys[Math.floor(Math.random() * keys.length)];
+        if (nextPrompt === current.prompt)
+          nextPrompt = keys[(keys.indexOf(nextPrompt) + 1) % keys.length];
+        return {
+          ...current,
+          attempts: current.attempts + 1,
+          hits: current.hits + Number(normalized === current.prompt),
+          prompt: nextPrompt,
+        };
+      });
+      void audioEngine.playSfx("click");
+    },
+    [],
+  );
+  const consumeCometHeatfeast = useCallback(() => {
+    if (activeCharacter !== "runner_comet" || !state.current.running) return;
+    if (isOnlineVersus && versusMatchRef.current) {
+      if (heatfeastConsumeBusyRef.current) return;
+      const matchId = versusMatchRef.current;
+      heatfeastConsumeBusyRef.current = true;
+      void supabase
+        .rpc("consume_1v1_heatfeast", {
+          p_match_id: matchId,
+          p_amount: 100,
+        })
+        .then(({ data, error }) => {
+          heatfeastConsumeBusyRef.current = false;
+          if (versusMatchRef.current !== matchId) return;
+          if (error) {
+            setVersusResult(error.message);
+            showAbilityNotice("HEATFEAST · COULD NOT CONSUME", 1000);
+            return;
+          }
+          applyHeatfeastPayload(data, waveRef.current);
+          const amount = Math.max(0, Number(data?.amount) || 0);
+          showAbilityNotice(
+            amount > 0
+              ? `HEATFEAST · CONSUMED ${Math.floor(amount)} · ${Math.floor(Number(data?.consumed) || 0)} TOTAL`
+              : "HEATFEAST · NOTHING AVAILABLE THIS WAVE",
+            1400,
+          );
+          if (amount > 0) void audioEngine.playSfx("shield");
+        });
+      return;
+    }
+    const result = consumeHeatfeast(
+      heatfeastStateRef.current,
+      waveRef.current,
+      100,
+    );
+    if (result.amount <= 0) {
+      showAbilityNotice(
+        heatfeastStateRef.current.stored <= 0
+          ? "HEATFEAST · NO STORED ATTACK COINS"
+          : "HEATFEAST · 100 CONSUMPTION LIMIT REACHED THIS WAVE",
+        1000,
+      );
+      return;
+    }
+    heatfeastStateRef.current = result.state;
+    setHeatfeastState(result.state);
+    setAbilityStateVersion((value) => value + 1);
+    showAbilityNotice(
+      `HEATFEAST · CONSUMED ${Math.floor(result.amount)} · ${Math.floor(result.state.consumed)} TOTAL`,
+      1400,
+    );
+    void audioEngine.playSfx("shield");
+  }, [
+    activeCharacter,
+    applyHeatfeastPayload,
+    isOnlineVersus,
+    showAbilityNotice,
+  ]);
+  const removeCometNaturalHazard = useCallback(
+    async (kind: Kind) => {
+      if (
+        abilityChoice?.kind !== "comet-remove" ||
+        !abilityChoice.options.includes(kind) ||
+        activeCharacter !== "runner_comet"
+      )
+        return;
+      const cost = getCometNaturalRemovalPrice(
+        kind as "barrel" | "log" | "snowflake" | "car" | "spikes" | "rock",
+        heatfeastStateRef.current.consumed,
+      );
+      if (versusPointsRef.current < cost) {
+        setVersusResult("NOT ENOUGH ATTACK COINS");
+        return;
+      }
+      if (isOnlineVersus) {
+        const matchId = versusMatchRef.current;
+        if (!matchId || cometRemovalBusyRef.current) return;
+        cometRemovalBusyRef.current = true;
+        setAbilityStateVersion((version) => version + 1);
+        const purchaseId = `comet:${matchId}:${waveRef.current}:${kind}:${createVersusPickupNonce()}`;
+        const { data, error } = await supabase.rpc(
+          "purchase_1v1_comet_removal",
+          {
+            p_match_id: matchId,
+            p_purchase_id: purchaseId,
+            p_obstacle_type: kind,
+          },
+        );
+        cometRemovalBusyRef.current = false;
+        if (versusMatchRef.current !== matchId) return;
+        if (error) {
+          setVersusResult(error.message);
+          setAbilityStateVersion((version) => version + 1);
+          return;
+        }
+        applyAuthoritativeVersusPoints(data?.remaining_points);
+        applyHeatfeastPayload(data?.heatfeast, waveRef.current);
+        const receiptId = String(data?.receipt_id ?? "");
+        const spawnWave = Number(data?.spawn_wave);
+        if (receiptId && Number.isFinite(spawnWave))
+          cometRemovalReceiptsRef.current = [
+            ...cometRemovalReceiptsRef.current.filter(
+              (receipt) => receipt.receiptId !== receiptId,
+            ),
+            {
+              receiptId,
+              kind: kind as CometRemovalReceipt["kind"],
+              wave: Math.max(1, Math.floor(spawnWave)),
+            },
+          ];
+        setVersusResult(
+          `${kind.toUpperCase()} REMOVAL QUEUED · ${Number(data?.point_cost) || cost} COINS SPENT`,
+        );
+        setAbilityStateVersion((version) => version + 1);
+        void audioEngine.playSfx("click");
+        return;
+      }
+      versusPointsRef.current -= cost;
+      setVersusPoints(versusPointsRef.current);
+      const queued =
+        cometRemovalQueueRef.current.wave === abilityChoice.targetWave
+          ? cometRemovalQueueRef.current.counts
+          : {};
+      cometRemovalQueueRef.current = {
+        wave: abilityChoice.targetWave,
+        counts: { ...queued, [kind]: (queued[kind] ?? 0) + 1 },
+      };
+      const nextHeat = addHeatfeastSpending(
+        heatfeastStateRef.current,
+        cost,
+      );
+      heatfeastStateRef.current = nextHeat;
+      setHeatfeastState(nextHeat);
+      setAbilityStateVersion((value) => value + 1);
+      setVersusResult(
+        `${kind.toUpperCase()} REMOVAL QUEUED · ${cost} COINS SPENT`,
+      );
+      void audioEngine.playSfx("click");
+    },
+    [
+      abilityChoice,
+      activeCharacter,
+      applyAuthoritativeVersusPoints,
+      applyHeatfeastPayload,
+      isOnlineVersus,
+    ],
+  );
+  const hexVoidEndsAt = hexVoid?.endsAt ?? 0;
+  useEffect(() => {
+    if (hexVoidEndsAt <= 0) return;
+    const timer = window.setInterval(() => {
+      const remaining = Math.max(0, hexVoidEndsAt - Date.now());
+      if (remaining > 0) {
+        setHexVoid((current) =>
+          current?.endsAt === hexVoidEndsAt
+            ? { ...current, remaining }
+            : current,
+        );
+        return;
+      }
+      window.clearInterval(timer);
+      setHexVoid((current) =>
+        current?.endsAt === hexVoidEndsAt ? null : current,
+      );
+      if (state.current.running) setPaused(false);
+      showAbilityNotice("VOID REALM CLOSED · WAVE CLOCK RESUMED", 1200);
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [hexVoidEndsAt, showAbilityNotice]);
+  const collectVoidTarget = useCallback(() => {
+    if (!hexVoid) return;
+    if (hexVoid.encounter === "damned") {
+      const nextHex = collectHexDamned(hexStateRef.current, 1);
+      hexStateRef.current = nextHex;
+      setHexState(nextHex);
+      setHexVoid((current) =>
+        current ? { ...current, collected: current.collected + 1 } : current,
+      );
+      setAbilityStateVersion((value) => value + 1);
+      showAbilityNotice(
+        `DAMNED COLLECTED · ${nextHex.damnation} DAMNATION`,
+        650,
+      );
+      void audioEngine.playSfx("gem");
+      return;
+    }
+    setHexVoid((current) =>
+      current
+        ? { ...current, hadesDodges: Math.min(8, current.hadesDodges + 1) }
+        : current,
+    );
+    showAbilityNotice("HADES ATTACK DODGED", 500);
+    void audioEngine.playSfx("move");
+  }, [hexVoid, showAbilityNotice]);
+  const defeatHexHades = useCallback(() => {
+    if (!hexVoid || hexVoid.encounter !== "hades" || hexVoid.hadesDodges < 8)
+      return;
+    const godState = becomeHexGod(hexStateRef.current);
+    hexStateRef.current = godState;
+    setHexState(godState);
+    state.current.hearts = godState.godMaxHearts;
+    setHearts(godState.godMaxHearts);
+    setHexVoid(null);
+    setPaused(false);
+    setAbilityStateVersion((value) => value + 1);
+    showAbilityNotice("HADES DEFEATED · VOID GOD AWAKENED · MAX HP 5", 2200);
+    void audioEngine.playSfx("shield");
+  }, [hexVoid, showAbilityNotice]);
+  const throwHexChakram = useCallback(() => {
+    if (
+      activeCharacter !== "trickster_hex" ||
+      !state.current.running ||
+      state.current.paused ||
+      state.current.wavePause
+    )
+      return;
+    const candidates = itemsSnapshotRef.current
+      .filter(
+        (item) =>
+          isHazardKind(item.kind) && item.y >= -10 && item.y < 91,
+      )
+      .map((item) => ({
+        id: item.id,
+        lane: item.lane,
+        distanceAhead: 91 - item.y,
+      }));
+    const result = resolveHexChakram(
+      candidates,
+      state.current.lane,
+      isVersusRun,
+    );
+    if (!result.target) {
+      showAbilityNotice("VOID CHAKRAM · NO OBSTACLE IN THIS LANE", 800);
+      return;
+    }
+    const target = itemsSnapshotRef.current.find(
+      (item) => item.id === result.target?.id,
+    );
+    if (!target) return;
+    setItems((current) =>
+      current.filter((item) => item.id !== result.target?.id),
+    );
+    if (isBotPractice) {
+      const attackKind =
+        target.kind === "spikes" ? "spike" : (target.kind as AttackId);
+      playerAttacksAgainstBotRef.current.push(
+        ...Array.from(
+          { length: result.sentCopiesToOpponent },
+          () => attackKind,
+        ),
+      );
+    } else if (
+      isOnlineVersus &&
+      versusMatchRef.current &&
+      result.sentCopiesToOpponent > 0
+    ) {
+      const matchId = versusMatchRef.current;
+      const attackKind =
+        target.kind === "spikes" ? "spike" : (target.kind as AttackId);
+      for (let copy = 0; copy < result.sentCopiesToOpponent; copy += 1)
+        void supabase.rpc("reflect_1v1_attack", {
+          p_match_id: matchId,
+          p_reflection_id: `hex:${versusPickupNonceRef.current}:${waveRef.current}:${target.id}:${copy}`,
+          p_obstacle_type: attackKind,
+        });
+    }
+    showAbilityNotice(
+      isVersusRun
+        ? `VOID CHAKRAM · ${target.kind.toUpperCase()} ERASED · ×${result.sentCopiesToOpponent} SENT`
+        : `VOID CHAKRAM · ${target.kind.toUpperCase()} ERASED`,
+      1100,
+    );
+    void audioEngine.playSfx("shield");
+  }, [
+    activeCharacter,
+    isBotPractice,
+    isOnlineVersus,
+    isVersusRun,
+    showAbilityNotice,
+  ]);
+  useEffect(() => {
+    if (
+      !mirageInvasionRef.current ||
+      activeCharacter !== "trickster_mirage" ||
+      !state.current.running
+    )
+      return;
+    const timer = window.setInterval(() => {
+      const current = mirageInvasionRef.current;
+      if (!current) return;
+      if (isOnlineVersus && versusMatchRef.current) {
+        if (mirageDamageBusyRef.current) return;
+        const matchId = versusMatchRef.current;
+        mirageDamageBusyRef.current = true;
+        void supabase
+          .rpc("apply_1v1_mirage_damage", {
+            p_match_id: matchId,
+            // This is only a poll hint. Supabase derives every due 500ms tick
+            // from server-owned lane positions and timestamps.
+            p_damage: 1,
+          })
+          .then(({ data, error }) => {
+            mirageDamageBusyRef.current = false;
+            if (versusMatchRef.current !== matchId) return;
+            if (error) {
+              setVersusResult("MIRAGE ABILITY DATABASE SETUP IS MISSING");
+              mirageInvasionRef.current = null;
+              setMirageInvasion(null);
+              return;
+            }
+            const selfHearts = Number(data?.self_hearts);
+            if (Number.isFinite(selfHearts)) {
+              state.current.hearts = Math.max(0, selfHearts);
+              setHearts(state.current.hearts);
+            }
+            const opponentHearts = Number(data?.opponent_hearts);
+            if (Number.isFinite(opponentHearts))
+              setVersusOpponentHearts(Math.max(0, opponentHearts));
+            const damageApplied = Math.max(
+              0,
+              Number(data?.damage_applied) || 0,
+            );
+            if (damageApplied > 0)
+              showAbilityNotice(
+                `MIRAGE HIT · RIVAL -${damageApplied} HP`,
+                550,
+              );
+            if (data?.active === false) {
+              mirageInvasionRef.current = null;
+              setMirageInvasion(null);
+              showAbilityNotice("MIRAGE RETURN · -1 HP", 1100);
+              setAbilityStateVersion((version) => version + 1);
+              return;
+            }
+            const nextInvasion: MirageInvasionState = {
+              ...current,
+              endsAtMs: parseServerTime(data?.ends_at, current.endsAtMs),
+              mirageLane: state.current.lane,
+              opponentLane: versusOpponentLane,
+              damageDealt: current.damageDealt + damageApplied,
+            };
+            mirageInvasionRef.current = nextInvasion;
+            setMirageInvasion(nextInvasion);
+            setAbilityStateVersion((version) => version + 1);
+          });
+        return;
+      }
+      const step = advanceMirageInvasion(current, {
+        nowMs: Date.now(),
+        mirageLane: state.current.lane,
+        opponentLane: versusOpponentLane,
+      });
+      mirageInvasionRef.current = step.state;
+      setMirageInvasion(step.state);
+      if (step.opponentDamage > 0) {
+        if (isBotPractice) {
+          const nextOpponentHearts = Math.max(
+            0,
+            versusOpponentHearts - step.opponentDamage,
+          );
+          setVersusOpponentHearts(nextOpponentHearts);
+          showAbilityNotice(
+            `MIRAGE HIT · RIVAL -${step.opponentDamage} HP`,
+            550,
+          );
+          if (nextOpponentHearts <= 0) {
+            setVersusResult("PRACTICE VICTORY · MIRAGE INVASION");
+            setVersusPhase("finished");
+            setVersusIntermissionReady(false);
+            setRunning(false);
+            setOver(true);
+          }
+        }
+      }
+      if (step.selfDamage > 0) {
+        window.clearInterval(timer);
+        mirageInvasionRef.current = null;
+        setMirageInvasion(null);
+        applyCharacterSelfDamage(
+          step.selfDamage,
+          "MIRAGE RETURN · -1 HP",
+        );
+      }
+      setAbilityStateVersion((value) => value + 1);
+    }, isOnlineVersus ? 200 : 100);
+    return () => window.clearInterval(timer);
+  }, [
+    activeCharacter,
+    applyCharacterSelfDamage,
+    isBotPractice,
+    isOnlineVersus,
+    mirageInvasion?.startedAtMs,
+    showAbilityNotice,
+    versusOpponentHearts,
+    versusOpponentLane,
+  ]);
+  useEffect(() => {
+    if (
+      !isOnlineVersus ||
+      activeCharacter !== "runner_comet" ||
+      !running
+    )
+      return;
+    const matchId = versusMatchRef.current;
+    if (!matchId) return;
+    let stopped = false;
+    const pollSharedHeatfeast = async () => {
+      const { data, error } = await supabase.rpc(
+        "get_1v1_ability_state",
+        { p_match_id: matchId },
+      );
+      if (
+        stopped ||
+        error ||
+        versusMatchRef.current !== matchId
+      )
+        return;
+      const payload = (data ?? {}) as VersusAbilityStatePayload;
+      applyHeatfeastPayload(payload.heatfeast, waveRef.current);
+    };
+    void pollSharedHeatfeast();
+    const timer = window.setInterval(
+      () => void pollSharedHeatfeast(),
+      1500,
+    );
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [activeCharacter, applyHeatfeastPayload, isOnlineVersus, running]);
   const toggleManualPause = useCallback(() => {
     if (
       isOnlineVersus ||
@@ -4706,6 +6467,9 @@ export default function Home() {
             zenith_time_stop_until?: string | null;
             zenith_time_stop_used?: boolean;
             obstacle_speed_multiplier?: number;
+            lane_index?: number | null;
+            mirage_active_until?: string | null;
+            mirage_exit_damage_applied?: boolean;
           };
           if (player.user_id === userIdRef.current) {
             applyVersusTimeStopState(player, true);
@@ -4719,6 +6483,23 @@ export default function Home() {
               Math.max(0, Number(player.current_wave_mushrooms)),
             );
           if (player.username) setVersusOpponent(player.username);
+          if (Number.isInteger(player.lane_index))
+            setVersusOpponentLane(
+              Math.max(
+                0,
+                Math.min(activeLaneCount - 1, Number(player.lane_index)),
+              ),
+            );
+          const opponentMirageEndsAt = parseServerTime(
+            player.mirage_active_until,
+            0,
+          );
+          setVersusOpponentMirageUntil(
+            opponentMirageEndsAt > Date.now() &&
+              !player.mirage_exit_damage_applied
+              ? opponentMirageEndsAt
+              : 0,
+          );
           if (player.status === "eliminated") {
             setVersusOpponentHearts(0);
             if (!versusSelfEliminatedRef.current)
@@ -4805,15 +6586,136 @@ export default function Home() {
       .subscribe();
     realtimeRef.current = channel;
   };
+  const hydrateVersusAbilityState = async (
+    matchId: string,
+    characterKey: CharacterKey,
+    restoredWave: number,
+    laneCount: number,
+  ) => {
+    if (characterKey === "trickster_gambit") {
+      const gambit = await supabase.rpc("get_1v1_gambit_state", {
+        p_match_id: matchId,
+      });
+      if (versusMatchRef.current !== matchId) return;
+      if (gambit.error)
+        setVersusResult("COUNTING CARDS DATABASE SETUP IS MISSING");
+      else
+        applyOnlineGambitPayload(
+          (gambit.data ?? {}) as OnlineGambitPayload,
+        );
+    }
+    const { data, error } = await supabase.rpc("get_1v1_ability_state", {
+      p_match_id: matchId,
+    });
+    if (versusMatchRef.current !== matchId) return;
+    if (error) {
+      if (
+        characterKey === "runner_comet" ||
+        characterKey === "trickster_mirage"
+      )
+        setVersusResult("CHARACTER ABILITY DATABASE SETUP IS MISSING");
+      return;
+    }
+    const payload = (data ?? {}) as VersusAbilityStatePayload;
+    applyHeatfeastPayload(payload.heatfeast, restoredWave);
+    cometRemovalReceiptsRef.current = (
+      payload.pending_comet_removals ?? []
+    ).flatMap((receipt): CometRemovalReceipt[] => {
+      const kind = normalizeVersusObstacle(receipt.obstacle_type);
+      const receiptId = String(receipt.receipt_id ?? "");
+      const receiptWave = Number(receipt.spawn_wave);
+      if (
+        !receiptId ||
+        !kind ||
+        kind === "current" ||
+        !Number.isFinite(receiptWave)
+      )
+        return [];
+      return [
+        {
+          receiptId,
+          kind: kind as CometRemovalReceipt["kind"],
+          wave: Math.max(1, Math.floor(receiptWave)),
+        },
+      ];
+    });
+    const opponentLane = Number(payload.opponent?.lane_index);
+    if (Number.isInteger(opponentLane))
+      setVersusOpponentLane(
+        Math.max(0, Math.min(laneCount - 1, opponentLane)),
+      );
+    const opponentHearts = Number(payload.opponent?.hearts);
+    if (Number.isFinite(opponentHearts))
+      setVersusOpponentHearts(Math.max(0, opponentHearts));
+    const opponentEndsAt = parseServerTime(
+      payload.opponent?.mirage_ends_at,
+      0,
+    );
+    setVersusOpponentMirageUntil(
+      payload.opponent?.mirage_active ? opponentEndsAt : 0,
+    );
+    const usedWave = Number(payload.self?.mirage_used_wave);
+    if (Number.isFinite(usedWave))
+      mirageUsedWaveRef.current = Math.max(
+        mirageUsedWaveRef.current,
+        Math.floor(usedWave),
+      );
+    if (payload.self?.mirage_active) {
+      const now = Date.now();
+      const startedAt = parseServerTime(
+        payload.self.mirage_started_at,
+        now,
+      );
+      const endsAt = parseServerTime(
+        payload.self.mirage_ends_at,
+        now + 5000,
+      );
+      const ownLane = Number(payload.self.lane_index);
+      const restoredLane = Number.isInteger(ownLane)
+        ? Math.max(0, Math.min(laneCount - 1, ownLane))
+        : state.current.lane;
+      state.current.lane = restoredLane;
+      setLane(restoredLane);
+      const invasion: MirageInvasionState = {
+        wave: Math.max(1, restoredWave),
+        startedAtMs: startedAt,
+        endsAtMs: endsAt,
+        mirageLane: restoredLane,
+        opponentLane: Number.isInteger(opponentLane)
+          ? Math.max(0, Math.min(laneCount - 1, opponentLane))
+          : versusOpponentLane,
+        matchingSinceMs: null,
+        nextDamageAtMs: null,
+        damageDealt: Math.max(
+          0,
+          Number(payload.self.mirage_damage_dealt) || 0,
+        ),
+        finished: false,
+        exitDamageApplied: false,
+      };
+      mirageInvasionRef.current = invasion;
+      setMirageInvasion(invasion);
+    } else if (characterKey === "trickster_mirage") {
+      mirageInvasionRef.current = null;
+      setMirageInvasion(null);
+      const ownHearts = Number(payload.self?.hearts);
+      if (Number.isFinite(ownHearts)) {
+        state.current.hearts = Math.max(0, ownHearts);
+        setHearts(state.current.hearts);
+      }
+    }
+  };
   const hydrateVersusState = async (
     matchId: string,
     preserveRunState = false,
     freshMatch = false,
   ) => {
     const hydrationIntent = ++versusHydrationIntentRef.current;
-    const { data, error } = await supabase.rpc("get_1v1_state", {
-      p_match_id: matchId,
-    });
+    const [stateResult, testModeResult] = await Promise.all([
+      supabase.rpc("get_1v1_state", { p_match_id: matchId }),
+      supabase.rpc("get_1v1_test_mode", { p_match_id: matchId }),
+    ]);
+    const { data, error } = stateResult;
     if (versusMatchRef.current !== matchId) return false;
     if (versusHydrationIntentRef.current !== hydrationIntent) return true;
     if (error || !data) {
@@ -4822,6 +6724,14 @@ export default function Home() {
     }
     versusRunHydratedRef.current = true;
     const snapshot = data as VersusStatePayload;
+    const restoredRunTestMode =
+      typeof snapshot.self?.test_mode === "boolean"
+        ? snapshot.self.test_mode
+        : testModeResult.error
+          ? runIsTestModeRef.current
+          : Boolean(testModeResult.data);
+    runIsTestModeRef.current = restoredRunTestMode;
+    setRunIsTestMode(restoredRunTestMode);
     const restoredMap = normalizeMapId(snapshot.match?.map_key);
     const restoredMapRules = getMapRules(restoredMap);
     const restoredCenterLane = Math.floor(restoredMapRules.laneCount / 2);
@@ -4832,15 +6742,23 @@ export default function Home() {
       snapshot.self?.character_class,
     );
     const restoredCandidate =
-      isCharacterOwned(unlocks, validatedCharacter.characterKey) &&
-      isCharacterClassAllowed(
-        restoredMap,
-        getCharacterClassKey(validatedCharacter.characterKey),
-      )
+      isCharacterAvailable(
+        isCharacterOwned(unlocks, validatedCharacter.characterKey),
+        {
+          isAdmin,
+          testModeEnabled: restoredRunTestMode,
+        },
+      ) &&
+      (restoredRunTestMode ||
+        isCharacterClassAllowed(
+          restoredMap,
+          getCharacterClassKey(validatedCharacter.characterKey),
+        ))
         ? validatedCharacter.characterKey
         : "runner_ace";
     const characterKey =
-      restoredMapRules.forcedCharacterId ?? restoredCandidate;
+      (!restoredRunTestMode ? restoredMapRules.forcedCharacterId : null) ??
+      restoredCandidate;
     const characterClass = getCharacterClassKey(characterKey);
     const rawMaxHearts = Number(snapshot.self?.max_hearts);
     const restoredMaxHearts =
@@ -4941,6 +6859,25 @@ export default function Home() {
     if (pendingVersusCoinPickupIdsRef.current.size === 0)
       applyAuthoritativeVersusPoints(snapshot.self?.obstacle_points ?? 0);
     setVersusOpponent(snapshot.opponent?.username || "RIVAL");
+    setVersusOpponentCharacter(
+      snapshot.opponent?.character_key
+        ? getValidatedVersusCharacter(
+            snapshot.opponent.character_key,
+            snapshot.opponent.character_class,
+          ).characterKey
+        : null,
+    );
+    setVersusOpponentLane(
+      Number.isInteger(snapshot.opponent?.lane_index)
+        ? Math.max(
+            0,
+            Math.min(
+              restoredMapRules.laneCount - 1,
+              Number(snapshot.opponent?.lane_index),
+            ),
+          )
+        : restoredCenterLane,
+    );
     setVersusOpponentHearts(
       Math.max(0, Number(snapshot.opponent?.hearts) || 0),
     );
@@ -4983,6 +6920,13 @@ export default function Home() {
         : pitchKatanaRef.current.cooldownUntilMs,
     };
     setPitchKatanaVersion((value) => value + 1);
+    await hydrateVersusAbilityState(
+      matchId,
+      characterKey,
+      restoredWave,
+      restoredMapRules.laneCount,
+    );
+    if (versusMatchRef.current !== matchId) return false;
     setPlayScope("versus");
     setOver(selfEliminated || matchFinished);
     setRunning(!selfEliminated && !matchFinished);
@@ -5112,6 +7056,8 @@ export default function Home() {
     serverMap?: unknown,
   ) => {
     cancelPendingProgressionStart();
+    runIsTestModeRef.current = adminTestModeActive;
+    setRunIsTestMode(adminTestModeActive);
     resetVersusClientSync();
     setLastRunXpBreakdown(null);
     progressionStartIntentRef.current += 1;
@@ -5178,14 +7124,25 @@ export default function Home() {
       setVersusResult("SIGN IN TO PLAY 1V1");
       return;
     }
-    if (versusMode === "ranked" && !playerProgression.ranked_unlocked) {
+    const effectiveVersusMode = getEffectiveOneVOneMode(
+      versusMode,
+      adminTestModeContext,
+    );
+    if (effectiveVersusMode !== versusMode) {
+      setVersusMode(effectiveVersusMode);
+      setVersusResult("TEST MODE USES CASUAL 1V1 · NO ELO OR REWARDS");
+    }
+    if (
+      effectiveVersusMode === "ranked" &&
+      !playerProgression.ranked_unlocked
+    ) {
       setVersusResult(
         `RANKED 1V1 UNLOCKS AT LEVEL ${RANKED_UNLOCK_LEVEL}`,
       );
       return;
     }
     if (
-      versusMode === "ranked" &&
+      effectiveVersusMode === "ranked" &&
       getCharacterDefinition(equippedCharacter).rarity === "mythic"
     ) {
       setVersusResult(
@@ -5201,7 +7158,7 @@ export default function Home() {
     versusSearchingRef.current = true;
     const poll = async () => {
       const { data, error } = await supabase.rpc("join_1v1_queue", {
-        p_mode: versusMode,
+        p_mode: effectiveVersusMode,
       });
       if (searchToken !== versusSearchTokenRef.current) {
         if (
@@ -5280,6 +7237,9 @@ export default function Home() {
     setPlayScope("practice");
     setVersusPhase("playing");
     setVersusOpponent("TRAINING BOT");
+    // Practice Mimic copies the bot's default Runner instead of becoming inert.
+    setVersusOpponentCharacter("runner_ace");
+    setVersusOpponentLane(Math.floor(getMapRules(practiceMap).laneCount / 2));
     setVersusOpponentHearts(practiceBotHealth.startingHp);
     setVersusOpponentScore(0);
     setVersusPoints(0);
@@ -5315,6 +7275,8 @@ export default function Home() {
     setVersusPoints(0);
     versusPointsRef.current = 0;
     setVersusOpponent("WAITING…");
+    setVersusOpponentCharacter(null);
+    setVersusOpponentLane(0);
     setVersusOpponentHearts(3);
     setVersusOpponentScore(0);
     setVersusSelfMushrooms(0);
@@ -5413,19 +7375,54 @@ export default function Home() {
     )
       return;
     if (isBotPractice) {
-      if (versusPointsRef.current < attack.cost) {
+      const cometPurchase =
+        activeCharacter === "runner_comet"
+          ? getCometSendPurchase(
+              attack.cost,
+              1,
+              heatfeastStateRef.current.consumed,
+            )
+          : { price: attack.cost, amount: 1 };
+      const gambitSendMultiplier =
+        activeCharacter === "trickster_gambit"
+          ? Math.max(
+              1,
+              Math.floor(
+                getActiveGambitEffects(
+                  Math.max(1, waveRef.current - 1),
+                  state.current.hearts,
+                ).sentObstacleMultiplier,
+              ),
+            )
+          : 1;
+      const sentAmount = cometPurchase.amount * gambitSendMultiplier;
+      if (versusPointsRef.current < cometPurchase.price) {
         setVersusResult("NOT ENOUGH ATTACK COINS");
         return;
       }
-      versusPointsRef.current -= attack.cost;
-      playerAttacksAgainstBotRef.current.push(kind);
+      versusPointsRef.current -= cometPurchase.price;
+      playerAttacksAgainstBotRef.current.push(
+        ...Array.from({ length: sentAmount }, () => kind),
+      );
+      if (activeCharacter === "runner_comet") {
+        const nextHeat = addHeatfeastSpending(
+          heatfeastStateRef.current,
+          cometPurchase.price,
+        );
+        heatfeastStateRef.current = nextHeat;
+        setHeatfeastState(nextHeat);
+        setAbilityStateVersion((value) => value + 1);
+      }
       setVersusPoints(versusPointsRef.current);
-      setVersusResult(`${attack.label} QUEUED FOR THE BOT'S NEXT WAVE`);
+      setVersusResult(
+        `${attack.label} ×${sentAmount} QUEUED FOR THE BOT'S NEXT WAVE`,
+      );
       void audioEngine.playSfx("click");
       return;
     }
     if (!versusMatchRef.current) return;
     const matchId = versusMatchRef.current;
+    const pointsBeforeAttack = versusPointsRef.current;
     const refreshAttackCoins = async () => {
       const refreshResult: { data: VersusStatePayload | null } = { data: null };
       await enqueueVersusStateSync(async () => {
@@ -5452,7 +7449,12 @@ export default function Home() {
     setVersusAttackBusy(true);
     try {
       const attackResult: {
-        data: { remaining_points?: number } | null;
+        data: {
+          remaining_points?: number;
+          quantity?: number;
+          point_cost?: number;
+          heatfeast?: HeatfeastPayload | null;
+        } | null;
         error: string;
       } = { data: null, error: "" };
       await enqueueVersusStateSync(async () => {
@@ -5461,7 +7463,7 @@ export default function Home() {
           p_match_id: matchId,
           p_obstacle_type: kind,
         });
-        attackResult.data = data as { remaining_points?: number } | null;
+        attackResult.data = data as typeof attackResult.data;
         attackResult.error = error?.message ?? "";
       });
       if (versusMatchRef.current !== matchId) return;
@@ -5472,7 +7474,27 @@ export default function Home() {
       }
       if (typeof attackResult.data?.remaining_points === "number")
         applyAuthoritativeVersusPoints(attackResult.data.remaining_points);
-      setVersusResult("");
+      const receivedHeatfeast = applyHeatfeastPayload(
+        attackResult.data?.heatfeast,
+        waveRef.current,
+      );
+      if (activeCharacter === "runner_comet" && !receivedHeatfeast) {
+        const remaining = Number(attackResult.data?.remaining_points);
+        const spent = Number.isFinite(remaining)
+          ? Math.max(0, pointsBeforeAttack - remaining)
+          : attack.cost;
+        const nextHeat = addHeatfeastSpending(
+          heatfeastStateRef.current,
+          spent,
+        );
+        heatfeastStateRef.current = nextHeat;
+        setHeatfeastState(nextHeat);
+        setAbilityStateVersion((value) => value + 1);
+      }
+      const quantity = Math.max(1, Number(attackResult.data?.quantity) || 1);
+      setVersusResult(
+        quantity > 1 ? `${attack.label} ×${quantity} SENT` : "",
+      );
     } catch {
       if (versusMatchRef.current === matchId) {
         setVersusResult("COULD NOT SEND THAT ATTACK · TRY AGAIN");
@@ -5494,6 +7516,11 @@ export default function Home() {
         )
       )
         return;
+      if (museGame) {
+        e.preventDefault();
+        submitMuseInput(e.key);
+        return;
+      }
       if (pulseGame) {
         e.preventDefault();
         const pressed = e.key.toUpperCase();
@@ -5506,6 +7533,16 @@ export default function Home() {
           return { ...current, hits: current.hits + 1, prompt: nextPrompt };
         });
         void audioEngine.playSfx("click");
+        return;
+      }
+      if ((e.key === "r" || e.key === "R") && activeCharacter === "runner_comet") {
+        e.preventDefault();
+        consumeCometHeatfeast();
+        return;
+      }
+      if ((e.key === "r" || e.key === "R") && activeCharacter === "trickster_hex") {
+        e.preventDefault();
+        throwHexChakram();
         return;
       }
       if (["ArrowLeft", "a", "A"].includes(e.key)) {
@@ -5545,21 +7582,38 @@ export default function Home() {
       )
         reset();
     };
+    const keyUp = (e: KeyboardEvent) => {
+      if (
+        (e.key === "e" || e.key === "E") &&
+        activeCharacter === "trickster_echo"
+      )
+        cancelEchoKnowingHold();
+    };
     addEventListener("keydown", key);
-    return () => removeEventListener("keydown", key);
+    addEventListener("keyup", keyUp);
+    return () => {
+      removeEventListener("keydown", key);
+      removeEventListener("keyup", keyUp);
+    };
   }, [
     adminOpen,
+    activeCharacter,
     activeMapId,
+    cancelEchoKnowingHold,
+    consumeCometHeatfeast,
     inventoryOpen,
     isOnlineVersus,
     isVersusRun,
     leaderboardOpen,
     mainView,
     move,
+    museGame,
     pulseGame,
     reset,
     settingsOpen,
     shopOpen,
+    submitMuseInput,
+    throwHexChakram,
     toggleManualPause,
     triggerPitchKatana,
     triggerCharacterAction,
@@ -5619,13 +7673,41 @@ export default function Home() {
     showAbilityNotice,
   ]);
   useEffect(() => {
+    if (!museGame) return;
+    const timer = window.setInterval(() => {
+      const remaining = Math.max(0, museGame.endsAt - Date.now());
+      if (remaining > 0) {
+        setMuseGame((current) =>
+          current ? { ...current, remaining } : current,
+        );
+        return;
+      }
+      window.clearInterval(timer);
+      const accuracy =
+        museGame.attempts > 0
+          ? (museGame.hits / museGame.attempts) * 100
+          : 0;
+      const reward = getMuseReward(accuracy);
+      setMuseGame(null);
+      setMuseReward(reward);
+      setPaused(false);
+      setAbilityStateVersion((value) => value + 1);
+      showAbilityNotice(
+        `RHYTHM BREAK · ${Math.round(accuracy)}% · ${reward.tier.toUpperCase()} TIER`,
+        2200,
+      );
+      if (reward.tier === "perfect") audioEngine.setTrack("energetic");
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [museGame, showAbilityNotice]);
+  useEffect(() => {
     if (!running || paused || wavePause) return;
     let raf = 0,
       prev = performance.now();
     const tick = (now: number) => {
       const dt = Math.min(32, now - prev);
       prev = now;
-      if (activeCharacter === "trickster_clockwork")
+      if (hasCharacterAbility("trickster_clockwork"))
         clockworkElapsedMsRef.current += dt;
       if (
         anchorLaneLockedRef.current &&
@@ -5633,6 +7715,27 @@ export default function Home() {
       ) {
         anchorLaneLockedRef.current = false;
         showAbilityNotice("GROUND HOOK RELEASED · LANE MOVEMENT RESTORED", 900);
+      }
+      if (activeCharacter === "misc_muse" && museMixUntilRef.current > 0) {
+        const clockNow = Date.now();
+        if (museMixUntilRef.current > clockNow) {
+          const completedPulses = Math.min(
+            3,
+            Math.floor((clockNow - museMixStartedAtRef.current) / 10000),
+          );
+          if (completedPulses > museMixHealPulsesRef.current) {
+            const pulses = completedPulses - museMixHealPulsesRef.current;
+            museMixHealPulsesRef.current = completedPulses;
+            state.current.hearts = Math.min(6, state.current.hearts + pulses);
+            setHearts(state.current.hearts);
+            showAbilityNotice(`MUSE MIX · +${pulses} HP`, 900);
+          }
+        } else {
+          museMixUntilRef.current = 0;
+          audioEngine.setTrack(soundtrack);
+          setAbilityStateVersion((value) => value + 1);
+          showAbilityNotice("MUSE MIX ENDED · 45 SECOND COOLDOWN", 1100);
+        }
       }
       if (timeStopDeadlineRef.current > 0) {
         timeStopRemainingRef.current = Math.max(
@@ -5656,8 +7759,7 @@ export default function Home() {
       const pacerRushActive =
         activeCharacter === "runner_pacer" &&
         pacerRushRemainingRef.current > 0;
-      const mimicPhase = (wave - 1) % 3;
-      if (activeCharacter === "runner_velocity") {
+      if (hasCharacterAbility("runner_velocity")) {
         velocityChargeMsRef.current = Math.min(
           100000,
           velocityChargeMsRef.current + dt,
@@ -5700,11 +7802,11 @@ export default function Home() {
         characterSpeedMultiplier *= 1.5;
       if (blitzBoostRemainingRef.current > 0)
         characterSpeedMultiplier *= 2;
-      if (activeCharacter === "runner_tempo")
+      if (hasCharacterAbility("runner_tempo"))
         characterSpeedMultiplier *= wave % 2 === 1 ? 1.15 : 0.85;
-      if (activeCharacter === "tank_reactor")
+      if (hasCharacterAbility("tank_reactor"))
         characterSpeedMultiplier *= 1 + missingHealthRatio * 0.4;
-      if (activeCharacter === "runner_velocity")
+      if (hasCharacterAbility("runner_velocity"))
         characterSpeedMultiplier *=
           1.05 + Math.min(1, velocityChargeMsRef.current / 100000);
       if (reviveFlyingRef.current) characterSpeedMultiplier *= 1.5;
@@ -5770,17 +7872,10 @@ export default function Home() {
           baseGemChance =
             mode === "impossible" ? 0.14 : mode === "hardcore" ? 0.1 : 0.06,
           characterGemMultiplier =
-            (activeCharacter === "misc_broker" ? 1.25 : 1) *
-            (activeCharacter === "misc_prospector" ? 1.6 : 1) *
-            (activeCharacter === "misc_mimic" && mimicPhase === 1
-              ? 1.75
-              : 1) *
-            (activeCharacter === "trickster_wildcard" &&
-            wildcardBuffRef.current === "gems"
-              ? 1.5
-              : 1),
+            (hasCharacterAbility("misc_broker") ? 1.25 : 1) *
+            (hasCharacterAbility("misc_prospector") ? 1.6 : 1),
           gemChance =
-            activeCharacter === "runner_fortune"
+            hasCharacterAbility("runner_fortune")
               ? getFortuneGemSpawnChance(
                   baseGemChance,
                   fortuneGemCountRef.current,
@@ -5789,28 +7884,36 @@ export default function Home() {
           gemThreshold = 1 - gemChance,
           versusGemThreshold =
             1 -
-            (activeCharacter === "runner_fortune"
+            (hasCharacterAbility("runner_fortune")
               ? getFortuneGemSpawnChance(
                   0.025,
                   fortuneGemCountRef.current,
                 )
               : 0.025 * characterGemMultiplier),
           attackPickupChance =
-            activeCharacter === "misc_broker"
+            hasCharacterAbility("misc_broker")
               ? ATTACK_COIN_SPAWN_CHANCE * 1.25
               : ATTACK_COIN_SPAWN_CHANCE,
           sameHazardLimit =
             activeCharacter === "misc_muse"
               ? 2
-              : activeCharacter === "misc_scribe"
+              : hasCharacterAbility("misc_scribe")
                 ? 3
                 : MAX_SAME_HAZARD_STREAK;
-        const hazardChoices =
+        const uncappedHazardChoices =
           ambientHazardStreakRef.current.count >= sameHazardLimit
             ? AMBIENT_HAZARDS.filter(
                 (hazard) => hazard !== ambientHazardStreakRef.current.kind,
               )
             : AMBIENT_HAZARDS;
+        const scribeCapReached =
+          hasCharacterAbility("misc_scribe") &&
+          scribeHazard !== null &&
+          (scribeSpawnCountsRef.current[scribeHazard] ?? 0) >=
+            getScribeHazardCap(wave);
+        const hazardChoices = scribeCapReached
+          ? uncappedHazardChoices.filter((hazard) => hazard !== scribeHazard)
+          : uncappedHazardChoices;
         const randomHazard = () => {
           const plannedWave = waveSpawnPlanRef.current;
           if (
@@ -5827,12 +7930,17 @@ export default function Home() {
             const natural = chooseNaturalObstacle(activeMapId);
             selected = natural === "spike" ? "spikes" : natural;
             if (
-              ambientHazardStreakRef.current.count < sameHazardLimit ||
-              selected !== ambientHazardStreakRef.current.kind
+              !(scribeCapReached && selected === scribeHazard) &&
+              (ambientHazardStreakRef.current.count < sameHazardLimit ||
+                selected !== ambientHazardStreakRef.current.kind)
             )
               break;
           }
-          return selected;
+          return scribeCapReached && selected === scribeHazard
+            ? hazardChoices[
+                Math.floor(Math.random() * hazardChoices.length)
+              ] ?? "log"
+            : selected;
         };
         let kind: Kind;
         if (isVersusRun && r < attackPickupChance) kind = "coin";
@@ -5849,7 +7957,57 @@ export default function Home() {
           )
             plannedWave.cursor += 1;
         };
-        if (
+        const onlineCometRemoval =
+          activeCharacter === "runner_comet" && isOnlineVersus
+            ? cometRemovalReceiptsRef.current.find(
+                (receipt) =>
+                  receipt.wave === wave && receipt.kind === kind,
+              )
+            : undefined;
+        const queuedCometRemoval =
+          activeCharacter === "runner_comet" &&
+          isHazardKind(kind) &&
+          (Boolean(onlineCometRemoval) ||
+            (cometRemovalQueueRef.current.wave === wave &&
+              (cometRemovalQueueRef.current.counts[kind] ?? 0) > 0));
+        if (queuedCometRemoval) {
+          if (onlineCometRemoval && versusMatchRef.current) {
+            const matchId = versusMatchRef.current;
+            cometRemovalReceiptsRef.current =
+              cometRemovalReceiptsRef.current.filter(
+                (receipt) =>
+                  receipt.receiptId !== onlineCometRemoval.receiptId,
+              );
+            void supabase
+              .rpc("redeem_1v1_comet_removal", {
+                p_match_id: matchId,
+                p_receipt_id: onlineCometRemoval.receiptId,
+                p_obstacle_id: `natural:${versusPickupNonceRef.current}:${wave}:${kind}:${id.current}`,
+              })
+              .then(({ error }) => {
+                if (error && versusMatchRef.current === matchId)
+                  setVersusResult(
+                    "COMET REMOVAL RECEIPT COULD NOT BE VERIFIED",
+                  );
+              });
+          } else {
+            const remaining =
+              (cometRemovalQueueRef.current.counts[kind] ?? 0) - 1;
+            cometRemovalQueueRef.current = {
+              ...cometRemovalQueueRef.current,
+              counts: {
+                ...cometRemovalQueueRef.current.counts,
+                [kind]: remaining,
+              },
+            };
+          }
+          advancePlannedHazard();
+          showAbilityNotice(
+            `COMET DEFENSE · NATURAL ${kind.toUpperCase()} REMOVED`,
+            850,
+          );
+          setAbilityStateVersion((value) => value + 1);
+        } else if (
           isHazardKind(kind) &&
           phoenixFeatherActiveRef.current &&
           phoenixFeatherReadyWaveRef.current === wave
@@ -5859,6 +8017,17 @@ export default function Home() {
           showAbilityNotice("PHOENIX FEATHER · FIRST OBSTACLE DESTROYED", 900);
         } else {
           const currentItems = itemsSnapshotRef.current;
+          const activeProspectorWarnings =
+            prospectorWarningRef.current.filter(
+              (warning) => warning.spawnAt > Date.now(),
+            );
+          if (
+            activeProspectorWarnings.length !==
+            prospectorWarningRef.current.length
+          ) {
+            prospectorWarningRef.current = activeProspectorWarnings;
+            setProspectorWarnings(activeProspectorWarnings);
+          }
           const reservedAttackSafeLanes = new Set(
             currentItems
               .filter(
@@ -5887,16 +8056,26 @@ export default function Home() {
           );
           const hazardLaneLimitReached =
             isHazardKind(kind) &&
-            hazardLanes.size >=
+            (hazardLanes.size >=
               (isVersusRun
                 ? Math.max(1, activeLaneCount - 1)
-                : modeRules.hazardLaneLimit);
+                : modeRules.hazardLaneLimit) ||
+              (activeCharacter === "misc_muse" &&
+                getMuseRemainingObstacleSlots(
+                  currentItems.filter(
+                    (item) => isHazardKind(item.kind) && item.y < 108,
+                  ).length,
+                ) === 0));
           // A lane stays occupied until its current object leaves the track.
           // This prevents fast barrels or snowflakes from overtaking rocks,
           // gems, and every other slower object in the same lane.
           const blocked = new Set(
             currentItems
-              .filter((item) => item.y < 108)
+              .filter(
+                (item) =>
+                  item.y < 108 &&
+                  (!item.scheduledAt || item.scheduledAt <= Date.now()),
+              )
               .map((item) => item.lane),
           );
           const spawnableLanes =
@@ -5921,10 +8100,44 @@ export default function Home() {
                 previous.kind === kind
                   ? { kind, count: previous.count + 1 }
                   : { kind, count: 1 };
+              if (hasCharacterAbility("misc_scribe"))
+                scribeSpawnCountsRef.current[kind] =
+                  (scribeSpawnCountsRef.current[kind] ?? 0) + 1;
+            }
+            const nextItemId = id.current++;
+            let scheduledAt: number | undefined;
+            if (kind === "gem" && hasCharacterAbility("misc_prospector")) {
+              const schedule = getProspectorGemWarningSchedule(
+                nextItemId,
+                spawnLane,
+                Date.now() + 5000,
+                activeLaneCount,
+              );
+              scheduledAt = schedule.spawnAtMs;
+              const warning = {
+                itemId: nextItemId,
+                lane: schedule.lane,
+                spawnAt: schedule.spawnAtMs,
+              };
+              prospectorWarningRef.current = [
+                ...prospectorWarningRef.current,
+                warning,
+              ];
+              setProspectorWarnings(prospectorWarningRef.current);
+              showAbilityNotice(
+                `GEM SURVEY · GEM IN LANE ${spawnLane + 1} IN 5 SECONDS`,
+                1500,
+              );
             }
             const nextItems = [
               ...currentItems,
-              { id: id.current++, lane: spawnLane, y: -10, kind },
+              {
+                id: nextItemId,
+                lane: spawnLane,
+                y: -10,
+                kind,
+                scheduledAt,
+              },
             ];
             itemsSnapshotRef.current = nextItems;
             setItems(nextItems);
@@ -5955,9 +8168,9 @@ export default function Home() {
             speedFactor *= permanentObstacleSlowRef.current;
             if (beaconActiveRef.current) speedFactor *= 0.5;
             if (obstacleFreezeUntilRef.current > Date.now()) speedFactor = 0;
-            if (activeCharacter === "runner_drift")
+            if (hasCharacterAbility("runner_drift"))
               speedFactor *= 1 + driftStackPercentRef.current;
-            if (activeCharacter === "trickster_clockwork") {
+            if (hasCharacterAbility("trickster_clockwork")) {
               const slow = Math.min(
                 0.6,
                 0.1 + (clockworkElapsedMsRef.current / 1000) * 0.005,
@@ -5965,7 +8178,7 @@ export default function Home() {
               speedFactor *= 1 - slow;
             }
             if (
-              activeCharacter === "tank_colossus" &&
+              hasCharacterAbility("tank_colossus") &&
               state.current.hearts > 3
             )
               speedFactor *= Math.max(
@@ -5973,7 +8186,7 @@ export default function Home() {
                 1 - (state.current.hearts - 3) * 0.05,
               );
             if (
-              activeCharacter === "trickster_jester" &&
+              hasCharacterAbility("trickster_jester") &&
               jesterEffectRef.current.kind === "neutral"
             )
               speedFactor *= 1 + jesterEffectRef.current.percent;
@@ -5989,49 +8202,35 @@ export default function Home() {
             );
           if (
             item.formationSpeed === undefined &&
-            activeCharacter === "tank_drag" &&
+            hasCharacterAbility("tank_drag") &&
             (item.kind === "barrel" || item.kind === "log")
           )
             speedFactor *= 0.85;
-          if (isHazard && activeCharacter === "misc_nomad")
+          if (isHazard && hasCharacterAbility("misc_nomad"))
             speedFactor *= 0.93;
           if (
             item.formationSpeed === undefined &&
             item.kind === "spikes" &&
-            activeCharacter === "misc_tinker"
+            hasCharacterAbility("misc_tinker")
           )
             speedFactor *= 0.75;
           if (
             item.formationSpeed === undefined &&
             (item.kind === "rock" || item.kind === "spikes") &&
-            activeCharacter === "misc_lantern"
+            hasCharacterAbility("misc_lantern")
           )
             speedFactor *= 0.85;
           if (
             item.formationSpeed === undefined &&
             item.kind === "snowflake" &&
-            activeCharacter === "misc_weaver"
-          )
-            speedFactor *= 0.65;
-          if (
-            isHazard &&
-            activeCharacter === "misc_mimic" &&
-            mimicPhase === 0
-          )
-            speedFactor *= 0.82;
-          if (
-            (item.kind === "gem" ||
-              item.kind === "coin" ||
-              item.kind === "melon") &&
-            activeCharacter === "misc_mimic" &&
-            mimicPhase === 2
+            hasCharacterAbility("misc_weaver")
           )
             speedFactor *= 0.65;
           if (
             (item.kind === "gem" ||
               item.kind === "coin" ||
               item.kind === "melon") &&
-            activeCharacter === "misc_catalyst"
+            hasCharacterAbility("misc_catalyst")
           )
             speedFactor *=
               Math.abs(item.lane - state.current.lane) >= 2 ? 0.5 : 1.5;
@@ -6039,11 +8238,11 @@ export default function Home() {
             (item.kind === "gem" ||
               item.kind === "coin" ||
               item.kind === "melon") &&
-            activeCharacter === "misc_harvester"
+            hasCharacterAbility("misc_harvester")
           )
             speedFactor *= 0.55;
-          if (isHazard && activeCharacter === "misc_muse")
-            speedFactor *= 0.82;
+          if (isHazard && activeCharacter === "misc_muse" && museReward)
+            speedFactor *= 1 - museReward.hazardSlow;
           if (
             item.formationSpeed === undefined &&
             item.kind === "barrel" &&
@@ -6051,12 +8250,6 @@ export default function Home() {
             sentinelBarrelSlowUntilRef.current > Date.now()
           )
             speedFactor *= 0.25;
-          if (
-            isHazard &&
-            activeCharacter === "trickster_wildcard" &&
-            wildcardBuffRef.current === "slow"
-          )
-            speedFactor *= 0.85;
           // Purchased formations start from one shared speed so mixed obstacle
           // types keep the same readable safe route. Global character effects
           // still apply, including freeze, Drift, Clockwork, and Jester.
@@ -6074,9 +8267,15 @@ export default function Home() {
           [...laneItems]
             .sort((left, right) => right.y - left.y || left.id - right.id)
             .forEach((item) => {
-              const proposedY = pendingKatanaReflectionIdsRef.current.has(
-                item.id,
-              )
+              if (item.scheduledAt && item.scheduledAt > Date.now()) {
+                // Prospector's five-second survey is only a warning. The gem
+                // does not reserve its lane or push live objects backward
+                // until it actually materializes.
+                nextYById.set(item.id, item.y);
+                return;
+              }
+              const proposedY =
+                pendingKatanaReflectionIdsRef.current.has(item.id)
                 ? 65
                 : item.y +
                   BASE_ITEM_SPEED *
@@ -6090,6 +8289,16 @@ export default function Home() {
               frontY = separatedY;
             });
         });
+        const activeProspectorWarnings = prospectorWarningRef.current.filter(
+          (warning) => warning.spawnAt > Date.now(),
+        );
+        if (
+          activeProspectorWarnings.length !==
+          prospectorWarningRef.current.length
+        ) {
+          prospectorWarningRef.current = activeProspectorWarnings;
+          setProspectorWarnings(activeProspectorWarnings);
+        }
         const advanced = old.flatMap((item) => {
           const isHazard = isHazardKind(item.kind);
           const n = {
@@ -6122,9 +8331,7 @@ export default function Home() {
             return [n];
           const crossedRunnerBand = item.y < 91 && n.y >= 65;
           const abilityGraze =
-            (activeCharacter === "trickster_rogue" ||
-              activeCharacter === "trickster_gambit" ||
-              activeCharacter === "trickster_echo") &&
+            activeCharacter === "trickster_rogue" &&
             isHazard &&
             Math.abs(n.lane - state.current.lane) === 1 &&
             crossedRunnerBand &&
@@ -6143,22 +8350,9 @@ export default function Home() {
                 850,
               );
             }
-            if (
-              activeCharacter === "trickster_echo" &&
-              echoGrazeCooldownUntilRef.current <= Date.now()
-            ) {
-              echoGrazeCooldownUntilRef.current = Date.now() + 2000;
-              grantInvincibility(650);
-              const echoScore = 40 + 10 * wave;
-              setScore((value) => value + echoScore);
-              showAbilityNotice(
-                `ECHO GRAZE · SHIELD +${echoScore} SCORE`,
-                1000,
-              );
-            }
           }
           const rangerPickup =
-            activeCharacter === "runner_ranger" &&
+            hasCharacterAbility("runner_ranger") &&
             (n.kind === "gem" ||
               n.kind === "coin" ||
               n.kind === "melon") &&
@@ -6181,7 +8375,7 @@ export default function Home() {
               collisionWaveRef.current = wave;
               if (activeCharacter === "medic_oracle")
                 oracleHitCountRef.current += 1;
-              if (activeCharacter === "runner_velocity") {
+              if (hasCharacterAbility("runner_velocity")) {
                 velocityChargeMsRef.current = 0;
                 velocityMilestoneRef.current = 0;
                 velocityDisplayPercentRef.current = 0;
@@ -6510,14 +8704,30 @@ export default function Home() {
                   });
             } else if (n.kind === "gem") {
               void audioEngine.playSfx("gem");
-              if (!isBotPractice) {
-                const gemAward = isVersusRun
-                  ? 1
-                  : (gemStreakRef.current += 1);
-                const adjustedGemAward =
-                  activeCharacter === "trickster_pickpocket"
-                    ? gemAward * 2
-                    : gemAward;
+              const gemAward = isVersusRun
+                ? 1
+                : (gemStreakRef.current += 1);
+              const adjustedGemAward =
+                hasCharacterAbility("trickster_pickpocket")
+                  ? gemAward * 2
+                  : gemAward;
+              const brokerBanksGem =
+                hasCharacterAbility("misc_broker") && !isVersusRun;
+              if (brokerBanksGem) {
+                brokerFundsRef.current = addToBrokerFund(
+                  brokerFundsRef.current,
+                  "gems",
+                  adjustedGemAward,
+                );
+                setAbilityStateVersion((value) => value + 1);
+                showAbilityNotice(
+                  `BROKER GEM FUND · +${adjustedGemAward}`,
+                  900,
+                );
+              } else if (
+                !isBotPractice &&
+                !runIsTestModeRef.current
+              ) {
                 const total = gemsRef.current + adjustedGemAward;
                 gemsRef.current = total;
                 setGems(total);
@@ -6530,7 +8740,7 @@ export default function Home() {
                     950,
                   );
               }
-              if (activeCharacter === "runner_spark") {
+              if (hasCharacterAbility("runner_spark")) {
                 sparkGemCountRef.current += 1;
                 setAbilityStateVersion((value) => value + 1);
                 showAbilityNotice(
@@ -6538,7 +8748,7 @@ export default function Home() {
                   900,
                 );
               }
-              if (activeCharacter === "runner_fortune") {
+              if (hasCharacterAbility("runner_fortune")) {
                 fortuneGemCountRef.current += 1;
                 setAbilityStateVersion((value) => value + 1);
                 showAbilityNotice(
@@ -6546,9 +8756,7 @@ export default function Home() {
                   900,
                 );
               }
-              if (activeCharacter === "misc_broker")
-                brokerFundsRef.current.gems += 1;
-              if (activeCharacter === "misc_harvester")
+              if (hasCharacterAbility("misc_harvester"))
                 harvesterCountsRef.current.gems += 1;
               if (
                 healingEnabled &&
@@ -6591,7 +8799,12 @@ export default function Home() {
               }
               const gemContextId = progressionRunIdRef.current;
               const gemRequestUserId = userIdRef.current;
-              if (!isBotPractice && gemRequestUserId && gemContextId)
+              if (
+                !brokerBanksGem &&
+                !isBotPractice &&
+                gemRequestUserId &&
+                gemContextId
+              )
                 queueGemClaim(gemContextId, n.id, gemRequestUserId);
             } else if (n.kind === "melon") {
               void audioEngine.playSfx("gem");
@@ -6600,7 +8813,7 @@ export default function Home() {
                 Math.floor(
                   MELON_BASE_SCORE *
                     currentCoinMultiplierRef.current *
-                    (activeCharacter === "runner_ranger" ? 2 : 1),
+                    (hasCharacterAbility("runner_ranger") ? 2 : 1),
                   ),
               );
               if (vialAllegianceActive) {
@@ -6611,27 +8824,56 @@ export default function Home() {
                   `SWITCHED MELON · -1 HP · -${melonScore} SCORE`,
                 );
               } else {
-                scoreRef.current += melonScore;
-                setScore(scoreRef.current);
-                showAbilityNotice(`MELON · +${melonScore} SCORE`, 900);
-                if (activeCharacter === "misc_broker")
-                  brokerFundsRef.current.melons += melonScore;
-                if (activeCharacter === "misc_harvester")
+                if (hasCharacterAbility("misc_broker")) {
+                  brokerFundsRef.current = addToBrokerFund(
+                    brokerFundsRef.current,
+                    "melons",
+                    melonScore,
+                  );
+                  setAbilityStateVersion((value) => value + 1);
+                  showAbilityNotice(
+                    `BROKER MELON FUND · +${melonScore} SCORE`,
+                    900,
+                  );
+                } else {
+                  scoreRef.current += melonScore;
+                  setScore(scoreRef.current);
+                  showAbilityNotice(`MELON · +${melonScore} SCORE`, 900);
+                }
+                if (hasCharacterAbility("misc_harvester"))
                   harvesterCountsRef.current.melons += 1;
               }
             } else if (n.kind === "coin") {
               void audioEngine.playSfx("gem");
-              if (isBotPractice) {
+              const coinValue =
+                getAttackPointsForCoin(activeMapId) *
+                currentCoinMultiplierRef.current *
+                (activeCharacter === "runner_comet"
+                  ? getHeatfeastBenefits(
+                      heatfeastStateRef.current.consumed,
+                    ).attackCoinMultiplierWithStarSpear
+                  : 1);
+              const brokerBanksCoin =
+                hasCharacterAbility("misc_broker") && isBotPractice;
+              if (brokerBanksCoin) {
+                brokerFundsRef.current = addToBrokerFund(
+                  brokerFundsRef.current,
+                  "coins",
+                  coinValue,
+                );
+                setAbilityStateVersion((value) => value + 1);
+                showAbilityNotice(
+                  `BROKER COIN FUND · +${coinValue.toFixed(2)}`,
+                  900,
+                );
+              } else if (isBotPractice) {
                 versusPointsRef.current +=
-                  getAttackPointsForCoin(activeMapId) *
-                  currentCoinMultiplierRef.current;
+                  coinValue;
                 setVersusPoints(versusPointsRef.current);
               } else if (isOnlineVersus && versusMatchRef.current) {
                 queueOnlineCoinAward(versusMatchRef.current, n.id);
               }
-              if (activeCharacter === "misc_broker")
-                brokerFundsRef.current.coins += 1;
-              if (activeCharacter === "misc_harvester")
+              if (hasCharacterAbility("misc_harvester"))
                 harvesterCountsRef.current.coins += 1;
             } else if (
               n.kind === "current" &&
@@ -6666,13 +8908,13 @@ export default function Home() {
                   return [];
                 }
               }
-              if (activeCharacter === "runner_scout" && scoutSnowflakeHealReadyRef.current) {
+              if (hasCharacterAbility("runner_scout") && scoutSnowflakeHealReadyRef.current) {
                 scoutSnowflakeHealReadyRef.current = false;
                 state.current.hearts = Math.min(maxHearts, state.current.hearts + 0.5);
                 setHearts(state.current.hearts);
                 showAbilityNotice("QUICKSTEP CATCH · +0.5 HP", 900);
               }
-              if (activeCharacter === "misc_weaver") {
+              if (hasCharacterAbility("misc_weaver")) {
                 if (weaverJacketRef.current) {
                   if (weaverHealWaveRef.current !== wave) {
                     weaverHealWaveRef.current = wave;
@@ -6732,7 +8974,7 @@ export default function Home() {
               } else {
                 void audioEngine.playSfx("freeze");
                 applyFreezeEffect(
-                  activeCharacter === "runner_scout" ? 1500 : 3000,
+                  hasCharacterAbility("runner_scout") ? 1500 : 3000,
                 );
                 setFlash("freeze-hit");
                 setTimeout(() => {
@@ -6742,7 +8984,7 @@ export default function Home() {
                 }, 700);
               }
             } else if (
-              activeCharacter === "runner_vault" &&
+              hasCharacterAbility("runner_vault") &&
               (n.kind === "spikes" || n.kind === "log") &&
               wardenBlockWaveRef.current !== wave
             ) {
@@ -6753,18 +8995,43 @@ export default function Home() {
               showAbilityNotice(`VAULT · FIRST ${n.kind.toUpperCase()} BLOCKED`);
               return [];
             } else if (
-              activeCharacter === "tank_hammer" &&
-              n.kind === "barrel" &&
-              hammerBreakWaveRef.current !== wave
+              hasCharacterAbility("trickster_wildcard") &&
+              wildcardIgnoredHitsRef.current > 0
             ) {
-              hammerBreakWaveRef.current = wave;
+              wildcardIgnoredHitsRef.current -= 1;
+              setAbilityStateVersion((value) => value + 1);
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
-              showAbilityNotice("DEMOLITION · FIRST BARREL 0 DAMAGE");
+              showAbilityNotice(
+                `JOKER · HIT IGNORED · ${wildcardIgnoredHitsRef.current} LEFT`,
+                900,
+              );
               return [];
             } else if (
-              invincibleUntilRef.current > Date.now()
+              activeCharacter === "trickster_hex" &&
+              hexStateRef.current.soulsRemaining > 0
+            ) {
+              const soul = resolveHexSoulHit(hexStateRef.current);
+              hexStateRef.current = soul.state;
+              setHexState(soul.state);
+              void audioEngine.playSfx("shield");
+              setFlash("shield");
+              setTimeout(() => setFlash(""), 150);
+              showAbilityNotice(
+                `SOUL GUARD · HIT BLOCKED · ${soul.state.soulsRemaining} LEFT`,
+                900,
+              );
+              return [];
+            } else if (
+              invincibleUntilRef.current > Date.now() ||
+              (activeCharacter === "trickster_mirage" &&
+                Boolean(
+                  mirageInvasionRef.current &&
+                    !mirageInvasionRef.current.finished,
+                )) ||
+              (activeCharacter === "trickster_gambit" &&
+                gambitInvincibleThroughWaveRef.current >= wave)
             ) {
               setFlash("shield");
               setTimeout(() => setFlash(""), 120);
@@ -6821,11 +9088,6 @@ export default function Home() {
               damageLockedRef.current = true;
               if (activeCharacter === "tank_rampart")
                 rampartCollisionCountRef.current += 1;
-              if (activeCharacter === "runner_comet") {
-                cometChargeRemainingRef.current = 8000;
-                cometChargedRef.current = false;
-                showAbilityNotice("STAR DRIVE · RECHARGING", 800);
-              }
               if (activeCharacter === "runner_flare")
                 flareDamageWaveRef.current = wave;
               const rawDamage =
@@ -6840,14 +9102,29 @@ export default function Home() {
                       ? 0.5
                       : 1;
               let abilityAdjustedDamage = rawDamage;
-              if (
-                activeClass === "tank" ||
-                activeCharacter === "medic_mercy"
-              ) {
+              const damagePassiveKeys = (
+                [
+                  "tank_bulwark",
+                  "tank_guard",
+                  "tank_brace",
+                  "tank_ironclad",
+                  "medic_mercy",
+                  "tank_hammer",
+                  "tank_warden",
+                  "tank_bastion",
+                  "tank_rampart",
+                  "tank_sentinel",
+                  "tank_colossus",
+                ] as const
+              ).filter((characterKey) =>
+                hasCharacterAbility(characterKey),
+              );
+              const damageReasons: string[] = [];
+              for (const characterKey of damagePassiveKeys) {
                 const tankResult = calculateTankDamage({
-                  character: activeCharacter as TankCharacterKey,
+                  character: characterKey as TankCharacterKey,
                   source: n.kind as HazardKind,
-                  baseDamage: rawDamage,
+                  baseDamage: abilityAdjustedDamage,
                   currentHearts: state.current.hearts,
                   bulwarkPlateAvailable:
                     firstGuardWaveRef.current !== wave,
@@ -6861,7 +9138,7 @@ export default function Home() {
                     sentinelAnalyzedKindRef.current as HazardKind | null,
                   sentinelFirstAnalyzedHitAvailable:
                     sentinelAnalyzedBlockWaveRef.current !== wave,
-                  titanMaulEquipped: true,
+                  titanMaulEquipped: activeCharacter === "tank_colossus",
                 });
                 abilityAdjustedDamage = tankResult.damage;
                 if (tankResult.consumed.bulwarkPlate)
@@ -6875,14 +9152,15 @@ export default function Home() {
                   bastionArmorChargedRef.current = false;
                   bastionChargeRemainingRef.current = 20000;
                 }
-                if (tankResult.reasons.length > 0)
-                  showAbilityNotice(
-                    tankResult.reasons
-                      .map((reason) => reason.replaceAll("-", " ").toUpperCase())
-                      .join(" · "),
-                    1000,
-                  );
+                damageReasons.push(...tankResult.reasons);
               }
+              if (damageReasons.length > 0)
+                showAbilityNotice(
+                  damageReasons
+                    .map((reason) => reason.replaceAll("-", " ").toUpperCase())
+                    .join(" · "),
+                  1000,
+                );
               if (
                 activeCharacter === "tank_anchor" &&
                 anchorGuardUntilRef.current > Date.now()
@@ -6922,6 +9200,37 @@ export default function Home() {
                 abilityAdjustedDamage *= 0.5;
                 showAbilityNotice("WORLD MAUL · DAMAGE HALVED", 900);
               }
+              if (activeCharacter === "misc_muse" && museReward)
+                abilityAdjustedDamage *= 1 - museReward.damageReduction;
+              if (hasCharacterAbility("trickster_wildcard") && wildcardEffect)
+                abilityAdjustedDamage *= wildcardEffect.damageMultiplier;
+              if (activeCharacter === "trickster_gambit") {
+                abilityAdjustedDamage *= getActiveGambitEffects(
+                  wave,
+                  state.current.hearts,
+                ).damageMultiplier;
+              }
+              if (activeCharacter === "trickster_hex")
+                abilityAdjustedDamage *= getHexDamnationBenefits(
+                  hexStateRef.current.damnation,
+                ).damageMultiplier;
+              const echoKnowingHit =
+                activeCharacter === "trickster_echo" && !isOnlineVersus
+                  ? resolveEchoKnowingHit(
+                      echoKnowingStateRef.current,
+                      abilityAdjustedDamage,
+                      Date.now(),
+                      isBotPractice,
+                    )
+                  : null;
+              if (echoKnowingHit)
+                abilityAdjustedDamage = echoKnowingHit.selfDamage;
+              // Online HEATFEAST damage is applied once by the authoritative
+              // state RPC from the raw heart delta. Practice remains local.
+              if (activeCharacter === "runner_comet" && !isOnlineVersus)
+                abilityAdjustedDamage *= getHeatfeastBenefits(
+                  heatfeastStateRef.current.consumed,
+                ).selfDamageMultiplier;
               if (activeCharacter === "medic_oracle") {
                 if (oracleHitCountRef.current === 1) {
                   abilityAdjustedDamage = 0;
@@ -6961,6 +9270,25 @@ export default function Home() {
                 );
               }
               let nextHearts = state.current.hearts - damage;
+              if (echoKnowingHit?.healing) {
+                nextHearts = Math.min(maxHearts, nextHearts + echoKnowingHit.healing);
+                showAbilityNotice("MIRROR REALM · +0.5 HP", 800);
+              }
+              if (
+                echoKnowingHit?.opponentDamage &&
+                isBotPractice
+              )
+                setVersusOpponentHearts((value) =>
+                  Math.max(0, value - echoKnowingHit.opponentDamage),
+                );
+              if (activeCharacter === "trickster_echo") {
+                echoProgressRef.current = {
+                  ...echoProgressRef.current,
+                  totalDamageTaken:
+                    echoProgressRef.current.totalDamageTaken + damage,
+                };
+                setEchoProgress(echoProgressRef.current);
+              }
               if (
                 nextHearts <= 0 &&
                 activeCharacter === "trickster_phantom" &&
@@ -6992,6 +9320,60 @@ export default function Home() {
               if (activeCharacter === "tank_sentinel")
                 sentinelDamageByKindRef.current[n.kind] =
                   (sentinelDamageByKindRef.current[n.kind] ?? 0) + damage;
+              if (
+                nextHearts <= 0 &&
+                activeCharacter === "trickster_gambit" &&
+                gambitRevivesRef.current > 0
+              ) {
+                gambitRevivesRef.current -= 1;
+                nextHearts = gambitMaxHeartsRef.current ?? maxHearts;
+                showAbilityNotice(
+                  `ROYAL REVIVE · ${gambitRevivesRef.current} LEFT`,
+                  1500,
+                );
+              }
+              if (
+                nextHearts <= 0 &&
+                activeCharacter === "trickster_echo" &&
+                !isOnlineVersus
+              ) {
+                const death = resolveEchoKnowingDeath(
+                  echoKnowingStateRef.current,
+                  echoQuestStateRef.current.mirrorShards,
+                  isBotPractice,
+                );
+                if (death.remainingShards !== echoQuestStateRef.current.mirrorShards) {
+                  const nextQuestState = {
+                    ...echoQuestStateRef.current,
+                    mirrorShards: death.remainingShards,
+                  };
+                  echoQuestStateRef.current = nextQuestState;
+                  setEchoQuestState(nextQuestState);
+                }
+                if (death.revived) {
+                  nextHearts = death.hearts;
+                  showAbilityNotice(
+                    `MIRROR SHARD BROKE · REVIVED · ${death.remainingShards} LEFT`,
+                    1500,
+                  );
+                }
+              }
+              if (
+                nextHearts <= 0 &&
+                activeCharacter === "trickster_hex" &&
+                hexStateRef.current.godMode
+              ) {
+                const revival = resolveHexGodDeath(hexStateRef.current);
+                hexStateRef.current = revival.state;
+                setHexState(revival.state);
+                if (revival.revived) {
+                  nextHearts = revival.hearts;
+                  showAbilityNotice(
+                    `VOID GOD · REVIVED · MAX HP ${revival.hearts}`,
+                    1500,
+                  );
+                }
+              }
               if (
                 nextHearts <= 0 &&
                 activeCharacter === "misc_nomad" &&
@@ -7097,6 +9479,7 @@ export default function Home() {
               state.current.hearts = Math.max(0, nextHearts);
               setHearts(state.current.hearts);
               if (nextHearts <= 0) {
+                settleBrokerAtRunEnd();
                 setRunning(false);
                 setPauseMenuOpen(false);
                 setOver(true);
@@ -7113,7 +9496,7 @@ export default function Home() {
                 } else if (guest) {
                   setGems(0);
                   gemsRef.current = 0;
-                } else {
+                } else if (!runIsTestModeRef.current) {
                   const best = Math.max(
                     highScoreRef.current,
                     scoreRef.current,
@@ -7143,7 +9526,7 @@ export default function Home() {
           if (n.y < 108) return [n];
           if (
             isHazard &&
-            activeCharacter === "trickster_pickpocket"
+            hasCharacterAbility("trickster_pickpocket")
           ) {
             pickpocketPassedCountRef.current += 1;
             if (pickpocketPassedCountRef.current % 7 === 0) {
@@ -7219,7 +9602,7 @@ export default function Home() {
         courierBoostRemainingRef.current > 0
       )
         characterScoreMultiplier *= 1.25;
-      if (activeCharacter === "runner_tempo")
+      if (hasCharacterAbility("runner_tempo"))
         characterScoreMultiplier *= wave % 2 === 1 ? 1.15 : 0.85;
       if (
         hasCharacterAbility("runner_vector") &&
@@ -7236,16 +9619,16 @@ export default function Home() {
         driftStackPercentRef.current > 0
       )
         characterScoreMultiplier *= 1 + driftStackPercentRef.current;
-      if (activeCharacter === "runner_spark")
+      if (hasCharacterAbility("runner_spark"))
         characterScoreMultiplier *= 1 + sparkGemCountRef.current * 0.01;
-      if (activeCharacter === "trickster_pickpocket")
+      if (hasCharacterAbility("trickster_pickpocket"))
         characterScoreMultiplier *= 2;
       if (
-        activeCharacter === "trickster_switch" &&
+        hasCharacterAbility("trickster_switch") &&
         switchLaneChangesRef.current >= 50
       )
         characterScoreMultiplier *= 1.1;
-      if (activeCharacter === "tank_guard")
+      if (hasCharacterAbility("tank_guard"))
         characterScoreMultiplier *= 0.9;
       if (activeCharacter === "tank_colossus")
         characterScoreMultiplier *=
@@ -7278,11 +9661,24 @@ export default function Home() {
         characterScoreMultiplier *= 1.5;
       if (activeCharacter === "medic_oracle" && oracleCompleted > 0)
         characterScoreMultiplier *= 1 + oracleCompleted * 0.05;
-      if (
-        activeCharacter === "trickster_wildcard" &&
-        wildcardBuffRef.current === "score"
-      )
-        characterScoreMultiplier *= 1.15;
+      if (activeCharacter === "misc_muse" && museReward)
+        characterScoreMultiplier *= 1 + museReward.scoreBonus;
+      if (activeCharacter === "trickster_gambit")
+        characterScoreMultiplier *= getActiveGambitEffects(
+          wave,
+          state.current.hearts,
+        ).scoreMultiplier;
+      if (activeCharacter === "trickster_echo" && !isOnlineVersus)
+        characterScoreMultiplier *= getEchoKnowingBenefits(
+          echoKnowingStateRef.current,
+          echoQuestStateRef.current.mirrorShards,
+        ).scoreMultiplier;
+      if (activeCharacter === "trickster_hex")
+        characterScoreMultiplier *= getHexDamnationBenefits(
+          hexStateRef.current.damnation,
+        ).scoreMultiplier;
+      if (hasCharacterAbility("trickster_wildcard") && wildcardEffect)
+        characterScoreMultiplier *= wildcardEffect.scoreMultiplier;
       const totalScoreMultiplier =
         modeMultiplier *
         classScoreMultiplier *
@@ -7340,11 +9736,6 @@ export default function Home() {
           0,
           orbitCooldownRemainingRef.current - dt,
         );
-      if (gambitBoostRemainingRef.current > 0)
-        gambitBoostRemainingRef.current = Math.max(
-          0,
-          gambitBoostRemainingRef.current - dt,
-        );
       if (smokeSlowRemainingRef.current > 0)
         smokeSlowRemainingRef.current = Math.max(
           0,
@@ -7392,19 +9783,6 @@ export default function Home() {
           showAbilityNotice("STEADY MEND · +0.5 HP", 1000);
         }
       }
-      if (
-        activeCharacter === "runner_comet" &&
-        !cometChargedRef.current
-      ) {
-        cometChargeRemainingRef.current = Math.max(
-          0,
-          cometChargeRemainingRef.current - dt,
-        );
-        if (cometChargeRemainingRef.current === 0) {
-          cometChargedRef.current = true;
-          showAbilityNotice("STAR DRIVE · SCORE ×1.50", 1000);
-        }
-      }
       if (scoreGain > 0) setScore((v) => v + scoreGain);
       if (isBotPractice && versusOpponentHearts > 0) {
         botScoreCarryRef.current +=
@@ -7444,13 +9822,17 @@ export default function Home() {
     modeRules.hazardLaneLimit,
     classScoreMultiplier,
     activeWeaponScoreMultiplier,
+    getActiveGambitEffects,
     hasCharacterAbility,
+    museReward,
     oracleCompleted,
     grantInvincibility,
     applyFreezeEffect,
     clearFreezeEffect,
-    preserveFreezeThroughHit,
-    showAbilityNotice,
+      preserveFreezeThroughHit,
+      settleBrokerAtRunEnd,
+      showAbilityNotice,
+    soundtrack,
     queueGemClaim,
     queueEndlessGemStreakReset,
     queueOnlineCoinAward,
@@ -7459,12 +9841,18 @@ export default function Home() {
     applyDirectMapDamage,
     applyCharacterSelfDamage,
     activeAbility.name,
+    wildcardEffect,
+    gambitRunReward,
+    scribeHazard,
   ]);
   useEffect(() => {
     if (!running) return;
     const next = Math.floor(waveProgress / 2250) + 1;
     if (next !== wave) {
       const completedWave = next - 1;
+      let characterChoiceOpened = false;
+      if (cometRemovalQueueRef.current.wave <= completedWave)
+        cometRemovalQueueRef.current = { wave: 0, counts: {} };
       setWave(next);
       if (playScope === "single") queueEndlessGemStreakReset(next);
       else gemStreakRef.current = 0;
@@ -7481,7 +9869,6 @@ export default function Home() {
         factoryConveyorRef.current = nextConveyor;
         setFactoryConveyor(nextConveyor);
       }
-      wildcardBuffRef.current = null;
       mercyChainActiveRef.current = true;
       phantomKindHitsRef.current = {};
       if (activeCharacter === "tank_citadel") {
@@ -7730,6 +10117,81 @@ export default function Home() {
         if (!passiveChoiceOpened)
           setAbilityChoice({ kind: "oracle-prophecy" });
       }
+      if (activeCharacter === "misc_scribe") {
+        setAbilityChoice({
+          kind: "scribe-hazard",
+          options: [...AMBIENT_HAZARDS],
+          nextWave: next,
+        });
+        setPaused(true);
+      }
+      if (activeCharacter === "trickster_echo") {
+        const progress: EchoQuestProgress = {
+          ...echoProgressRef.current,
+          highestWaveReached: Math.max(
+            echoProgressRef.current.highestWaveReached,
+            next,
+          ),
+          wavesCompletedAfterUnlockingAllTricksters:
+            echoProgressRef.current.allTrickstersUnlocked
+              ? echoProgressRef.current
+                  .wavesCompletedAfterUnlockingAllTricksters + 1
+              : 0,
+        };
+        echoProgressRef.current = progress;
+        setEchoProgress(progress);
+        const advancedQuest = advanceEchoQuest(
+          echoQuestStateRef.current,
+          progress,
+        );
+        if (advancedQuest.completed) {
+          echoQuestStateRef.current = advancedQuest.state;
+          setEchoQuestState(advancedQuest.state);
+          showAbilityNotice(
+            `THE MIRROR · ${ECHO_QUESTS[advancedQuest.completed].label} COMPLETE · +1 SHARD`,
+            1900,
+          );
+          if (advancedQuest.passiveGrant) {
+            const options = getEchoEligiblePassives(
+              advancedQuest.completed,
+              ECHO_PASSIVE_CANDIDATES,
+            ).map((candidate) => candidate.key as CharacterKey);
+            if (options.length >= 2) {
+              characterChoiceOpened = true;
+              setPaused(true);
+              setAbilityChoice({
+                kind: "echo-passives",
+                quest: advancedQuest.completed,
+                options,
+                selected: [],
+                nextWave: next,
+              });
+            }
+          }
+        }
+      }
+      if (activeCharacter === "misc_broker") {
+        const moved = moveBrokerFundsForWave(brokerFundsRef.current, {
+          gems: {
+            directionRoll: Math.random(),
+            percentageRoll: Math.random(),
+          },
+          coins: {
+            directionRoll: Math.random(),
+            percentageRoll: Math.random(),
+          },
+          melons: {
+            directionRoll: Math.random(),
+            percentageRoll: Math.random(),
+          },
+        });
+        brokerFundsRef.current = moved.funds;
+        setAbilityStateVersion((value) => value + 1);
+        showAbilityNotice(
+          `MARKET CLOSE · GEMS ${moved.movements.gems.direction.toUpperCase()} · COINS ${moved.movements.coins.direction.toUpperCase()} · MELONS ${moved.movements.melons.direction.toUpperCase()}`,
+          1800,
+        );
+      }
       if (isBotPractice) {
         const queuedAttacks = playerAttacksAgainstBotRef.current;
         playerAttacksAgainstBotRef.current = [];
@@ -7738,6 +10200,11 @@ export default function Home() {
           queuedAttacks,
           next - 1,
           practiceBotMaxHeartsRef.current,
+          activeCharacter === "runner_comet"
+            ? getHeatfeastBenefits(
+                heatfeastStateRef.current.consumed,
+              ).opponentDamageMultiplier
+            : 1,
         );
         practiceBotNextWaveHeartsRef.current = outcome.heartsAfterHealing;
         setVersusOpponentHearts(outcome.heartsAfterDamage);
@@ -7759,7 +10226,27 @@ export default function Home() {
           getAttackPointsForCoin(activeMapId);
         botAttackPointsRef.current += waveReward + simulatedBotCoinPickups;
         versusPointsRef.current +=
-          waveReward * currentCoinMultiplierRef.current;
+          waveReward *
+          currentCoinMultiplierRef.current *
+          (activeCharacter === "runner_comet"
+            ? getHeatfeastBenefits(
+                heatfeastStateRef.current.consumed,
+              ).attackCoinMultiplierWithStarSpear
+            : 1);
+        if (activeCharacter === "runner_comet") {
+          const taxFraction = getHeatfeastBenefits(
+            heatfeastStateRef.current.consumed,
+          ).opponentCoinTaxFraction;
+          const tax = botAttackPointsRef.current * taxFraction;
+          if (tax > 0) {
+            botAttackPointsRef.current -= tax;
+            versusPointsRef.current += tax;
+            showAbilityNotice(
+              `HEATFEAST TAX · +${tax.toFixed(2)} ATTACK COINS`,
+              1100,
+            );
+          }
+        }
         setVersusPoints(versusPointsRef.current);
         setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
         setVersusPhase("intermission");
@@ -7782,7 +10269,11 @@ export default function Home() {
         setVersusIntermissionReady(false);
         setVersusResult("WAITING FOR RIVAL");
         setPaused(true);
-      } else announceWave(next);
+      } else if (
+        activeCharacter !== "misc_scribe" &&
+        !characterChoiceOpened
+      )
+        announceWave(next);
     }
   }, [
     waveProgress,
@@ -7834,7 +10325,8 @@ export default function Home() {
     if (versusPhase !== "intermission") return;
     if (versusCountdown <= 0) {
       if (isBotPractice) {
-        let botBudget = botAttackPointsRef.current;
+        const botBudgetBefore = botAttackPointsRef.current;
+        let botBudget = botBudgetBefore;
         const botAttacks: VersusAttackKind[] = [];
         const attackLimit = Math.min(6, 1 + Math.ceil(wave / 3));
         const availableAttackIds = getAvailableAttacks(activeMapId);
@@ -7850,11 +10342,39 @@ export default function Home() {
           botBudget -= chosen.cost;
         }
         botAttackPointsRef.current = botBudget;
-        if (botAttacks.length > 0)
+        let attacksForPlayer = botAttacks;
+        if (activeCharacter === "runner_comet") {
+          const spentByBot = Math.max(0, botBudgetBefore - botBudget);
+          if (spentByBot > 0) {
+            const nextHeat = addHeatfeastSpending(
+              heatfeastStateRef.current,
+              spentByBot,
+            );
+            heatfeastStateRef.current = nextHeat;
+            setHeatfeastState(nextHeat);
+          }
+          if (
+            getHeatfeastBenefits(heatfeastStateRef.current.consumed)
+              .splitOpponentSentObstacles &&
+            botAttacks.length > 0
+          ) {
+            const split = splitCometIncomingObstacles(botAttacks.length);
+            attacksForPlayer = botAttacks.slice(0, split.remainingForComet);
+            playerAttacksAgainstBotRef.current.push(
+              ...botAttacks.slice(split.remainingForComet),
+            );
+            showAbilityNotice(
+              `HEATFEAST SPLIT · ${split.returnedToOpponent} SENT BACK TO BOT`,
+              1200,
+            );
+          }
+          setAbilityStateVersion((value) => value + 1);
+        }
+        if (attacksForPlayer.length > 0)
           enqueueDeferredAttackItems(
             appendSafeAttackWave(
               [],
-              botAttacks.map((attack) =>
+              attacksForPlayer.map((attack) =>
                 attack === "spike" ? "spikes" : attack,
               ),
               () => id.current++,
@@ -8031,12 +10551,14 @@ export default function Home() {
     wave,
     activeLaneCount,
     activeMapId,
+    activeCharacter,
     isBotPractice,
     isOnlineVersus,
     versusIntermissionReady,
     enqueueDeferredAttackItems,
     enqueueVersusStateSync,
     applyAuthoritativeVersusPoints,
+    showAbilityNotice,
   ]);
   useEffect(() => {
     if (
@@ -8273,6 +10795,7 @@ export default function Home() {
           { data: profile },
           { data: admin },
           { data: role },
+          { data: testMode },
           { data: owned },
           { data: loadout },
           { data: progression },
@@ -8289,6 +10812,7 @@ export default function Home() {
             .maybeSingle(),
           supabase.rpc("is_admin"),
           supabase.rpc("get_admin_role"),
+          supabase.rpc("get_admin_test_mode"),
           supabase
             .from("player_unlocks")
             .select("item_key,item_type,rarity")
@@ -8324,8 +10848,22 @@ export default function Home() {
         } else setUsernameRequired(true);
         setIsAdmin(Boolean(admin));
         setAdminRole(role);
+        const restoredTestMode = Boolean(
+          admin &&
+            testMode &&
+            typeof testMode === "object" &&
+            "enabled" in testMode &&
+            testMode.enabled === true,
+        );
+        setAdminTestModeEnabled(restoredTestMode);
+        if (restoredTestMode) setVersusMode("casual");
+        setAdminTestModeStatus("");
         const ownedItems = (owned ?? []) as Unlock[];
-        const safeLoadout = normalizeOwnedLoadout(ownedItems, loadout);
+        const safeLoadout = normalizeOwnedLoadout(
+          ownedItems,
+          loadout,
+          restoredTestMode,
+        );
         setUnlocks(ownedItems);
         setSelectedCharacter(safeLoadout.characterKey);
         setPlayerCosmetic(safeLoadout.playerCosmetic);
@@ -8340,6 +10878,10 @@ export default function Home() {
         setUsernameRequired(false);
         setIsAdmin(false);
         setAdminRole(null);
+        setAdminTestModeEnabled(false);
+        setAdminTestModeStatus("");
+        runIsTestModeRef.current = false;
+        setRunIsTestMode(false);
         setUnlocks([]);
         setSelectedCharacter("runner_ace");
         setInventoryCharacter({
@@ -8800,7 +11342,11 @@ export default function Home() {
             ownedItem.item_type === item.item_type,
         ),
     );
-    const safeLoadout = normalizeOwnedLoadout(ownedItems, loadout);
+    const safeLoadout = normalizeOwnedLoadout(
+      ownedItems,
+      loadout,
+      adminTestModeActive || runIsTestMode,
+    );
     setUnlocks(ownedItems);
     setCatalogItems(availableCatalog);
     setDirectPurchaseKey((current) =>
@@ -8812,6 +11358,38 @@ export default function Home() {
     setPlayerCosmetic(safeLoadout.playerCosmetic);
     setObstacleCosmetic(safeLoadout.obstacleCosmetic);
     setEnvironmentCosmetic(safeLoadout.environmentCosmetic);
+  };
+  const updateAdminTestMode = async (enabled: boolean) => {
+    if (!isAdmin || guest || adminTestModeBusy) return;
+    setAdminTestModeBusy(true);
+    setAdminTestModeStatus("SAVING TEST MODE…");
+    const { data, error } = await supabase.rpc("set_admin_test_mode", {
+      p_enabled: enabled,
+    });
+    setAdminTestModeBusy(false);
+    if (error) {
+      setAdminTestModeStatus(error.message);
+      return;
+    }
+    const savedEnabled = Boolean(data?.enabled);
+    setAdminTestModeEnabled(savedEnabled);
+    if (savedEnabled) setVersusMode("casual");
+    if (
+      !savedEnabled &&
+      !runIsTestModeRef.current &&
+      !isCharacterOwned(unlocks, selectedCharacter)
+    ) {
+      setSelectedCharacter("runner_ace");
+      setInventoryCharacter({
+        classKey: "runner",
+        characterKey: "runner_ace",
+      });
+    }
+    setAdminTestModeStatus(
+      running
+        ? `TEST MODE ${savedEnabled ? "ON" : "OFF"} · APPLIES TO YOUR NEXT RUN`
+        : `TEST MODE ${savedEnabled ? "ON · ALL CHARACTERS AVAILABLE" : "OFF"}`,
+    );
   };
   const extract = async (option: ExtractionOption) => {
     if (extractBusyRef.current) return;
@@ -8944,6 +11522,7 @@ export default function Home() {
       return;
     }
     if (
+      !effectiveCharacterTestMode &&
       mode === "impossible" &&
       (classKey !== "runner" || characterKey !== "runner_ace")
     ) {
@@ -8951,6 +11530,7 @@ export default function Home() {
       return;
     }
     if (
+      !effectiveCharacterTestMode &&
       mode === "hardcore" &&
       (classKey === "medic" || classKey === "tank")
     ) {
@@ -8958,7 +11538,8 @@ export default function Home() {
       return;
     }
     const owned = isCharacterOwned(unlocks, characterKey);
-    if (!owned) {
+    const available = isCharacterAvailable(owned, testCharacterAccessContext);
+    if (!available) {
       setInventoryStatus("That character is locked. Extract it in the Shop first.");
       return;
     }
@@ -8986,7 +11567,9 @@ export default function Home() {
     }
     setSelectedCharacter(characterKey);
     setInventoryStatus(
-      `${characterKey.replaceAll("_", " ").toUpperCase()} equipped.`,
+      owned
+        ? `${characterKey.replaceAll("_", " ").toUpperCase()} equipped.`
+        : `${characterKey.replaceAll("_", " ").toUpperCase()} equipped for Admin Test Mode only.`,
     );
   };
   const equipCosmetic = async (item: Unlock) => {
@@ -9155,6 +11738,9 @@ export default function Home() {
   const focusedCharacterOwned = Boolean(
     focusedCharacter && isCharacterOwned(unlocks, focusedCharacter.key),
   );
+  const focusedCharacterAvailable = Boolean(
+    focusedCharacter && canUseCharacter(focusedCharacter.key),
+  );
   const focusedCharacterAbility = focusedCharacter
     ? CHARACTER_ABILITIES[focusedCharacter.key as CharacterKey]
     : null;
@@ -9167,7 +11753,7 @@ export default function Home() {
   const pacerCharacterOptions = CHARACTER_ROSTER.filter(
     (character) =>
       getCharacterClassKey(character.key) !== "runner" &&
-      isCharacterOwned(unlocks, character.key),
+      canUseCharacter(character.key),
   );
   const brewTonic = (strength: 1 | 2 | 3) => {
     const cost = strength * 5;
@@ -9197,7 +11783,7 @@ export default function Home() {
     if (
       abilityChoice?.kind !== "pacer-character" ||
       getCharacterClassKey(characterKey) === "runner" ||
-      !isCharacterOwned(unlocks, characterKey)
+      !canUseCharacter(characterKey)
     )
       return;
     setRunCharacterOverride(characterKey);
@@ -9242,6 +11828,194 @@ export default function Home() {
       `PROPHECY SET · ${prophecies.map((value) => value.replace("-", " ").toUpperCase()).join(" + ")}`,
       1400,
     );
+  };
+  const toggleMimicPassive = (characterKey: CharacterKey) => {
+    if (
+      abilityChoice?.kind !== "mimic-passives" ||
+      !abilityChoice.options.includes(characterKey)
+    )
+      return;
+    const alreadySelected = abilityChoice.selected.includes(characterKey);
+    const selected = alreadySelected
+      ? abilityChoice.selected.filter((key) => key !== characterKey)
+      : abilityChoice.selected.length < 2
+        ? [...abilityChoice.selected, characterKey]
+        : abilityChoice.selected;
+    setAbilityChoice({ ...abilityChoice, selected });
+  };
+  const confirmMimicPassives = () => {
+    if (
+      abilityChoice?.kind !== "mimic-passives" ||
+      abilityChoice.selected.length !== 2
+    )
+      return;
+    setMimicSelectedAbilities(abilityChoice.selected);
+    setAbilityChoice(null);
+    setPaused(isVersusRun && versusPhase === "intermission");
+    showAbilityNotice(
+      `COPYCAT · ${abilityChoice.selected
+        .map((key) => CHARACTER_ABILITIES[key].name)
+        .join(" + ")}`,
+      1800,
+    );
+  };
+  const toggleEchoPassive = (characterKey: CharacterKey) => {
+    if (
+      abilityChoice?.kind !== "echo-passives" ||
+      !abilityChoice.options.includes(characterKey)
+    )
+      return;
+    const alreadySelected = abilityChoice.selected.includes(characterKey);
+    const selected = alreadySelected
+      ? abilityChoice.selected.filter((key) => key !== characterKey)
+      : abilityChoice.selected.length < 2
+        ? [...abilityChoice.selected, characterKey]
+        : abilityChoice.selected;
+    setAbilityChoice({ ...abilityChoice, selected });
+  };
+  const confirmEchoPassives = () => {
+    if (
+      abilityChoice?.kind !== "echo-passives" ||
+      abilityChoice.selected.length !== 2
+    )
+      return;
+    const learned = abilityChoice.selected;
+    setEchoSelectedAbilities((current) =>
+      Array.from(new Set([...current, ...learned])),
+    );
+    const resumeWave = abilityChoice.nextWave;
+    setAbilityChoice(null);
+    setPaused(isVersusRun && versusPhase === "intermission");
+    showAbilityNotice(
+      `MIRROR SHARD · ${learned
+        .map((key) => CHARACTER_ABILITIES[key].name)
+        .join(" + ")} LEARNED`,
+      1900,
+    );
+    if (!isVersusRun) announceWave(resumeWave);
+  };
+  const chooseScribeHazard = (hazard: Kind) => {
+    if (
+      abilityChoice?.kind !== "scribe-hazard" ||
+      !abilityChoice.options.includes(hazard)
+    )
+      return;
+    const nextWave = abilityChoice.nextWave;
+    setScribeHazard(hazard);
+    setAbilityChoice(null);
+    showAbilityNotice(
+      `SCRIBE · ${hazard.toUpperCase()} CAPPED AT ${getScribeHazardCap(nextWave)} THIS WAVE`,
+      1600,
+    );
+    if (playScope === "single") {
+      setPaused(false);
+      announceWave(nextWave, true, undefined, undefined, undefined, hazard);
+    } else {
+      setPaused(versusPhase === "intermission");
+    }
+  };
+  const toggleGambitCard = (cardId: string) => {
+    setGambitSelectedCards((selected) =>
+      selected.includes(cardId)
+        ? selected.filter((id) => id !== cardId)
+        : [...selected, cardId],
+    );
+  };
+  const confirmGambitDiscard = async () => {
+    const pendingWave = gambitPendingDrawWaveRef.current;
+    const required = pendingWave > 0
+      ? Math.max(1, gambitDiscardRequiredRef.current)
+      : 1;
+    if (gambitSelectedCards.length < required) {
+      showAbilityNotice(
+        pendingWave > 0
+          ? `COUNTING CARDS · SELECT AT LEAST ${required} CARDS`
+          : "COUNTING CARDS · SELECT A CARD TO DISCARD",
+        900,
+      );
+      return;
+    }
+    if (isOnlineVersus && versusMatchRef.current) {
+      if (onlineGambitBusyRef.current) return;
+      const matchId = versusMatchRef.current;
+      onlineGambitBusyRef.current = true;
+      try {
+        const discarded = await supabase.rpc("discard_1v1_gambit_cards", {
+          p_match_id: matchId,
+          p_card_ids: gambitSelectedCards,
+        });
+        if (versusMatchRef.current !== matchId) return;
+        if (discarded.error) {
+          setVersusResult(discarded.error.message);
+          return;
+        }
+        applyOnlineGambitPayload(
+          (discarded.data ?? {}) as OnlineGambitPayload,
+        );
+        if (pendingWave > 0) {
+          const drawn = await supabase.rpc("draw_1v1_gambit_wave", {
+            p_match_id: matchId,
+            p_wave: pendingWave,
+          });
+          if (versusMatchRef.current !== matchId) return;
+          if (drawn.error) {
+            setVersusResult(drawn.error.message);
+            return;
+          }
+          applyOnlineGambitPayload(
+            (drawn.data ?? {}) as OnlineGambitPayload,
+            true,
+          );
+          gambitPendingDrawWaveRef.current = 0;
+          gambitDiscardRequiredRef.current = 0;
+        }
+        setGambitSelectedCards([]);
+        setGambitPanelOpen(false);
+        setPaused(versusPhase === "intermission");
+      } catch {
+        if (versusMatchRef.current === matchId)
+          setVersusResult("COUNTING CARDS DATABASE SETUP IS MISSING");
+      } finally {
+        onlineGambitBusyRef.current = false;
+      }
+      return;
+    }
+    let nextState = discardGambitCards(
+      gambitStateRef.current,
+      gambitSelectedCards,
+    );
+    if (pendingWave > 0) {
+      const draw = drawGambitWave(nextState);
+      if (!draw.ok) {
+        showAbilityNotice(
+          `COUNTING CARDS · DISCARD ${draw.discardRequired} MORE`,
+          900,
+        );
+        return;
+      }
+      nextState = draw.state;
+      const hand = evaluateGambitHand(nextState.hand);
+      if (hand) applyGambitHandReward(hand, pendingWave);
+      gambitPendingDrawWaveRef.current = 0;
+      gambitDiscardRequiredRef.current = 0;
+    }
+    gambitStateRef.current = nextState;
+    setGambitState(nextState);
+    setGambitSelectedCards([]);
+    setGambitPanelOpen(false);
+    setPaused(isVersusRun && versusPhase === "intermission");
+  };
+  const closeGambitPanel = () => {
+    if (gambitPendingDrawWaveRef.current > 0) {
+      showAbilityNotice(
+        `DISCARD ${Math.max(1, gambitDiscardRequiredRef.current)} CARDS BEFORE THIS WAVE CONTINUES`,
+        900,
+      );
+      return;
+    }
+    setGambitPanelOpen(false);
+    setGambitSelectedCards([]);
+    setPaused(isVersusRun && versusPhase === "intermission");
   };
   const interactWithSpike = (itemId: number) => {
     if (activeCharacter === "tank_warden") {
@@ -9293,8 +12067,105 @@ export default function Home() {
             : "READY · BURST + SHIELD",
         ready: dashCooldownRemainingRef.current <= 0,
       };
+    if (activeCharacter === "trickster_gambit")
+      return {
+        label: "COUNTING CARDS",
+        status: `${gambitState.hand.length}/10 CARDS · OPEN HAND`,
+        ready: true,
+      };
+    if (activeCharacter === "misc_mimic")
+      return {
+        label: "COPY PASSIVES",
+        status:
+          mimicSelectedAbilities.length === 2
+            ? "READY · CHANGE YOUR TWO PASSIVES"
+            : "READY · CHOOSE TWO PASSIVES",
+        ready: true,
+      };
+    if (activeCharacter === "trickster_echo") {
+      const currentQuest = echoQuestState.currentQuest;
+      return {
+        label: echoKnowingState.awakened ? "MIRROR REALM" : "THE MIRROR",
+        status: currentQuest
+          ? `${ECHO_QUESTS[currentQuest].label} · ${ECHO_QUESTS[currentQuest].requirementLabel}`
+          : echoKnowingState.chargingSinceMs !== null
+            ? `HOLD E · ${Math.floor(echoChargePercent)}% AWAKENED`
+            : echoKnowingState.awakened
+              ? echoKnowingState.realmUntilMs > Date.now()
+                ? "ACTIVE · HITS HEAL 0.5 HP"
+                : "READY · OPEN FOR 10 SECONDS"
+              : `${echoQuestState.mirrorShards} SHARDS · HOLD E FOR 10 SECONDS`,
+        ready: true,
+      };
+    }
+    if (activeCharacter === "trickster_hex") {
+      const benefits = getHexDamnationBenefits(hexState.damnation);
+      return {
+        label: hexState.godMode
+          ? "VOID THRONE"
+          : wave % 2 === 0 && hexState.voidUsedWave !== wave
+            ? "ENTER THE VOID"
+            : "SOULS OF THE DEAD",
+        status: hexState.godMode
+          ? hexState.throneUsedWave === wave
+            ? "USED THIS WAVE"
+            : "RETREAT 3s · RETURN INVINCIBLE 10s"
+          : wave % 2 === 0 && hexState.voidUsedWave !== wave
+            ? "READY · WAVE CLOCK PAUSES FOR 15s"
+            : benefits.soulsUnlocked && hexState.soulsRemaining === 0
+              ? "READY · COSTS 15 DAMNATION · BLOCKS 3 HITS"
+              : `${hexState.damnation} DAMNATION · VOID OPENS ON EVEN WAVES`,
+        ready: hexState.godMode
+          ? hexState.throneUsedWave !== wave
+          : (wave % 2 === 0 && hexState.voidUsedWave !== wave) ||
+            (benefits.soulsUnlocked && hexState.soulsRemaining === 0),
+      };
+    }
+    if (activeCharacter === "runner_comet")
+      return {
+        label:
+          isVersusRun &&
+          versusPhase === "intermission" &&
+          versusIntermissionReady
+            ? "COMET DEFENSE"
+            : "HEATFEAST",
+        status:
+          isVersusRun &&
+          versusPhase === "intermission" &&
+          versusIntermissionReady
+            ? "REMOVE NATURAL HAZARDS FROM NEXT WAVE"
+            : `${Math.floor(heatfeastState.stored)} STORED · ${Math.floor(heatfeastState.consumed)} CONSUMED · R TO CONSUME`,
+        ready: true,
+      };
+    if (activeCharacter === "misc_muse")
+      return {
+        label: museChallengeUsedRef.current ? "MUSE MIX" : "RHYTHM BREAK",
+        status: !museChallengeUsedRef.current
+          ? "READY · 30 SECOND RHYTHM CHALLENGE"
+          : !museReward?.unlocksMuseMix
+            ? "CHALLENGE COMPLETE"
+            : museMixUntilRef.current > Date.now()
+              ? `${Math.ceil((museMixUntilRef.current - Date.now()) / 1000)}s ACTIVE`
+              : museMixCooldownUntilRef.current > Date.now()
+                ? `${Math.ceil((museMixCooldownUntilRef.current - Date.now()) / 1000)}s COOLDOWN`
+                : "READY · 30 SECOND MUSE MIX",
+        ready:
+          !museChallengeUsedRef.current ||
+          Boolean(
+            museReward?.unlocksMuseMix &&
+              museMixUntilRef.current <= Date.now() &&
+              museMixCooldownUntilRef.current <= Date.now(),
+          ),
+      };
     if (activeCharacter === "tank_hammer")
-      return { label: "HAMMER", status: "CLEARS CURRENT + NEIGHBOR LANES", ready: true };
+      return {
+        label: "HAMMER",
+        status:
+          hammerCooldownUntilRef.current > Date.now()
+            ? `${Math.ceil((hammerCooldownUntilRef.current - Date.now()) / 1000)}s COOLDOWN`
+            : "READY · CLEARS CURRENT + NEIGHBOR LANES",
+        ready: hammerCooldownUntilRef.current <= Date.now(),
+      };
     if (activeCharacter === "tank_anchor")
       return {
         label: "GROUND HOOK",
@@ -9349,14 +12220,31 @@ export default function Home() {
     if (activeCharacter === "medic_vial")
       return {
         label: "SWITCH ALLEGIANCE",
-        status: vialUsedRef.current ? "USED THIS RUN" : "REVERSE EFFECTS FOR 30s",
-        ready: !vialUsedRef.current,
+        status: isVersusRun
+          ? vialUsedRef.current
+            ? "USED THIS 1V1"
+            : "REVERSE EFFECTS FOR 30s · ONCE THIS 1V1"
+          : vialCooldownUntilRef.current > Date.now()
+            ? `${Math.ceil((vialCooldownUntilRef.current - Date.now()) / 1000)}s COOLDOWN`
+            : "REVERSE EFFECTS FOR 30s · 120s COOLDOWN",
+        ready: isVersusRun
+          ? !vialUsedRef.current
+          : vialCooldownUntilRef.current <= Date.now(),
       };
     if (activeCharacter === "trickster_mirage")
       return {
         label: "MIRAGE INVASION",
-        status: mirageUsedWaveRef.current === wave ? "USED THIS WAVE" : "5s INVASION · -1 HP ON RETURN",
-        ready: mirageUsedWaveRef.current !== wave,
+        status: mirageInvasion && !mirageInvasion.finished
+          ? `${Math.max(0, (mirageInvasion.endsAtMs - Date.now()) / 1000).toFixed(1)}s · MATCH RIVAL LANE ${versusOpponentLane + 1}`
+          : !isVersusRun
+            ? "1V1 ONLY"
+            : mirageUsedWaveRef.current === wave
+              ? "USED THIS WAVE"
+              : "5s INVASION · MATCH LANES TO DEAL 1 HP EVERY 0.5s",
+        ready:
+          isVersusRun &&
+          !mirageInvasion &&
+          mirageUsedWaveRef.current !== wave,
       };
     if (activeCharacter === "runner_scout")
       return {
@@ -9374,8 +12262,26 @@ export default function Home() {
     if (activeCharacter === "tank_drag")
       return {
         label: "CHAIN ANCHOR",
-        status: dragChainRef.current?.wave === wave ? "RETURN TO SAVED LANE" : "SET RETURN POINT",
-        ready: true,
+        status:
+          dragChainRef.current?.wave === wave
+            ? "RETURN TO SAVED LANE"
+            : dragUsedWaveRef.current === wave
+              ? "USED THIS WAVE"
+              : "SET RETURN POINT · ONCE THIS WAVE",
+        ready:
+          dragChainRef.current?.wave === wave ||
+          dragUsedWaveRef.current !== wave,
+      };
+    if (activeCharacter === "misc_broker")
+      return {
+        label: "CLAIM COIN FUND",
+        status: isOnlineVersus
+          ? "ONLINE COINS SETTLE DIRECTLY · SERVER VERIFIED"
+          :
+          brokerFundsRef.current.coins > 0
+            ? `${brokerFundsRef.current.coins.toFixed(2)} ATTACK COINS READY`
+            : "COIN FUND EMPTY",
+        ready: !isOnlineVersus && brokerFundsRef.current.coins > 0,
       };
     if (activeCharacter === "misc_tinker")
       return {
@@ -9446,6 +12352,12 @@ export default function Home() {
       };
     return null;
   })();
+  const activeGambitEffects = getActiveGambitEffects(
+    isVersusRun && versusPhase === "intermission"
+      ? Math.max(1, wave - 1)
+      : wave,
+    hearts,
+  );
   const atlasTimerRemaining = Math.max(
     0,
     atlasLaneLimitRef.current - atlasLaneElapsedRef.current,
@@ -9731,10 +12643,22 @@ export default function Home() {
     !adminOpen &&
     !usernameRequired;
   return (
-    <main className={`game-shell mode-${mode} ${flash}`}>
+    <main
+      className={`game-shell mode-${mode} ${flash}${adminTestModeActive || runIsTestMode ? " admin-test-mode" : ""}`}
+    >
       <div
         className={`game-layout view-${mainView}${showPlayerLevel ? " has-player-level" : ""}`}
       >
+        {isAdmin && (adminTestModeActive || runIsTestMode) && (
+          <div className="test-mode-run-banner" role="status">
+            <b>ADMIN TEST MODE</b>
+            <span>
+              {runIsTestMode
+                ? "CURRENT RUN · UNRANKED · NO PERMANENT REWARDS"
+                : "ON · ALL CHARACTERS · NEXT RUN UNRANKED"}
+            </span>
+          </div>
+        )}
         {showPlayerLevel && (
           <div className="report-utility-bar">
             <div
@@ -9963,11 +12887,21 @@ export default function Home() {
                       disabled={
                         versusPhase === "searching" ||
                         versusLeaving ||
-                        !playerProgression.ranked_unlocked ||
+                        !isRankedAvailable(
+                          playerProgression.ranked_unlocked,
+                          adminTestModeContext,
+                        ) ||
                         getCharacterDefinition(equippedCharacter).rarity ===
                           "mythic"
                       }
                       onClick={() => {
+                        if (adminTestModeActive) {
+                          setVersusMode("casual");
+                          setVersusResult(
+                            "TEST MODE USES CASUAL 1V1 · NO ELO OR REWARDS",
+                          );
+                          return;
+                        }
                         setVersusMode("ranked");
                         setVersusResult("");
                         void loadVersusLeaderboard();
@@ -9975,7 +12909,9 @@ export default function Home() {
                     >
                       <b>RANKED</b>
                       <small>
-                        {playerProgression.ranked_unlocked
+                        {adminTestModeActive
+                          ? "TEST MODE ON · CASUAL ONLY"
+                          : playerProgression.ranked_unlocked
                           ? getCharacterDefinition(equippedCharacter).rarity ===
                             "mythic"
                             ? "MYTHIC EQUIPPED · CHOOSE A NON-MYTHIC"
@@ -10404,8 +13340,39 @@ export default function Home() {
               <button
                 type="button"
                 className={`ability-action-button ${abilityAction.ready ? "ready" : "cooldown"}`}
-                disabled={!abilityAction.ready || paused || wavePause}
-                onClick={triggerCharacterAction}
+                disabled={
+                  !abilityAction.ready ||
+                  wavePause ||
+                  (paused &&
+                    !(
+                      activeCharacter === "runner_comet" &&
+                      isVersusRun &&
+                      versusPhase === "intermission" &&
+                      versusIntermissionReady
+                    ) &&
+                    !(
+                      activeCharacter === "trickster_echo" &&
+                      echoKnowingState.chargingSinceMs !== null
+                    ))
+                }
+                onPointerDown={() => {
+                  if (
+                    activeCharacter === "trickster_echo" &&
+                    !echoKnowingState.awakened &&
+                    echoQuestState.currentQuest === null
+                  )
+                    triggerCharacterAction();
+                }}
+                onPointerUp={cancelEchoKnowingHold}
+                onPointerCancel={cancelEchoKnowingHold}
+                onPointerLeave={cancelEchoKnowingHold}
+                onClick={
+                  activeCharacter === "trickster_echo" &&
+                  !echoKnowingState.awakened &&
+                  echoQuestState.currentQuest === null
+                    ? undefined
+                    : triggerCharacterAction
+                }
                 data-ability-version={abilityStateVersion}
               >
                 <kbd className="ability-action-key">E</kbd>
@@ -10420,6 +13387,17 @@ export default function Home() {
               (hasCharacterAbility("medic_tonic") ||
                 waveForecast.length > 0 ||
                 activeCharacter === "runner_velocity" ||
+                activeCharacter === "misc_broker" ||
+                activeCharacter === "misc_prospector" ||
+                activeCharacter === "misc_scribe" ||
+                activeCharacter === "misc_mimic" ||
+                activeCharacter === "misc_muse" ||
+                activeCharacter === "trickster_wildcard" ||
+                activeCharacter === "trickster_gambit" ||
+                activeCharacter === "trickster_echo" ||
+                activeCharacter === "trickster_hex" ||
+                activeCharacter === "trickster_mirage" ||
+                activeCharacter === "runner_comet" ||
                 hasCharacterAbility("medic_halo") ||
                 hasCharacterAbility("runner_relay") ||
                 hasCharacterAbility("medic_seraph")) && (
@@ -10450,6 +13428,162 @@ export default function Home() {
                     )}
                     {hasCharacterAbility("runner_relay") && <p className="ability-panel-note">OVERCHARGED HEARTS · {relayChargesRef.current}</p>}
                     {hasCharacterAbility("medic_seraph") && <p className="ability-panel-note">TELEPORT CHANCE · {seraphTeleportChanceRef.current}%</p>}
+                    {activeCharacter === "misc_broker" && (
+                      <div className="broker-funds" data-ability-version={abilityStateVersion}>
+                        <p className="ability-panel-note">BROKER FUNDS · MOVE 1–50% AT EACH WAVE END</p>
+                        <div className="ability-preview-grid">
+                          <div className="ability-preview-card"><small>GEM FUND</small><b>{brokerFundsRef.current.gems.toFixed(2)}</b></div>
+                          <div className="ability-preview-card"><small>COIN FUND</small><b>{brokerFundsRef.current.coins.toFixed(2)}</b></div>
+                          <div className="ability-preview-card"><small>MELON SCORE FUND</small><b>{Math.floor(brokerFundsRef.current.melons).toLocaleString()}</b></div>
+                        </div>
+                      </div>
+                    )}
+                    {activeCharacter === "misc_prospector" && (
+                      <p className="ability-panel-note">
+                        {prospectorWarnings.length > 0
+                          ? `GEM SURVEY · ${prospectorWarnings.map((warning) => `LANE ${warning.lane + 1} IN ${Math.max(0, (warning.spawnAt - Date.now()) / 1000).toFixed(1)}s`).join(" · ")}`
+                          : "GEM SURVEY · SCANNING FOR THE NEXT GEM"}
+                      </p>
+                    )}
+                    {activeCharacter === "misc_scribe" && (
+                      <p className="ability-panel-note">SCRIBE CAP · {scribeHazard ? `${scribeHazard.toUpperCase()} MAX ${getScribeHazardCap(wave)}` : "CHOOSE AFTER THIS WAVE"}</p>
+                    )}
+                    {activeCharacter === "misc_mimic" && (
+                      <p className="ability-panel-note">COPIED PASSIVES · {mimicSelectedAbilities.length > 0 ? mimicSelectedAbilities.map((key) => CHARACTER_ABILITIES[key].name).join(" + ") : "CHOOSE TWO AT RUN START"}</p>
+                    )}
+                    {activeCharacter === "misc_muse" && (
+                      <p className="ability-panel-note">MUSE · {museReward ? `${museReward.tier.toUpperCase()} · SCORE +${Math.round(museReward.scoreBonus * 100)}% · HAZARDS -${Math.round(museReward.hazardSlow * 100)}% · DAMAGE -${Math.round(museReward.damageReduction * 100)}%` : "RHYTHM BREAK READY"}</p>
+                    )}
+                    {activeCharacter === "trickster_wildcard" && (
+                      <div data-ability-version={abilityStateVersion}>
+                        <p className="ability-panel-note">LUCKY DRAW · {wildcardEffect?.label ?? "DRAWING AT WAVE START"}</p>
+                        <div className="ability-preview-grid">
+                          <div className="ability-preview-card"><span>{wildcardCard?.suit === "hearts" ? "♥" : wildcardCard?.suit === "diamonds" ? "♦" : wildcardCard?.suit === "clubs" ? "♣" : wildcardCard?.suit === "spades" ? "♠" : "★"}</span><b>{wildcardCard?.rank ?? "?"}</b><small>CURRENT CARD</small></div>
+                          <div className="ability-preview-card"><b>{wildcardStateRef.current ? Math.max(0, 54 - (wildcardStateRef.current.nextIndex % 54)) : 54}</b><small>CARDS UNTIL SHUFFLE</small></div>
+                          <div className="ability-preview-card"><b>{wildcardIgnoredHitsRef.current}</b><small>IGNORED HITS LEFT</small></div>
+                        </div>
+                      </div>
+                    )}
+                    {activeCharacter === "trickster_gambit" && (
+                      <div data-ability-version={abilityStateVersion}>
+                        <p className="ability-panel-note">COUNTING CARDS · {gambitState.hand.length}/10 HELD</p>
+                        <p className="ability-panel-note">{gambitRunReward?.label ?? "FIVE CARDS ARE DRAWN AT EACH WAVE START"}</p>
+                        <div className="ability-preview-grid">
+                          <div className="ability-preview-card">
+                            <small>SCORE</small>
+                            <b>×{activeGambitEffects.scoreMultiplier.toFixed(2)}</b>
+                          </div>
+                          <div className="ability-preview-card">
+                            <small>DAMAGE TAKEN</small>
+                            <b>{activeGambitEffects.invincible ? "INVINCIBLE" : `×${activeGambitEffects.damageMultiplier.toFixed(2)}`}</b>
+                          </div>
+                          <div className="ability-preview-card">
+                            <small>1V1 SENDS</small>
+                            <b>×{activeGambitEffects.sentObstacleMultiplier.toFixed(0)}</b>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {activeCharacter === "trickster_echo" && (
+                      <div data-ability-version={abilityStateVersion}>
+                        <p className="ability-panel-note">
+                          THE MIRROR · {echoQuestState.currentQuest ? ECHO_QUESTS[echoQuestState.currentQuest].label : "ALL QUESTS COMPLETE"} · {echoQuestState.mirrorShards} SHARD{echoQuestState.mirrorShards === 1 ? "" : "S"}
+                        </p>
+                        {echoQuestState.currentQuest && (
+                          <div className="ability-preview-grid">
+                            <div className="ability-preview-card">
+                              <small>QUEST</small>
+                              <b>{ECHO_QUESTS[echoQuestState.currentQuest].requirementLabel}</b>
+                            </div>
+                            <div className="ability-preview-card">
+                              <small>LIVE PROGRESS</small>
+                              <b>
+                                {echoQuestState.currentQuest === "dreamer-i"
+                                  ? `${Math.min(5, echoProgress.highestWaveReached)}/5 WAVES`
+                                  : echoQuestState.currentQuest === "uplift"
+                                    ? `${Math.min(5, echoProgress.totalHeartsHealed).toFixed(1)}/5 HP HEALED`
+                                    : echoQuestState.currentQuest === "hope"
+                                      ? `${Math.min(10, echoProgress.totalDamageTaken).toFixed(1)}/10 DAMAGE`
+                                      : echoQuestState.currentQuest === "understanding"
+                                        ? echoProgress.allTrickstersUnlocked
+                                          ? `${Math.min(5, echoProgress.wavesCompletedAfterUnlockingAllTricksters)}/5 WAVES`
+                                          : "UNLOCK ALL TRICKSTERS"
+                                        : echoQuestState.currentQuest === "the-knowing"
+                                          ? echoProgress.allCharactersUnlocked
+                                            ? "COMPLETE"
+                                            : "UNLOCK ALL CHARACTERS"
+                                          : "READY · ADVANCES NEXT WAVE"
+                                }
+                              </b>
+                            </div>
+                          </div>
+                        )}
+                        <p className="ability-panel-note">BORROWED PASSIVES · {echoSelectedAbilities.length > 0 ? echoSelectedAbilities.map((key) => CHARACTER_ABILITIES[key].name).join(" + ") : "NONE YET"}</p>
+                        {echoQuestState.currentQuest === null && (
+                          <div className="ability-preview-grid">
+                            <div className="ability-preview-card"><small>THE KNOWING</small><b>{echoKnowingState.awakened ? "AWAKENED" : echoKnowingState.chargingSinceMs !== null ? `${Math.floor(echoChargePercent)}%` : "HOLD E 10s"}</b></div>
+                            <div className="ability-preview-card"><small>MAX HP</small><b>{echoKnowingState.awakened && !isOnlineVersus ? "8" : "—"}</b></div>
+                            <div className="ability-preview-card"><small>DAMAGE TAKEN</small><b>{echoKnowingState.awakened && !isOnlineVersus ? "×0.20" : "—"}</b></div>
+                            <div className="ability-preview-card"><small>SCORE</small><b>×{echoKnowingBenefits.scoreMultiplier.toFixed(2)}</b></div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {activeCharacter === "trickster_hex" && (
+                      <div data-ability-version={abilityStateVersion}>
+                        <p className="ability-panel-note">VOID REALM · {hexState.damnation} DAMNATION · {hexState.soulsRemaining} SOUL{hexState.soulsRemaining === 1 ? "" : "S"}</p>
+                        <div className="ability-preview-grid">
+                          <div className="ability-preview-card"><small>SCORE</small><b>×{getHexDamnationBenefits(hexState.damnation).scoreMultiplier.toFixed(2)}</b></div>
+                          <div className="ability-preview-card"><small>DAMAGE TAKEN</small><b>×{getHexDamnationBenefits(hexState.damnation).damageMultiplier.toFixed(3)}</b></div>
+                          <div className="ability-preview-card"><small>NEXT UNLOCK</small><b>{hexState.damnation < 10 ? "10 · SCORE" : hexState.damnation < 30 ? "30 · CURRENT" : hexState.damnation < 60 ? "60 · SOULS" : hexState.damnation < 100 ? "100 · HADES" : hexState.godMode ? "VOID GOD" : "ENTER VOID FOR HADES"}</b></div>
+                          <div className="ability-preview-card"><small>VOID CUT</small><b>{!getHexDamnationBenefits(hexState.damnation).currentUnlocked ? "LOCKED · 30" : hexVoidCutStateRef.current.cooldownUntilMs > Date.now() ? `${Math.ceil((hexVoidCutStateRef.current.cooldownUntilMs - Date.now()) / 1000)}s COOLDOWN` : `${hexVoidCutStateRef.current.movesSinceCut}/3 MOVES`}</b></div>
+                        </div>
+                        <button
+                          type="button"
+                          className="ability-confirm"
+                          disabled={paused || wavePause}
+                          onClick={throwHexChakram}
+                        >
+                          THROW VOID CHAKRAM (R)
+                        </button>
+                      </div>
+                    )}
+                    {activeCharacter === "runner_comet" && (
+                      <div data-ability-version={abilityStateVersion}>
+                        <p className="ability-panel-note">HEATFEAST · PRESS R TO CONSUME UP TO 100 PER WAVE</p>
+                        <div className="ability-preview-grid">
+                          <div className="ability-preview-card"><small>STORED</small><b>{Math.floor(heatfeastState.stored)}</b></div>
+                          <div className="ability-preview-card"><small>CONSUMED</small><b>{Math.floor(heatfeastState.consumed)}</b></div>
+                          <div className="ability-preview-card"><small>THIS WAVE</small><b>{Math.floor(heatfeastState.trackedWave === wave ? heatfeastState.consumedThisWave : 0)}/100</b></div>
+                        </div>
+                        <p className="ability-panel-note">UNLOCKS · 50 COIN BOOST · 100 ARMOR · 250 TAX · 500 REMOVAL DISCOUNT · 750 SEND DISCOUNT · 1000 SPLIT ATTACKS</p>
+                        <button
+                          type="button"
+                          className="ability-confirm"
+                          disabled={
+                            heatfeastState.stored <= 0 ||
+                            (heatfeastState.trackedWave === wave &&
+                              heatfeastState.consumedThisWave >= 100)
+                          }
+                          onClick={consumeCometHeatfeast}
+                        >
+                          CONSUME HEATFEAST (R)
+                        </button>
+                      </div>
+                    )}
+                    {activeCharacter === "trickster_mirage" && (
+                      <div data-ability-version={abilityStateVersion}>
+                        <p className="ability-panel-note">MIRAGE INVASION · YOUR LANE {lane + 1} · RIVAL LANE {versusOpponentLane + 1}</p>
+                        {mirageInvasion && !mirageInvasion.finished && (
+                          <p className="ability-panel-note">ACTIVE · {Math.max(0, (mirageInvasion.endsAtMs - Date.now()) / 1000).toFixed(1)}s · {mirageInvasion.damageDealt} DAMAGE DEALT</p>
+                        )}
+                        {versusOpponentMirageUntil > Date.now() && (
+                          <p className="ability-panel-note danger">
+                            RIVAL MIRAGE INVADING · {Math.max(0, (versusOpponentMirageUntil - Date.now()) / 1000).toFixed(1)}s
+                          </p>
+                        )}
+                      </div>
+                    )}
                     {waveForecast.length > 0 && (
                       <section className="horizon-forecast">
                         <button
@@ -10535,7 +13669,21 @@ export default function Home() {
                     aria-label={`Signal flare burning lane ${flareLaneRef.current + 1}`}
                   />
                 )}
-              {items.map((x) => (
+              {prospectorWarnings.map((prospectorWarning) => (
+                <div
+                  key={prospectorWarning.itemId}
+                  className="prospector-lane-warning"
+                  style={{
+                    left: `${(prospectorWarning.lane / activeLaneCount) * 100}%`,
+                    width: `${100 / activeLaneCount}%`,
+                  }}
+                  aria-label={`Prospector gem warning in lane ${prospectorWarning.lane + 1}`}
+                >
+                  <b>GEM</b>
+                  <small>{Math.max(0, (prospectorWarning.spawnAt - Date.now()) / 1000).toFixed(1)}s</small>
+                </div>
+              ))}
+              {items.filter((x) => !x.scheduledAt || x.scheduledAt <= Date.now()).map((x) => (
                 <div
                   key={x.id}
                   className={`item ${x.kind}${
@@ -10578,8 +13726,21 @@ export default function Home() {
                   <Obstacle kind={x.kind} />
                 </div>
               ))}
+              {((mirageInvasion && !mirageInvasion.finished) ||
+                versusOpponentMirageUntil > Date.now()) && (
+                <div
+                  className="mirage-rival-marker"
+                  style={{
+                    left: `${((versusOpponentLane + 0.5) / activeLaneCount) * 100}%`,
+                  }}
+                  aria-label={`Rival is in lane ${versusOpponentLane + 1}`}
+                >
+                  <span>RIVAL</span>
+                  <b>{versusOpponentLane + 1}</b>
+                </div>
+              )}
               <div
-                className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}${beaconActiveRef.current ? " beacon-active" : ""}${reviveFlyingRef.current ? " flight-active" : ""}${haloPartsRef.current >= 3 ? " halo-ready" : ""}${phantomLord ? " phantom-lord-form" : ""}${activeCharacter === "runner_velocity" && velocityDisplayPercent > 0 ? velocityDisplayPercent >= 100 ? " velocity-max" : velocityDisplayPercent >= 50 ? " velocity-charged" : " velocity-charging" : ""}`}
+                className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}${mirageInvasion && !mirageInvasion.finished ? " mirage-invading" : ""}${beaconActiveRef.current ? " beacon-active" : ""}${reviveFlyingRef.current ? " flight-active" : ""}${haloPartsRef.current >= 3 ? " halo-ready" : ""}${phantomLord ? " phantom-lord-form" : ""}${echoKnowingState.chargingSinceMs !== null ? " echo-charging" : ""}${echoKnowingState.awakened ? " echo-awakened" : ""}${echoKnowingState.realmUntilMs > Date.now() ? " echo-realm" : ""}${activeCharacter === "runner_velocity" && velocityDisplayPercent > 0 ? velocityDisplayPercent >= 100 ? " velocity-max" : velocityDisplayPercent >= 50 ? " velocity-charged" : " velocity-charging" : ""}`}
                 style={{ left: `${((lane + 0.5) / activeLaneCount) * 100}%` }}
               >
                 {hasCharacterAbility("medic_halo") && haloPartsRef.current > 0 && <i className="runner-halo" data-pieces={haloPartsRef.current} />}
@@ -10645,9 +13806,208 @@ export default function Home() {
                 <section className="ability-panel mythic-panel"><header><div><small>NEAR-DEATH REWARD</small><b>TAKE A HEALER PASSIVE</b></div></header><div className="ability-panel-body"><div className="ability-option-grid">{abilityChoice.options.map((characterKey) => { const definition = getCharacterDefinition(characterKey); return <button key={characterKey} className="ability-option reward" onClick={() => chooseOraclePassive(characterKey)}><span>+</span><span><b>{definition.name}</b><small>{CHARACTER_ABILITIES[characterKey].name}</small><em>KEEP FOR THIS RUN</em></span></button>; })}</div></div></section>
               </div>
             )}
+            {abilityChoice?.kind === "mimic-passives" && (
+              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose two passives for Mimic">
+                <section className="ability-panel mythic-panel">
+                  <header><div><small>{abilityChoice.selected.length}/2 SELECTED</small><b>MIMIC · CHOOSE TWO PASSIVES</b></div></header>
+                  <div className="ability-panel-body">
+                    <p className="ability-panel-note">
+                      Choose any two Rare-or-lower passive abilities. They remain
+                      active for this {isVersusRun ? "1v1 match" : "Endless run"}.
+                    </p>
+                    <div className="ability-option-grid">
+                      {abilityChoice.options.map((characterKey) => {
+                        const definition = getCharacterDefinition(characterKey);
+                        const selected = abilityChoice.selected.includes(characterKey);
+                        return (
+                          <button key={characterKey} className={`ability-option reward ${selected ? "selected" : ""}`} onClick={() => toggleMimicPassive(characterKey)}>
+                            <span>{selected ? "✓" : "+"}</span>
+                            <span><b>{definition.name}</b><small>{CHARACTER_ABILITIES[characterKey].name}</small><em>{CHARACTER_ABILITIES[characterKey].description}</em></span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <button className="ability-confirm" disabled={abilityChoice.selected.length !== 2} onClick={confirmMimicPassives}>USE THESE TWO PASSIVES</button>
+                  </div>
+                </section>
+              </div>
+            )}
+            {abilityChoice?.kind === "echo-passives" && (
+              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose two passives for Echo">
+                <section className="ability-panel mythic-panel">
+                  <header>
+                    <div>
+                      <small>{abilityChoice.selected.length}/2 SELECTED · {ECHO_QUESTS[abilityChoice.quest].label}</small>
+                      <b>ECHO · CHOOSE TWO PASSIVES</b>
+                    </div>
+                  </header>
+                  <div className="ability-panel-body">
+                    <p className="ability-panel-note">This Mirror quest is complete. Choose exactly two eligible passives to keep for this run.</p>
+                    <div className="ability-option-grid">
+                      {abilityChoice.options.map((characterKey) => {
+                        const definition = getCharacterDefinition(characterKey);
+                        const selected = abilityChoice.selected.includes(characterKey);
+                        return (
+                          <button key={characterKey} className={`ability-option reward ${selected ? "selected" : ""}`} onClick={() => toggleEchoPassive(characterKey)}>
+                            <span>{selected ? "✓" : "+"}</span>
+                            <span>
+                              <b>{definition.name}</b>
+                              <small>{CHARACTER_ABILITIES[characterKey].name}</small>
+                              <em>{CHARACTER_ABILITIES[characterKey].description}</em>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <button className="ability-confirm" disabled={abilityChoice.selected.length !== 2} onClick={confirmEchoPassives}>LEARN THESE TWO PASSIVES</button>
+                  </div>
+                </section>
+              </div>
+            )}
+            {abilityChoice?.kind === "scribe-hazard" && (
+              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose Scribe's capped hazard">
+                <section className="ability-panel mythic-panel">
+                  <header><div><small>NEXT WAVE · CAP {getScribeHazardCap(abilityChoice.nextWave)}</small><b>SCRIBE · CHOOSE A HAZARD</b></div></header>
+                  <div className="ability-panel-body">
+                    <p className="ability-panel-note">The selected hazard can appear no more than this cap during wave {abilityChoice.nextWave}.</p>
+                    <div className="ability-option-grid">
+                      {abilityChoice.options.map((hazard) => (
+                        <button key={hazard} className="ability-option reward" onClick={() => chooseScribeHazard(hazard)}>
+                          <span>⌁</span><span><b>{hazard.toUpperCase()}</b><small>MAX {getScribeHazardCap(abilityChoice.nextWave)} SPAWN{getScribeHazardCap(abilityChoice.nextWave) === 1 ? "" : "S"}</small></span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+            {abilityChoice?.kind === "comet-remove" && (
+              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Remove natural hazards with Comet">
+                <section className="ability-panel mythic-panel">
+                  <header>
+                    <div>
+                      <small>WAVE {abilityChoice.targetWave} · ATTACK COINS {getDisplayedAttackPoints(versusPoints)}</small>
+                      <b>COMET DEFENSE</b>
+                    </div>
+                    <button
+                      type="button"
+                      className="ability-panel-close"
+                      aria-label="Close Comet defense"
+                      onClick={() => setAbilityChoice(null)}
+                    >
+                      ×
+                    </button>
+                  </header>
+                  <div className="ability-panel-body">
+                    <p className="ability-panel-note">Remove natural hazards before they enter the next wave. Rival-sent hazards cannot be removed.</p>
+                    <div className="ability-option-grid">
+                      {abilityChoice.options.map((hazard) => {
+                        const cost = getCometNaturalRemovalPrice(
+                          hazard as "barrel" | "log" | "snowflake" | "car" | "spikes" | "rock",
+                          heatfeastState.consumed,
+                        );
+                        const queued =
+                          cometRemovalQueueRef.current.wave === abilityChoice.targetWave
+                            ? cometRemovalQueueRef.current.counts[hazard] ?? 0
+                            : 0;
+                        return (
+                          <button
+                            type="button"
+                            key={hazard}
+                            className="ability-option reward"
+                            disabled={versusPoints < cost}
+                            onClick={() => void removeCometNaturalHazard(hazard)}
+                          >
+                            <span>−</span>
+                            <span>
+                              <b>{hazard.toUpperCase()}</b>
+                              <small>{cost} COINS · {queued} QUEUED</small>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+            {gambitPanelOpen && activeCharacter === "trickster_gambit" && (
+              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Gambit card hand">
+                <section className="ability-panel gambit-panel">
+                  <header>
+                    <div><small>{gambitState.hand.length}/10 CARDS</small><b>COUNTING CARDS</b></div>
+                    <button type="button" className="ability-panel-close" onClick={closeGambitPanel} aria-label="Close card hand">×</button>
+                  </header>
+                  <div className="ability-panel-body">
+                    <p className="ability-panel-note">{gambitPendingDrawWaveRef.current > 0 ? `Select at least ${Math.max(1, gambitDiscardRequiredRef.current)} cards to discard so the next five can be drawn.` : `BEST HAND · ${(evaluateGambitHand(gambitState.hand) ?? "none").replaceAll("-", " ").toUpperCase()}`}</p>
+                    <div className="gambit-card-grid">
+                      {gambitState.hand.map((card: StandardCard) => {
+                        const selected = gambitSelectedCards.includes(card.id);
+                        const symbol = card.suit === "hearts" ? "♥" : card.suit === "diamonds" ? "♦" : card.suit === "clubs" ? "♣" : "♠";
+                        return <button type="button" key={card.id} className={`gambit-card ${selected ? "selected" : ""} ${card.suit}`} onClick={() => toggleGambitCard(card.id)}><b>{card.rank}</b><span>{symbol}</span><small>{selected ? "DISCARD" : "KEEP"}</small></button>;
+                      })}
+                    </div>
+                    {gambitRunReward && <p className="ability-panel-note">ACTIVE REWARD · {gambitRunReward.label}</p>}
+                    <button className="ability-confirm" disabled={gambitSelectedCards.length === 0 || (gambitPendingDrawWaveRef.current > 0 && gambitSelectedCards.length < Math.max(1, gambitDiscardRequiredRef.current))} onClick={() => void confirmGambitDiscard()}>DISCARD {gambitSelectedCards.length || "SELECTED"}</button>
+                  </div>
+                </section>
+              </div>
+            )}
+            {hexVoid && activeCharacter === "trickster_hex" && (
+              <div className="ability-overlay hex-void-overlay" role="dialog" aria-modal="true" aria-label="Hex Void Realm">
+                <section className="ability-panel mythic-panel hex-void-panel">
+                  <header>
+                    <div>
+                      <small>{(hexVoid.remaining / 1000).toFixed(1)} SECONDS · WAVE CLOCK PAUSED</small>
+                      <b>{hexVoid.encounter === "hades" ? "HADES · VOID BOSS" : "THE VOID REALM"}</b>
+                    </div>
+                  </header>
+                  <div className="ability-panel-body">
+                    {hexVoid.encounter === "damned" ? (
+                      <>
+                        <p className="ability-panel-note">Collect the Damned before the realm closes. Each one permanently adds 1 Damnation this run.</p>
+                        <button type="button" className="void-target damned-target" onClick={collectVoidTarget}>
+                          <span aria-hidden="true">◆</span>
+                          <b>COLLECT DAMNED</b>
+                          <small>{hexVoid.collected} COLLECTED · {hexState.damnation} TOTAL DAMNATION</small>
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <p className="ability-panel-note">Dodge eight Hades attacks, then destroy the realm to become a Void God.</p>
+                        <button type="button" className="void-target hades-target" disabled={hexVoid.hadesDodges >= 8} onClick={collectVoidTarget}>
+                          <span aria-hidden="true">♆</span>
+                          <b>{hexVoid.hadesDodges >= 8 ? "HADES EXPOSED" : "DODGE HADES ATTACK"}</b>
+                          <small>{hexVoid.hadesDodges}/8 DODGES</small>
+                        </button>
+                        <button className="ability-confirm" disabled={hexVoid.hadesDodges < 8} onClick={defeatHexHades}>DESTROY THE VOID REALM</button>
+                      </>
+                    )}
+                  </div>
+                </section>
+              </div>
+            )}
             {pulseGame && (
               <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Last Pulse timed key challenge">
                 <section className="ability-panel healer-panel"><header><div><small>{(pulseGame.remaining / 1000).toFixed(1)} SECONDS LEFT</small><b>LAST PULSE · {pulseGame.hits} HITS</b></div></header><div className="ability-panel-body"><p className="ability-panel-note">Press or tap the highlighted key. 10 = 1 HP · 20 = 2 HP · 30 = FULL HP.</p><div className="ability-key-sequence">{(["A", "S", "D", "F"] as const).map((key) => <button key={key} className={`ability-option ${pulseGame.prompt === key ? "selected" : ""}`} onClick={() => { if (pulseGame.prompt !== key) return; setPulseGame((current) => current ? { ...current, hits: current.hits + 1, prompt: (["A", "S", "D", "F"] as const).filter((nextKey) => nextKey !== key)[Math.floor(Math.random() * 3)] } : current); }}><kbd>{key}</kbd></button>)}</div></div></section>
+              </div>
+            )}
+            {museGame && (
+              <div className="ability-overlay muse-rhythm-overlay" role="dialog" aria-modal="true" aria-label="Muse rhythm challenge">
+                <section className="ability-panel mythic-panel">
+                  <header><div><small>{(museGame.remaining / 1000).toFixed(1)} SECONDS LEFT</small><b>RHYTHM BREAK · {museGame.hits}/{museGame.attempts}</b></div></header>
+                  <div className="ability-panel-body">
+                    <p className="ability-panel-note">Press or tap the glowing note. Accuracy unlocks Muse&apos;s permanent run buffs and stronger music abilities.</p>
+                    <div className="ability-key-sequence">
+                      {(["A", "S", "D", "F"] as const).map((key) => (
+                        <button key={key} className={`ability-option ${museGame.prompt === key ? "selected" : ""}`} onClick={() => submitMuseInput(key)}>
+                          <kbd>{key}</kbd>
+                        </button>
+                      ))}
+                    </div>
+                    <p className="ability-panel-note">ACCURACY · {museGame.attempts > 0 ? Math.round((museGame.hits / museGame.attempts) * 100) : 0}%</p>
+                  </div>
+                </section>
               </div>
             )}
             {!running && (
@@ -10779,22 +14139,33 @@ export default function Home() {
                   <div className="attack-grid">
                     {VERSUS_ATTACKS.filter((attack) =>
                       getAvailableAttacks(activeMapId).includes(attack.kind),
-                    ).map((attack) => (
-                      <button
-                        key={attack.kind}
-                        disabled={
-                          !versusIntermissionReady ||
-                          versusCountdown <= 0 ||
-                          versusAttackBusy ||
-                          versusPoints < attack.cost
-                        }
-                        onClick={() => void sendVersusAttack(attack.kind)}
-                        aria-label={`Send ${attack.label} for ${attack.cost} attack coins`}
-                      >
-                        <span aria-hidden="true">{attack.icon}</span>
-                        {attack.label} <small>{attack.cost} COINS</small>
-                      </button>
-                    ))}
+                    ).map((attack) => {
+                      const offer =
+                        activeCharacter === "runner_comet"
+                          ? getCometSendPurchase(
+                              attack.cost,
+                              1,
+                              heatfeastState.consumed,
+                            )
+                          : { price: attack.cost, amount: 1 };
+                      return (
+                        <button
+                          key={attack.kind}
+                          disabled={
+                            !versusIntermissionReady ||
+                            versusCountdown <= 0 ||
+                            versusAttackBusy ||
+                            versusPoints < offer.price
+                          }
+                          onClick={() => void sendVersusAttack(attack.kind)}
+                          aria-label={`Send ${offer.amount} ${attack.label} for ${offer.price} attack coins`}
+                        >
+                          <span aria-hidden="true">{attack.icon}</span>
+                          {attack.label} ×{offer.amount}{" "}
+                          <small>{offer.price} COINS</small>
+                        </button>
+                      );
+                    })}
                   </div>
                   <small>
                     Each track coin adds {getAttackPointsForCoin(activeMapId)} attack
@@ -10977,6 +14348,44 @@ export default function Home() {
                 <div className="required-note">
                   A username is required before you can play.
                 </div>
+              )}
+              {isAdmin && !usernameRequired && (
+                <section
+                  className={`admin-test-mode-card${adminTestModeActive ? " enabled" : ""}`}
+                  aria-labelledby="settings-test-mode-title"
+                >
+                  <div>
+                    <small>ADMIN ONLY</small>
+                    <h3 id="settings-test-mode-title">TEST MODE</h3>
+                    <p>
+                      Temporarily use every character. Test runs are always
+                      unranked and save no gems, XP, high score, or leaderboard
+                      result. Your choice stays saved for your next visit.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="admin-test-mode-switch"
+                    role="switch"
+                    aria-checked={adminTestModeActive}
+                    disabled={adminTestModeBusy}
+                    onClick={() =>
+                      void updateAdminTestMode(!adminTestModeActive)
+                    }
+                  >
+                    <span aria-hidden="true" />
+                    {adminTestModeBusy
+                      ? "SAVING…"
+                      : adminTestModeActive
+                        ? "ON"
+                        : "OFF"}
+                  </button>
+                  {adminTestModeStatus && (
+                    <div className="admin-test-mode-status" role="status">
+                      {adminTestModeStatus}
+                    </div>
+                  )}
+                </section>
               )}
               {usernameRequired || editUsername ? (
                 <form onSubmit={saveUsername}>
@@ -11405,6 +14814,47 @@ export default function Home() {
                 ))}
               </div>
               <div className="inventory-scroll">
+                {isAdmin && !guest && (
+                  <section
+                    className={`admin-test-mode-card inventory-test-mode${adminTestModeActive ? " enabled" : ""}`}
+                    aria-labelledby="inventory-test-mode-title"
+                  >
+                    <div>
+                      <small>ADMIN CHARACTER ACCESS</small>
+                      <h3 id="inventory-test-mode-title">TEST MODE</h3>
+                      <p>
+                        Turn on every character for testing. The setting is
+                        remembered, and every test run stays unranked with no
+                        permanent rewards.
+                        {running
+                          ? " Changing it now applies to your next run."
+                          : " You can equip a test character below immediately."}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="admin-test-mode-switch"
+                      role="switch"
+                      aria-checked={adminTestModeActive}
+                      disabled={adminTestModeBusy}
+                      onClick={() =>
+                        void updateAdminTestMode(!adminTestModeActive)
+                      }
+                    >
+                      <span aria-hidden="true" />
+                      {adminTestModeBusy
+                        ? "SAVING…"
+                        : adminTestModeActive
+                          ? "ON"
+                          : "OFF"}
+                    </button>
+                    {adminTestModeStatus && (
+                      <div className="admin-test-mode-status" role="status">
+                        {adminTestModeStatus}
+                      </div>
+                    )}
+                  </section>
+                )}
                 {!guest && (
                   <section className="inventory-direct-unlock">
                     <header>
@@ -11649,6 +15099,10 @@ export default function Home() {
                               unlocks,
                               character.key,
                             );
+                            const available = isCharacterAvailable(
+                              owned,
+                              testCharacterAccessContext,
+                            );
                             const focused =
                               sectionFocused &&
                               inventoryCharacter.characterKey === character.key;
@@ -11660,7 +15114,9 @@ export default function Home() {
                                 key={character.key}
                                 className={`${focused ? "focused" : ""}${
                                   equipped ? " equipped" : ""
-                                }${owned ? "" : " locked"}`}
+                                }${available ? "" : " locked"}${
+                                  available && !owned ? " test-access" : ""
+                                }`}
                                 aria-pressed={focused}
                                 aria-controls={`inventory-character-detail-${classKey}`}
                                 onClick={() => {
@@ -11698,6 +15154,8 @@ export default function Home() {
                                     }
                                     {owned
                                       ? " · SELECT · PASSIVE BELOW"
+                                      : available
+                                        ? " · TEST ACCESS · PASSIVE BELOW"
                                       : " · PREVIEW PASSIVE BELOW"}
                                   </em>
                                 </span>
@@ -11706,7 +15164,7 @@ export default function Home() {
                                 >
                                   {isStarterCharacter(character.key)
                                     ? `STARTER · ${character.rarity}`
-                                    : `${owned ? "OWNED" : "LOCKED"} · ${character.rarity}`}
+                                    : `${owned ? "OWNED" : available ? "TEST ACCESS" : "LOCKED"} · ${character.rarity}`}
                                 </small>
                               </button>
                             );
@@ -11731,6 +15189,8 @@ export default function Home() {
                                 <small>
                                   {focusedCharacterOwned
                                     ? `${label} LOADOUT`
+                                    : focusedCharacterAvailable
+                                      ? "ADMIN TEST ACCESS"
                                     : "LOCKED PREVIEW"}
                                 </small>
                                 <h4>{focusedCharacter.name}</h4>
@@ -11739,11 +15199,13 @@ export default function Home() {
                               <button
                                 className="equip-character"
                                 disabled={
-                                  !focusedCharacterOwned ||
+                                  !focusedCharacterAvailable ||
                                   running ||
-                                  (mode === "impossible" &&
+                                  (!effectiveCharacterTestMode &&
+                                    mode === "impossible" &&
                                     focusedCharacter.key !== "runner_ace") ||
-                                  (mode === "hardcore" &&
+                                  (!effectiveCharacterTestMode &&
+                                    mode === "hardcore" &&
                                     (classKey === "medic" ||
                                       classKey === "tank"))
                                 }
@@ -11757,9 +15219,11 @@ export default function Home() {
                                 {activeClass === classKey &&
                                 activeCharacter === focusedCharacter.key
                                   ? "EQUIPPED"
-                                  : !focusedCharacterOwned
+                                  : !focusedCharacterAvailable
                                     ? "LOCKED · EXTRACT IN SHOP"
-                                  : "EQUIP CHARACTER"}
+                                    : focusedCharacterOwned
+                                      ? "EQUIP CHARACTER"
+                                      : "EQUIP FOR TEST MODE"}
                               </button>
                             </div>
                             <details className="inventory-subsection character-rules-subsection">
@@ -11790,6 +15254,8 @@ export default function Home() {
                                   <small>
                                     {focusedCharacterOwned
                                       ? "WEAPON BONUS ACTIVE"
+                                      : focusedCharacterAvailable
+                                        ? "TEST WEAPON BONUS ACTIVE"
                                       : "LOCKED WEAPON BONUS"}
                                   </small>
                                   <b>{focusedCharacter.weapon}</b>
@@ -11799,6 +15265,8 @@ export default function Home() {
                                       ? `Included with starter ${focusedCharacter.name}.`
                                       : focusedCharacterOwned
                                         ? `Unlocked together with ${focusedCharacter.name}.`
+                                        : focusedCharacterAvailable
+                                          ? `Available temporarily while Admin Test Mode is on.`
                                         : `Extract ${focusedCharacter.name} from a box to unlock both the character and this weapon.`}
                                   </p>
                                 </div>
