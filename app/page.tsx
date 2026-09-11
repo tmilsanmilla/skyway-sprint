@@ -11915,7 +11915,7 @@ export default function Home() {
       setVersusLeadersError(
         error.message.includes("get_1v1_leaderboard") &&
           error.message.toLowerCase().includes("schema cache")
-          ? "1V1 LEADERBOARD DATABASE SETUP IS MISSING · RUN MULTI-DEVICE 03"
+          ? "1V1 LEADERBOARD DATABASE SETUP IS MISSING · RUN MULTI-DEVICE 03 RANKED"
           : error.message,
       );
     } else setVersusLeaders((data ?? []) as VersusLeader[]);

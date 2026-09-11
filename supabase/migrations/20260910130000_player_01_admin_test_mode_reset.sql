@@ -1,14 +1,14 @@
--- Player 01 Stats — admin Test Mode and one-time character reset.
+-- Admin 05 Test Mode.
 --
 -- Test Mode is an account-backed admin preference. It never creates ownership,
 -- never enters Ranked, and its run snapshots cannot award permanent gems, XP,
--- completed runs, high scores, or leaderboard results. The one-time reset keeps
--- only Ace, Patch, Bulwark, and Rogue while preserving every cosmetic, class,
--- currency, stat, receipt, and audit record.
+-- completed runs, high scores, or leaderboard results.
+-- Run this after Player 01 Stats and Multi-device 03 Ranked because it wraps
+-- their reward and Ranked-result functions with Test Mode guards.
 
 begin;
 
-do $player_01_test_mode_prerequisites$
+do $admin_05_test_mode_prerequisites$
 begin
   if to_regclass('public.player_stats') is null
      or to_regclass('public.player_unlocks') is null
@@ -24,10 +24,10 @@ begin
      or to_regclass('app_private.one_v_one_map_rules') is null
      or to_regprocedure('public.is_admin()') is null
      or to_regprocedure('app_private.has_active_ban(uuid,text,uuid)') is null then
-    raise exception 'Run the merged Player 01, Admin 02, Security, and Multi-device 01 queries first';
+    raise exception 'Run Player 01 Stats, Admin 02, Player 04 Security, Multi-device 02 1v1, and Multi-device 03 Ranked first';
   end if;
 end
-$player_01_test_mode_prerequisites$;
+$admin_05_test_mode_prerequisites$;
 
 alter table public.player_stats
   add column if not exists admin_test_mode_enabled boolean not null default false;
@@ -35,15 +35,6 @@ alter table public.player_progression_runs
   add column if not exists test_mode boolean not null default false;
 alter table public.multiplayer_players
   add column if not exists test_mode boolean not null default false;
-alter table public.player_unlocks
-  add column if not exists ownership_proven_at timestamptz
-    default clock_timestamp();
-update public.player_unlocks
-set ownership_proven_at=clock_timestamp()
-where ownership_proven_at is null;
-alter table public.player_unlocks
-  alter column ownership_proven_at set default clock_timestamp(),
-  alter column ownership_proven_at set not null;
 
 -- Alley doubles HP. The largest testable kit (Colossus) therefore reaches
 -- exactly 20 HP; keep the authoritative state constraints aligned with that
@@ -73,32 +64,6 @@ comment on column public.player_progression_runs.test_mode is
 comment on column public.multiplayer_players.test_mode is
   'Sticky per-player 1v1 Test Mode snapshot. Test players cannot enter Ranked.';
 
-create table if not exists app_private.character_ownership_resets(
-  reset_key text primary key,
-  reset_scope text not null,
-  reset_at timestamptz not null,
-  affected_users integer not null default 0,
-  revoked_characters integer not null default 0,
-  preserved_non_character_unlocks integer not null default 0,
-  completed_at timestamptz
-);
-revoke all on table app_private.character_ownership_resets
-  from public,anon,authenticated;
-
-create table if not exists app_private.player_unlock_quarantine(
-  batch_key text not null,
-  user_id uuid not null,
-  item_key text not null,
-  item_type text not null,
-  rarity text not null,
-  original_unlocked_at timestamptz not null,
-  quarantined_at timestamptz not null default now(),
-  reason text not null,
-  primary key(batch_key,user_id,item_key)
-);
-revoke all on table app_private.player_unlock_quarantine
-  from public,anon,authenticated;
-
 create or replace function app_private.is_admin_test_user(p_user_id uuid)
 returns boolean
 language sql
@@ -118,129 +83,6 @@ as $$
 $$;
 revoke all on function app_private.is_admin_test_user(uuid)
   from public,anon,authenticated;
-
--- Execute the requested global reset exactly once. Historical receipts and
--- command history remain intact, but the reset timestamp is the new ownership
--- proof boundary for future Player 01 reruns.
-do $player_01_global_character_reset$
-declare
-  v_reset_at timestamptz;
-  v_non_character_unlocks integer;
-  v_affected_users integer;
-  v_revoked integer;
-begin
-  perform pg_advisory_xact_lock(
-    hashtextextended('global-character-reset-2026-09-10',0)
-  );
-  if exists(
-    select 1 from app_private.character_ownership_resets
-    where reset_key='global-character-reset-2026-09-10'
-  ) then return; end if;
-
-  lock table public.player_stats in share row exclusive mode;
-  lock table public.player_unlocks in share row exclusive mode;
-  lock table public.player_loadouts in share row exclusive mode;
-  lock table public.extraction_transactions in share row exclusive mode;
-  if to_regclass('public.admin_command_audit') is not null then
-    lock table public.admin_command_audit in share row exclusive mode;
-  end if;
-
-  v_reset_at:=clock_timestamp();
-  insert into app_private.character_ownership_resets(
-    reset_key,reset_scope,reset_at
-  ) values(
-    'global-character-reset-2026-09-10','global_characters',v_reset_at
-  );
-  perform set_config('skyway.character_reset_performed','true',true);
-
-  select count(*)::integer into v_non_character_unlocks
-  from public.player_unlocks unlock
-  where unlock.item_type<>'character';
-
-  insert into public.player_unlocks(
-    user_id,item_key,item_type,rarity,unlocked_at
-  )
-  select users.id,starter.item_key,'character',starter.rarity,v_reset_at
-  from auth.users users
-  cross join(values
-    ('runner_ace','common'),
-    ('medic_patch','common'),
-    ('tank_bulwark','common'),
-    ('trickster_rogue','uncommon')
-  ) starter(item_key,rarity)
-  on conflict(user_id,item_key) do update
-  set item_type='character',rarity=excluded.rarity;
-
-  select count(distinct unlock.user_id)::integer,count(*)::integer
-  into v_affected_users,v_revoked
-  from public.player_unlocks unlock
-  where unlock.item_type='character'
-    and unlock.item_key not in(
-      'runner_ace','medic_patch','tank_bulwark','trickster_rogue'
-    );
-
-  insert into app_private.player_unlock_quarantine(
-    batch_key,user_id,item_key,item_type,rarity,original_unlocked_at,reason
-  )
-  select 'global-character-reset-2026-09-10',unlock.user_id,
-    unlock.item_key,unlock.item_type,unlock.rarity,unlock.unlocked_at,
-    'Global character reset requested by the main admin'
-  from public.player_unlocks unlock
-  where unlock.item_type='character'
-    and unlock.item_key not in(
-      'runner_ace','medic_patch','tank_bulwark','trickster_rogue'
-    )
-  on conflict(batch_key,user_id,item_key) do nothing;
-
-  update public.player_loadouts loadout
-  set class_key=case catalog.character_class
-        when 'medic' then 'medic'
-        when 'tank' then 'tank'
-        when 'trickster' then 'trickster'
-        else 'runner'
-      end,
-      character_key=case catalog.character_class
-        when 'medic' then 'medic_patch'
-        when 'tank' then 'tank_bulwark'
-        when 'trickster' then 'trickster_rogue'
-        else 'runner_ace'
-      end,
-      updated_at=now()
-  from public.extraction_catalog catalog
-  where catalog.item_key=loadout.character_key
-    and catalog.item_type='character'
-    and loadout.character_key not in(
-      'runner_ace','medic_patch','tank_bulwark','trickster_rogue'
-    );
-
-  delete from public.player_unlocks unlock
-  where unlock.item_type='character'
-    and unlock.item_key not in(
-      'runner_ace','medic_patch','tank_bulwark','trickster_rogue'
-    );
-
-  update public.player_loadouts loadout
-  set class_key='runner',character_key='runner_ace',updated_at=now()
-  where not exists(
-    select 1 from public.player_unlocks unlock
-    where unlock.user_id=loadout.user_id
-      and unlock.item_type='character'
-      and unlock.item_key=loadout.character_key
-  );
-
-  if (select count(*) from public.player_unlocks
-      where item_type<>'character')<>v_non_character_unlocks then
-    raise exception 'Character reset changed a non-character unlock';
-  end if;
-
-  update app_private.character_ownership_resets
-  set affected_users=coalesce(v_affected_users,0),
-      revoked_characters=coalesce(v_revoked,0),
-      preserved_non_character_unlocks=v_non_character_unlocks,
-      completed_at=clock_timestamp()
-  where reset_key='global-character-reset-2026-09-10';
-end
-$player_01_global_character_reset$;
 
 create or replace function public.get_admin_test_mode()
 returns jsonb
@@ -696,7 +538,7 @@ revoke all on function app_private.is_test_run_context(uuid,uuid)
 
 -- Preserve the current receipt-backed award implementations behind private
 -- names, then put a test-snapshot guard at the public API boundary.
-do $player_01_wrap_test_awards$
+do $admin_05_wrap_test_awards$
 begin
   -- A full Player 01 rerun recreates the public live implementations before
   -- reaching this extension. Refresh the private copies in that case, while a
@@ -746,7 +588,7 @@ begin
       set schema app_private;
   end if;
 end
-$player_01_wrap_test_awards$;
+$admin_05_wrap_test_awards$;
 
 revoke all on function app_private.claim_player_gem_live(uuid,text)
   from public,anon,authenticated;
@@ -897,7 +739,7 @@ grant execute on function public.award_completed_run(uuid,bigint,text)
 
 -- Defense in depth: even if a future caller bypasses the queue guard, a match
 -- with a test snapshot is never recorded in Ranked history or Elo.
-do $player_01_ranked_recorder_guard$
+do $admin_05_ranked_recorder_guard$
 begin
   if to_regprocedure(
        'app_private.record_1v1_ranked_result_unchecked(uuid)'
@@ -924,7 +766,7 @@ begin
       rename to record_1v1_ranked_result_unchecked;
   end if;
 end
-$player_01_ranked_recorder_guard$;
+$admin_05_ranked_recorder_guard$;
 
 create or replace function app_private.record_1v1_ranked_result(
   p_match_id uuid
@@ -992,16 +834,8 @@ alter table public.multiplayer_players enable row level security;
 revoke insert,update,delete on public.player_stats from authenticated;
 revoke all on table public.player_progression_runs from public,anon,authenticated;
 
-do $player_01_test_mode_assertions$
+do $admin_05_test_mode_assertions$
 begin
-  if current_setting('skyway.character_reset_performed',true)='true'
-     and exists(
-    select 1 from public.player_unlocks unlock
-    where unlock.item_type='character'
-      and unlock.item_key not in(
-        'runner_ace','medic_patch','tank_bulwark','trickster_rogue'
-      )
-  ) then raise exception 'A non-default character remained after the reset'; end if;
   if exists(
     select 1 from auth.users users
     cross join(values
@@ -1084,30 +918,13 @@ begin
        'authenticated','public.player_progression_runs','SELECT'
      ) then raise exception 'Test Mode storage is exposed to browser writes'; end if;
 end
-$player_01_test_mode_assertions$;
+$admin_05_test_mode_assertions$;
 
 notify pgrst,'reload schema';
 commit;
 
 select
-  reset.reset_at,
-  reset.affected_users,
-  reset.revoked_characters,
-  reset.preserved_non_character_unlocks,
-  (select count(*) from public.player_unlocks unlock
-    where unlock.item_type='character'
-      and unlock.item_key not in(
-        'runner_ace','medic_patch','tank_bulwark','trickster_rogue'
-      )) as currently_owned_non_default_characters,
-  (select count(*) from auth.users users
-    cross join(values
-      ('runner_ace'),('medic_patch'),('tank_bulwark'),('trickster_rogue')
-    ) starter(item_key)
-    left join public.player_unlocks unlock
-      on unlock.user_id=users.id and unlock.item_key=starter.item_key
-     and unlock.item_type='character'
-    where unlock.item_key is null) as missing_default_characters,
+  to_regprocedure('public.get_admin_test_mode()') is not null
+    as admin_test_mode_reader_installed,
   to_regprocedure('public.set_admin_test_mode(boolean)') is not null
-    as admin_test_mode_installed
-from app_private.character_ownership_resets reset
-where reset.reset_key='global-character-reset-2026-09-10';
+    as admin_test_mode_writer_installed;
