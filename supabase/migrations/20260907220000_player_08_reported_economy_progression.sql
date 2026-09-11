@@ -1239,7 +1239,7 @@ cross join(values
   ('runner_ace','common'),
   ('medic_patch','common'),
   ('tank_bulwark','common'),
-  ('trickster_rogue','uncommon')
+  ('trickster_rogue','common')
 ) starter(item_key,rarity)
 on conflict(user_id,item_key) do update
 set item_type='character',rarity=excluded.rarity;
@@ -1265,7 +1265,7 @@ begin
     ('runner_ace','character','common'),
     ('medic_patch','character','common'),
     ('tank_bulwark','character','common'),
-    ('trickster_rogue','character','uncommon')
+    ('trickster_rogue','character','common')
   ) starter(item_key,item_type,rarity)
   on conflict(user_id,item_key) do update
   set item_type=excluded.item_type,rarity=excluded.rarity;
@@ -1758,8 +1758,8 @@ begin
   ) then raise exception 'A loadout uses an unowned character'; end if;
   if exists(
     select 1 from public.extraction_catalog
-    where item_key='trickster_rogue' and rarity<>'uncommon'
-  ) then raise exception 'Rogue must remain an Uncommon starter'; end if;
+    where item_key='trickster_rogue' and rarity<>'common'
+  ) then raise exception 'Rogue must remain a Common starter'; end if;
   if exists(
     select 1 from pg_trigger trigger_row
     where trigger_row.tgname in(

@@ -104,7 +104,7 @@ begin
     ('runner_ace', 'character', 'common'),
     ('medic_patch', 'character', 'common'),
     ('tank_bulwark', 'character', 'common'),
-    ('trickster_rogue', 'character', 'uncommon')
+    ('trickster_rogue', 'character', 'common')
   ) as starter(item_key, item_type, rarity)
   on conflict (user_id, item_key) do nothing;
 
@@ -147,7 +147,7 @@ cross join (values
   ('runner_ace', 'character', 'common'),
   ('medic_patch', 'character', 'common'),
   ('tank_bulwark', 'character', 'common'),
-  ('trickster_rogue', 'character', 'uncommon')
+  ('trickster_rogue', 'character', 'common')
 ) as starter(item_key, item_type, rarity)
 on conflict (user_id, item_key) do nothing;
 

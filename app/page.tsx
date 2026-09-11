@@ -1247,11 +1247,11 @@ const CLASS_CHARACTERS = {
     { key: "trickster_phantom", name: "Phantom", weapon: "Moon Scythe", rarity: "mythic" },
   ],
   trickster: [
+    { key: "trickster_rogue", name: "Rogue", weapon: "Daggers", rarity: "common" },
     { key: "trickster_smoke", name: "Smoke", weapon: "Smoke Bombs", rarity: "common" },
     { key: "runner_drift", name: "Drift", weapon: "Slipstream Shoes", rarity: "uncommon" },
     { key: "runner_spark", name: "Spark", weapon: "Prism Baton", rarity: "uncommon" },
     { key: "tank_plow", name: "Plow", weapon: "Ram Shield", rarity: "uncommon" },
-    { key: "trickster_rogue", name: "Rogue", weapon: "Daggers", rarity: "uncommon" },
     { key: "trickster_clockwork", name: "Clockwork", weapon: "Time Cards", rarity: "uncommon" },
     { key: "trickster_flicker", name: "Flicker", weapon: "Blink Knives", rarity: "rare" },
     { key: "runner_flare", name: "Flare", weapon: "Signal Spear", rarity: "epic" },
@@ -1786,6 +1786,14 @@ const isStarterCharacter = (characterKey?: string | null) =>
     characterKey &&
       STARTER_CHARACTER_KEYS.has(characterKey as CharacterKey),
   );
+const orderRosterWithStarterFirst = (
+  roster: ReadonlyArray<(typeof CHARACTER_ROSTER)[number]>,
+) =>
+  [...roster].sort(
+    (left, right) =>
+      Number(isStarterCharacter(right.key)) -
+      Number(isStarterCharacter(left.key)),
+  );
 const isCharacterOwned = (
   owned: Unlock[],
   characterKey?: string | null,
@@ -1860,7 +1868,7 @@ const GAME_MODE_RULES = {
   { scoreMultiplier: number; hazardLaneLimit: number }
 >;
 const RANKED_UNLOCK_LEVEL = 20;
-const LEVEL_XP_BASE = 5_000_000;
+const LEVEL_XP_BASE = 10_000_000;
 const getCumulativeXpForLevel = (level: number) => {
   const normalizedLevel = Math.max(0, Math.floor(level));
   return LEVEL_XP_BASE * normalizedLevel * (normalizedLevel + 1);
@@ -15419,7 +15427,9 @@ export default function Home() {
 
                 {INVENTORY_CLASSES.map(
                   ({ key: classKey, label, description }, classIndex) => {
-                    const roster = CLASS_CHARACTERS[classKey];
+                    const roster = orderRosterWithStarterFirst(
+                      CLASS_CHARACTERS[classKey],
+                    );
                     const includedCharacter = roster.find((character) =>
                       isStarterCharacter(character.key),
                     );
