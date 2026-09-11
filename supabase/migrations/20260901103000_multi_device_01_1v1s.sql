@@ -2338,13 +2338,12 @@ begin
   if v_uid is null then raise exception 'Sign in required'; end if;
   if v_type = 'spikes' then v_type := 'spike'; end if;
   v_base_cost := case v_type
-    when 'log' then 6
+    when 'snowflake' then 4
+    when 'log' then 4
+    when 'spike' then 5
+    when 'rock' then 5
     when 'barrel' then 6
-    when 'snowflake' then 7
-    when 'current' then 7
-    when 'spike' then 8
-    when 'car' then 8
-    when 'rock' then 8
+    when 'current' then 8
     else null
   end;
   if v_base_cost is null then raise exception 'Unknown obstacle type'; end if;

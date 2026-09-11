@@ -780,6 +780,28 @@ begin
      ) = 0 then
     raise exception 'Gambit one-wave send multiplier is missing';
   end if;
+  if position(
+       $$app_private.send_1v1_attack_without_gambit$$ in pg_get_functiondef(
+         'public.send_1v1_attack(uuid,text,integer)'::regprocedure
+       )
+     ) = 0
+     or position(
+       $$when 'snowflake' then 4$$ in pg_get_functiondef(
+         'app_private.send_1v1_attack_without_gambit(uuid,text,integer)'::regprocedure
+       )
+     ) = 0
+     or position(
+       $$when 'current' then 8$$ in pg_get_functiondef(
+         'app_private.send_1v1_attack_without_gambit(uuid,text,integer)'::regprocedure
+       )
+     ) = 0
+     or position(
+       $$when 'car' then$$ in pg_get_functiondef(
+         'app_private.send_1v1_attack_without_gambit(uuid,text,integer)'::regprocedure
+       )
+     ) > 0 then
+    raise exception 'Gambit delegate does not own the current armory rules';
+  end if;
 end;
 $gambit_installation_assertions$;
 

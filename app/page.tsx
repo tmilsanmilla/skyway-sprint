@@ -128,6 +128,7 @@ import {
   createPitchKatanaState,
   getAttackPointsForCoin,
   getAvailableAttacks,
+  getCurrentAllowedLaneIndexes,
   getFactoryObstacleSpeedMultiplier,
   getMapRules,
   getNewVolcanoStationaryDamage,
@@ -143,8 +144,15 @@ import {
   type MapId,
   type MapPriorityList,
   type PitchKatanaState,
+  type PurchasableAttackId,
 } from "./arena-map-rules";
 import { MAP_GUIDES } from "./gameplay-guide";
+import {
+  WAVE_PROGRESS_LENGTH,
+  canReleasePurchasedAttack,
+  getAttackReleaseProgresses,
+  getWaveSpeedMultiplier,
+} from "./attack-delivery-rules";
 import {
   advanceGemStreak,
   formatGemStreakNotice,
@@ -175,6 +183,7 @@ type Item = {
   seededUntilWave?: number;
   deactivated?: boolean;
   scheduledAt?: number;
+  attackReleaseProgress?: number;
 };
 type GameMode = "normal" | "hardcore" | "impossible";
 type OracleProphecy = "no-hit" | "completion" | "near-death";
@@ -646,98 +655,66 @@ const isHazardKind = (kind: Kind) =>
   kind !== "coin" &&
   kind !== "melon" &&
   kind !== "mushroom";
+const getAttackSafeLane = (
+  kind: Kind,
+  mapId: MapId,
+  attackLane: number,
+  preferredLane: number,
+) =>
+  getTrackLanes(getMapRules(mapId).laneCount)
+    .filter((candidate) =>
+      kind === "current"
+        ? resolveCurrentInteraction(mapId, candidate, attackLane).kind ===
+          "none"
+        : candidate !== attackLane,
+    )
+    .sort(
+      (left, right) =>
+        Math.abs(left - preferredLane) - Math.abs(right - preferredLane) ||
+        left - right,
+    )[0];
 const appendSafeAttackWave = (
   current: Item[],
   hazards: readonly Kind[],
   nextId: () => number,
-  spacing: number,
   playerLane: number,
   laneCount: number = TRACK_LANES.length,
+  mapId: MapId = "classic",
+  attackTokens: readonly (string | undefined)[] = [],
   random: () => number = Math.random,
 ) => {
   if (hazards.length === 0) return current;
-  const safeSpacing = Math.max(MIN_SAME_LANE_GAP, spacing);
   const trackLanes = getTrackLanes(laneCount);
-  const maxHazardLanes = Math.max(
-    1,
-    Math.min(MAX_HAZARD_LANES, trackLanes.length - 1),
-  );
   const startingLane = Math.max(
     0,
     Math.min(trackLanes.length - 1, Math.round(playerLane)),
   );
-  const firstEscapeLanes = trackLanes.filter(
-    (lane) => Math.abs(lane - startingLane) === 1,
-  );
-  let safeLane =
-    firstEscapeLanes[Math.floor(random() * firstEscapeLanes.length)] ?? 2;
-  let attackLanes: number[] = [];
-  let previousSafeLane = startingLane;
-  const shuffle = (lanes: readonly number[]) => {
-    const shuffled = [...lanes];
-    for (let index = shuffled.length - 1; index > 0; index -= 1) {
-      const swapIndex = Math.floor(random() * (index + 1));
-      [shuffled[index], shuffled[swapIndex]] = [
-        shuffled[swapIndex],
-        shuffled[index],
-      ];
-    }
-    return shuffled;
-  };
+  let previousLane = startingLane;
   const attackItems = hazards.map((kind, index): Item => {
-    if (index % maxHazardLanes === 0) {
-      if (index > 0) {
-        previousSafeLane = safeLane;
-        const lastSafeLane = previousSafeLane;
-        const reachableSafeLanes = trackLanes.filter(
-          (lane) => Math.abs(lane - lastSafeLane) === 1,
-        );
-        safeLane =
-          reachableSafeLanes[
-            Math.floor(random() * reachableSafeLanes.length)
-          ];
-      }
-      attackLanes = shuffle(trackLanes.filter((lane) => lane !== safeLane));
-      // Make every later group close the last group's escape lane first. The
-      // new escape remains one move away, so the pressure cannot be camped but
-      // still leaves a reachable route through the pattern. For the first
-      // group, the previous safe lane is the player's current lane, so even
-      // one purchased obstacle makes a stationary player react.
-      attackLanes = [
-        previousSafeLane,
-        ...attackLanes.filter((lane) => lane !== previousSafeLane),
-      ];
-    }
+    const allowedLanes =
+      kind === "current"
+        ? [...getCurrentAllowedLaneIndexes(mapId)]
+        : trackLanes;
+    const laneChoices = allowedLanes.filter((lane) => lane !== previousLane);
+    const lane =
+      laneChoices[Math.floor(random() * laneChoices.length)] ??
+      allowedLanes[0] ??
+      startingLane;
+    const safeLane =
+      getAttackSafeLane(kind, mapId, lane, startingLane) ?? startingLane;
+    previousLane = lane;
     return {
       id: nextId(),
-      lane: attackLanes[index % maxHazardLanes],
-      // One purchase group arrives as a wall, not a single-file stream. The
-      // first wall closes the runner's current lane; each later wall closes
-      // the previous escape lane while leaving an adjacent route open.
-      y: -10 - Math.floor(index / maxHazardLanes) * safeSpacing,
+      lane,
+      y: -12,
       kind,
+      attackToken: attackTokens[index],
+      attackGroup: index,
       attackEscapeLane: safeLane,
       attackSafeLanes: [safeLane],
     };
   });
-  const coordinatedAttacks = attackItems.map((item, index) => {
-    const groupStart = Math.floor(index / maxHazardLanes) * maxHazardLanes;
-    const groupSize = Math.min(
-      maxHazardLanes,
-      attackItems.length - groupStart,
-    );
-    return {
-      ...item,
-      attackGroup: Math.floor(index / maxHazardLanes),
-      // Keeping the route on every member makes the opening persist while
-      // later ambient objects are being spawned.
-      attackEscapeLane: attackItems[groupStart]?.attackEscapeLane,
-      attackSafeLanes: attackItems[groupStart]?.attackSafeLanes,
-      formationSpeed:
-        groupSize > 1 || attackItems.length > maxHazardLanes ? 1 : undefined,
-    };
-  });
-  return [...current, ...coordinatedAttacks];
+  return [...current, ...attackItems];
 };
 const appendServerAttackGroups = (
   current: Item[],
@@ -745,177 +722,61 @@ const appendServerAttackGroups = (
   nextId: () => number,
   laneCount: number,
   playerLane: number,
-  spacing: number,
+  mapId: MapId,
 ) => {
   if (attacks.length === 0) return current;
   const normalizedLaneCount = Math.max(1, Math.round(laneCount));
-  const safeSpacing = Math.max(MIN_SAME_LANE_GAP, spacing);
   const orderedAttacks = [...attacks].sort(
     (left, right) =>
       (left.laneGroup ?? 0) - (right.laneGroup ?? 0) ||
       (left.lanePosition ?? 0) - (right.lanePosition ?? 0),
   );
-  // New map RPCs already assign a complete server-owned formation. Rebuild a
-  // checkerboard only for legacy rows that predate that metadata; otherwise a
-  // client could silently replace the authoritative lanes and reopen a free
-  // camping lane.
-  const hasAuthoritativeFormation = orderedAttacks.every(
-    (attack) =>
-      Number.isInteger(attack.lane) &&
-      Number.isInteger(attack.laneGroup) &&
-      Number.isInteger(attack.lanePosition),
+  let fallbackLane = Math.max(
+    0,
+    Math.min(normalizedLaneCount - 1, Math.round(playerLane)),
   );
-  const canUseCheckerboard =
-    !hasAuthoritativeFormation &&
-    orderedAttacks.every((attack) => attack.kind !== "current");
-  const orderedGroups: Array<[number, PendingVersusAttack[]]> = [];
-  if (canUseCheckerboard) {
-    const trackLanes = getTrackLanes(normalizedLaneCount);
-    let cursor = 0;
-    let routeLane = Math.max(
-      0,
-      Math.min(normalizedLaneCount - 1, Math.round(playerLane)),
+  const spawned = orderedAttacks.map((attack, index): Item => {
+    const allowedLanes =
+      attack.kind === "current"
+        ? [...getCurrentAllowedLaneIndexes(mapId)]
+        : getTrackLanes(normalizedLaneCount);
+    const proposedLane = Number.isInteger(attack.lane)
+      ? Math.max(0, Math.min(normalizedLaneCount - 1, Number(attack.lane)))
+      : fallbackLane;
+    const lane = allowedLanes.includes(proposedLane)
+      ? proposedLane
+      : allowedLanes.find((candidate) => candidate >= fallbackLane) ??
+        allowedLanes[0] ??
+        fallbackLane;
+    const declaredEscapeLane = Number(attack.escapeLane);
+    const safeLaneCandidates = getTrackLanes(normalizedLaneCount).filter(
+      (candidate) =>
+        attack.kind === "current"
+          ? resolveCurrentInteraction(mapId, candidate, lane).kind === "none"
+          : candidate !== lane,
     );
-    let wallParity = routeLane % 2;
-    while (cursor < orderedAttacks.length) {
-      const wallLanes = trackLanes.filter(
-        (lane) => lane % 2 === wallParity,
-      );
-      // A partial final wall closes the lane the runner should currently be
-      // using first, then the nearest prior openings. Full walls alternate
-      // parity, so every opening from one wall is covered by the next one.
-      const prioritizedWallLanes = [...wallLanes].sort((left, right) => {
-        if (left === routeLane) return -1;
-        if (right === routeLane) return 1;
-        return (
-          Math.abs(left - routeLane) - Math.abs(right - routeLane) ||
-          left - right
-        );
-      });
-      const groupSize = Math.min(
-        prioritizedWallLanes.length,
-        orderedAttacks.length - cursor,
-      );
-      const occupiedLanes = prioritizedWallLanes.slice(0, groupSize);
-      const safeLanes = trackLanes.filter(
-        (lane) => !occupiedLanes.includes(lane),
-      );
-      const reachableSafeLanes = safeLanes.filter(
-        (lane) => Math.abs(lane - routeLane) === 1,
-      );
-      const nextRouteLane =
-        reachableSafeLanes[orderedGroups.length % reachableSafeLanes.length] ??
-        safeLanes.sort(
-          (left, right) =>
-            Math.abs(left - routeLane) - Math.abs(right - routeLane) ||
-            left - right,
-        )[0] ??
-        routeLane;
-      const group = orderedAttacks.slice(cursor, cursor + groupSize).map(
-        (attack, index) => ({
-          ...attack,
-          lane: occupiedLanes[index],
-          laneGroup: orderedGroups.length,
-          lanePosition: index,
-          escapeLane: nextRouteLane,
-        }),
-      );
-      orderedGroups.push([orderedGroups.length, group]);
-      cursor += groupSize;
-      routeLane = nextRouteLane;
-      wallParity = wallParity === 0 ? 1 : 0;
-    }
-  } else {
-    const grouped = new Map<number, PendingVersusAttack[]>();
-    orderedAttacks.forEach((attack, fallbackIndex) => {
-      const group = Number.isInteger(attack.laneGroup)
-        ? Number(attack.laneGroup)
-        : fallbackIndex;
-      const values = grouped.get(group) ?? [];
-      values.push(attack);
-      grouped.set(group, values);
-    });
-    orderedGroups.push(
-      ...Array.from(grouped.entries()).sort(([left], [right]) => left - right),
-    );
-  }
-  const spawned = orderedGroups.flatMap(([, group], groupIndex) => {
-    const occupied = new Set(group.map((attack) => Number(attack.lane)));
-    const declaredEscapeLane = group.find((attack) =>
-      Number.isInteger(attack.escapeLane),
-    )?.escapeLane;
-    const rawSafeLanes = canUseCheckerboard
-      ? getTrackLanes(normalizedLaneCount).filter(
-          (lane) => !occupied.has(lane),
-        )
-      : Array.from(
-          new Set(
-            group.flatMap((attack) =>
-              Number.isInteger(attack.escapeLane)
-                ? [Number(attack.escapeLane)]
-                : [],
-            ),
-          ),
-        );
-    const safeLanes = Number.isInteger(declaredEscapeLane)
-      ? [
-          Number(declaredEscapeLane),
-          ...rawSafeLanes.filter(
-            (lane) => lane !== Number(declaredEscapeLane),
-          ),
-        ]
-      : rawSafeLanes;
-    return [...group]
-      .sort(
-        (left, right) =>
-          (left.lanePosition ?? 0) - (right.lanePosition ?? 0),
-      )
-      .map((attack): Item => ({
-        id: nextId(),
-        lane: Math.max(
-          0,
-          Math.min(
-            normalizedLaneCount - 1,
-            Number.isInteger(attack.lane) ? Number(attack.lane) : 0,
-          ),
-        ),
-        y: -12 - groupIndex * safeSpacing,
-        kind: attack.kind,
-        attackToken: attack.id,
-        attackGroup: groupIndex,
-        attackEscapeLane: safeLanes[0],
-        attackSafeLanes: safeLanes,
-        formationSpeed:
-          group.length > 1 || orderedGroups.length > 1 ? 1 : undefined,
-      }));
+    const safeLane =
+      Number.isInteger(declaredEscapeLane) &&
+      safeLaneCandidates.includes(declaredEscapeLane)
+        ? declaredEscapeLane
+        : getAttackSafeLane(attack.kind, mapId, lane, playerLane) ?? playerLane;
+    fallbackLane = (lane + 1) % normalizedLaneCount;
+    return {
+      id: nextId(),
+      lane,
+      y: -12,
+      kind: attack.kind,
+      attackToken: attack.id,
+      attackGroup: index,
+      attackEscapeLane: safeLane,
+      attackSafeLanes: [safeLane],
+    };
   });
   return [...current, ...spawned];
 };
 
 const splitLaneUniqueAttackGroups = (items: readonly Item[]) => {
-  const grouped = new Map<number, Item[]>();
-  items.forEach((item, fallbackIndex) => {
-    const groupKey = item.attackGroup ?? fallbackIndex;
-    const group = grouped.get(groupKey) ?? [];
-    group.push(item);
-    grouped.set(groupKey, group);
-  });
-  const result: Item[][] = [];
-  grouped.forEach((group) => {
-    let batch: Item[] = [];
-    let occupiedLanes = new Set<number>();
-    group.forEach((item) => {
-      if (occupiedLanes.has(item.lane)) {
-        result.push(batch);
-        batch = [];
-        occupiedLanes = new Set<number>();
-      }
-      batch.push({ ...item, y: -12 });
-      occupiedLanes.add(item.lane);
-    });
-    if (batch.length > 0) result.push(batch);
-  });
-  return result;
+  return items.map((item) => [{ ...item, y: -12 }]);
 };
 
 const countKinds = (kinds: readonly Kind[]) => {
@@ -1018,18 +879,18 @@ const SOUNDTRACKS: ReadonlyArray<{
   },
 ];
 const VERSUS_ATTACKS: ReadonlyArray<{
-  kind: VersusAttackKind;
+  kind: PurchasableAttackId;
   label: string;
-  cost: 6 | 7 | 8;
+  cost: (typeof ATTACK_POINT_COSTS)[PurchasableAttackId];
   icon: string;
   description: string;
 }> = [
   {
-    kind: "barrel",
-    label: "BARREL",
-    cost: ATTACK_POINT_COSTS.barrel,
-    icon: "◉",
-    description: "Fast roll · 0.5 HP",
+    kind: "snowflake",
+    label: "SNOWFLAKE",
+    cost: ATTACK_POINT_COSTS.snowflake,
+    icon: "❄",
+    description: "3-second freeze · every turn delayed 0.25 seconds",
   },
   {
     kind: "log",
@@ -1039,29 +900,8 @@ const VERSUS_ATTACKS: ReadonlyArray<{
     description: "Steady obstacle · 1 HP",
   },
   {
-    kind: "car",
-    label: "CAR",
-    cost: ATTACK_POINT_COSTS.car,
-    icon: "▰",
-    description: "Fast lane pressure · 1 HP",
-  },
-  {
-    kind: "snowflake",
-    label: "SNOWFLAKE",
-    cost: ATTACK_POINT_COSTS.snowflake,
-    icon: "❄",
-    description: "3-second freeze · every turn delayed 0.25 seconds",
-  },
-  {
-    kind: "current",
-    label: "CURRENT",
-    cost: ATTACK_POINT_COSTS.current,
-    icon: "≈",
-    description: "Skyway only · pushes or damages nearby runners",
-  },
-  {
     kind: "spike",
-    label: "SPIKES",
+    label: "SPIKE",
     cost: ATTACK_POINT_COSTS.spike,
     icon: "▲",
     description: "Warning flash · ground trap · 1 HP",
@@ -1072,6 +912,20 @@ const VERSUS_ATTACKS: ReadonlyArray<{
     cost: ATTACK_POINT_COSTS.rock,
     icon: "◆",
     description: "Slow threat · 2 HP",
+  },
+  {
+    kind: "barrel",
+    label: "BARREL",
+    cost: ATTACK_POINT_COSTS.barrel,
+    icon: "◉",
+    description: "Fast roll · 0.5 HP",
+  },
+  {
+    kind: "current",
+    label: "CURRENT",
+    cost: ATTACK_POINT_COSTS.current,
+    icon: "≈",
+    description: `${CURRENT_RULES.directHitDamage} HP direct · ${CURRENT_RULES.edgeAdjacentDamage} HP edge-adjacent · pushes nearby runners`,
   },
 ];
 const VERSUS_INTERMISSION_SECONDS = 10;
@@ -1844,21 +1698,6 @@ const normalizeOwnedLoadout = (
 const BASE_ITEM_SPEED = 0.0452;
 const ATTACK_COIN_SPAWN_CHANCE = 0.27;
 const MELON_BASE_SCORE = 200;
-const WAVE_SPEED_STEP = 0.25;
-const getWaveSpeedMultiplier = (waveNumber: number) =>
-  1 + Math.max(0, waveNumber - 1) * WAVE_SPEED_STEP;
-const MIN_ATTACK_DODGE_WINDOW_MS = 300;
-const MAX_FORMATION_CHARACTER_SPEED_MULTIPLIER = 1.5;
-const getAttackGroupSpacing = (waveNumber: number) =>
-  Math.max(
-    22,
-    Math.ceil(
-      BASE_ITEM_SPEED *
-        getWaveSpeedMultiplier(waveNumber) *
-        MAX_FORMATION_CHARACTER_SPEED_MULTIPLIER *
-        MIN_ATTACK_DODGE_WINDOW_MS,
-    ),
-  );
 const GAME_MODE_RULES = {
   normal: { scoreMultiplier: 1, hazardLaneLimit: MAX_HAZARD_LANES },
   hardcore: { scoreMultiplier: 1.75, hazardLaneLimit: 3 },
@@ -2161,6 +2000,7 @@ export default function Home() {
     } | null>(null),
     scoreRef = useRef(0),
     waveRef = useRef(1),
+    waveProgressRef = useRef(0),
     highScoreRef = useRef(0),
     scoreCarryRef = useRef(0),
     currentCoinMultiplierRef = useRef(1),
@@ -2433,6 +2273,7 @@ export default function Home() {
   gemsRef.current = gems;
   scoreRef.current = score;
   waveRef.current = wave;
+  waveProgressRef.current = waveProgress;
   highScoreRef.current = highScore;
   useEffect(
     () => () => {
@@ -2465,7 +2306,19 @@ export default function Home() {
         (!spawnedAttackIdsRef.current.has(item.attackToken) &&
           !queuedAttackTokenIdsRef.current.has(item.attackToken)),
     );
-    const groups = splitLaneUniqueAttackGroups(unseenItems);
+    const currentProgress = waveProgressRef.current;
+    const waveStartProgress =
+      Math.floor(currentProgress / WAVE_PROGRESS_LENGTH) * WAVE_PROGRESS_LENGTH;
+    const releaseProgresses = getAttackReleaseProgresses(
+      unseenItems.length,
+      waveStartProgress,
+      currentProgress,
+    );
+    const scheduledItems = unseenItems.map((item, index) => ({
+      ...item,
+      attackReleaseProgress: releaseProgresses[index],
+    }));
+    const groups = splitLaneUniqueAttackGroups(scheduledItems);
     if (groups.length === 0) return;
     groups.forEach((group) =>
       group.forEach((item) => {
@@ -2477,34 +2330,6 @@ export default function Home() {
     deferredAttackGroupsRef.current = nextGroups;
     setDeferredAttackGroups(nextGroups);
   }, []);
-  useEffect(() => {
-    const group = deferredAttackGroups[0];
-    if (!group) return;
-    const groupIds = new Set(group.map((item) => item.id));
-    const inserted = group.every((candidate) =>
-      items.some((item) => item.id === candidate.id),
-    );
-    if (inserted) {
-      group.forEach((item) => {
-        if (!item.attackToken) return;
-        queuedAttackTokenIdsRef.current.delete(item.attackToken);
-        spawnedAttackIdsRef.current.add(item.attackToken);
-      });
-      const remainingGroups = deferredAttackGroups.slice(1);
-      deferredAttackGroupsRef.current = remainingGroups;
-      setDeferredAttackGroups(remainingGroups);
-      return;
-    }
-    const occupiedLanes = new Set(items.map((item) => item.lane));
-    if (group.some((item) => occupiedLanes.has(item.lane))) return;
-    setItems((current) => {
-      if (current.some((item) => groupIds.has(item.id))) return current;
-      const currentOccupiedLanes = new Set(current.map((item) => item.lane));
-      if (group.some((item) => currentOccupiedLanes.has(item.lane)))
-        return current;
-      return [...current, ...group];
-    });
-  }, [deferredAttackGroups, items]);
   useEffect(() => {
     let savedTrack: Soundtrack = "energetic";
     let savedMusic = 0.45;
@@ -3013,6 +2838,82 @@ export default function Home() {
   const activeCenterLane = Math.floor(activeLaneCount / 2);
   const healingEnabled = activeMapRules.health.healingMultiplier > 0;
   const activeMapGuide = MAP_GUIDES[activeMapId];
+  useEffect(() => {
+    if (!running || paused || wavePause || versusPhase !== "playing") return;
+    const group = deferredAttackGroups[0];
+    if (!group) return;
+    const releaseProgress = group[0]?.attackReleaseProgress;
+    if (
+      releaseProgress !== undefined &&
+      waveProgress < releaseProgress
+    )
+      return;
+    const groupIds = new Set(group.map((item) => item.id));
+    const inserted = group.every((candidate) =>
+      items.some((item) => item.id === candidate.id),
+    );
+    if (inserted) {
+      group.forEach((item) => {
+        if (!item.attackToken) return;
+        queuedAttackTokenIdsRef.current.delete(item.attackToken);
+        spawnedAttackIdsRef.current.add(item.attackToken);
+      });
+      const remainingGroups = deferredAttackGroups.slice(1);
+      deferredAttackGroupsRef.current = remainingGroups;
+      setDeferredAttackGroups(remainingGroups);
+      return;
+    }
+    const safeLanes = group.flatMap((item) => item.attackSafeLanes ?? []);
+    const canReleaseAgainst = (current: readonly Item[]) => {
+      const liveItems = current.filter(
+        (item) =>
+          item.y < 108 &&
+          (!item.scheduledAt || item.scheduledAt <= Date.now()),
+      );
+      const blockedLanesFor = (item: Item) =>
+        item.kind === "current"
+          ? getTrackLanes(activeLaneCount).filter(
+              (lane) =>
+                resolveCurrentInteraction(activeMapId, lane, item.lane).kind !==
+                "none",
+            )
+          : [item.lane];
+      return canReleasePurchasedAttack({
+        activePurchasedAttacks: liveItems
+          .filter((item) => item.attackReleaseProgress !== undefined)
+          .map((item) => ({
+            lane: item.lane,
+            y: item.y,
+            safeLanes:
+              item.attackSafeLanes ??
+              (Number.isInteger(item.attackEscapeLane)
+                ? [Number(item.attackEscapeLane)]
+                : []),
+          })),
+        occupiedLanes: liveItems.map((item) => item.lane),
+        blockedLanes: liveItems.flatMap(blockedLanesFor),
+        incomingLanes: group.map((item) => item.lane),
+        incomingBlockedLanes: group.flatMap(blockedLanesFor),
+        incomingSafeLanes: safeLanes,
+      });
+    };
+    if (!canReleaseAgainst(items)) return;
+    setItems((current) => {
+      if (current.some((item) => groupIds.has(item.id))) return current;
+      if (!canReleaseAgainst(current)) return current;
+      return [...current, ...group];
+    });
+  }, [
+    activeLaneCount,
+    activeMapId,
+    deferredAttackGroups,
+    items,
+    paused,
+    running,
+    versusPhase,
+    wavePause,
+    waveProgress,
+  ]);
   const [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
     [inventoryCharacter, setInventoryCharacter] = useState<{
       classKey: keyof typeof CLASS_CHARACTERS;
@@ -4525,6 +4426,7 @@ export default function Home() {
     itemsSnapshotRef.current = [];
     setItems([]);
     setScore(0);
+    waveProgressRef.current = 0;
     setWaveProgress(0);
     setHearts(runStartingHearts);
     setWave(1);
@@ -4634,6 +4536,7 @@ export default function Home() {
     setLane(activeCenterLane);
     state.current.lane = activeCenterLane;
     setScore(0);
+    waveProgressRef.current = 0;
     setWaveProgress(0);
     setWave(1);
     setHearts(startingHearts);
@@ -6977,6 +6880,7 @@ export default function Home() {
             getCharacterMaxHearts(characterKey, characterClass),
           ).maxHp;
     const restoredWave = Math.max(1, Number(snapshot.self?.wave) || 1);
+    waveRef.current = restoredWave;
     const restoredScore = Math.max(0, Number(snapshot.self?.score) || 0);
     const restoredHearts = Math.min(
       restoredMaxHearts,
@@ -7010,7 +6914,10 @@ export default function Home() {
       processedPickupIdsRef.current.clear();
       ambientHazardStreakRef.current = { kind: null, count: 0 };
       resetCharacterAbilityState(freshMatch ? undefined : restoredWave);
-      setWaveProgress((restoredWave - 1) * 2250);
+      const restoredWaveProgress =
+        (restoredWave - 1) * WAVE_PROGRESS_LENGTH;
+      waveProgressRef.current = restoredWaveProgress;
+      setWaveProgress(restoredWaveProgress);
       setPauseMenuOpen(false);
       setInvincible(false);
       invincibleUntilRef.current = 0;
@@ -7228,13 +7135,14 @@ export default function Home() {
             ? appendServerAttackGroups(
                 [], attacks, () => id.current++, restoredMapRules.laneCount,
                 preserveRunState ? state.current.lane : restoredCenterLane,
-                getAttackGroupSpacing(restoredWave),
+                restoredMap,
               )
             : appendSafeAttackWave(
                 [], attacks.map((attack) => attack.kind), () => id.current++,
-                getAttackGroupSpacing(restoredWave),
                 preserveRunState ? state.current.lane : restoredCenterLane,
                 restoredMapRules.laneCount,
+                restoredMap,
+                attacks.map((attack) => attack.id),
               ),
         );
       }
@@ -7565,7 +7473,7 @@ export default function Home() {
       setMainView("endless");
     }
   };
-  const sendVersusAttack = async (kind: VersusAttackKind) => {
+  const sendVersusAttack = async (kind: PurchasableAttackId) => {
     const attack = VERSUS_ATTACKS.find((entry) => entry.kind === kind);
     if (
       !attack ||
@@ -8240,23 +8148,31 @@ export default function Home() {
             setProspectorWarnings(activeProspectorWarnings);
           }
           const reservedAttackSafeLanes = new Set(
-            currentItems
-              .filter(
-                (item) =>
-                  item.attackGroup !== undefined && item.y < 91,
-              )
-              .flatMap((item) =>
-                item.attackSafeLanes
-                  ? [...item.attackSafeLanes]
-                  : Number.isInteger(item.attackEscapeLane)
-                    ? [Number(item.attackEscapeLane)]
-                    : [],
+            [
+              ...currentItems.filter(
+                (item) => item.attackSafeLanes !== undefined && item.y < 91,
               ),
+              ...(deferredAttackGroupsRef.current[0] ?? []).filter(
+                (item) =>
+                  item.attackReleaseProgress === undefined ||
+                  item.attackReleaseProgress <= waveProgressRef.current,
+              ),
+            ].flatMap((item) =>
+              item.attackSafeLanes
+                ? [...item.attackSafeLanes]
+                : Number.isInteger(item.attackEscapeLane)
+                  ? [Number(item.attackEscapeLane)]
+                  : [],
+            ),
           );
           const queuedAttackLanes = new Set(
-            (deferredAttackGroupsRef.current[0] ?? []).map(
-              (item) => item.lane,
-            ),
+            (deferredAttackGroupsRef.current[0] ?? [])
+              .filter(
+                (item) =>
+                  item.attackReleaseProgress === undefined ||
+                  item.attackReleaseProgress <= waveProgressRef.current,
+              )
+              .map((item) => item.lane),
           );
           const hazardLanes = new Set(
             currentItems
@@ -8290,8 +8206,8 @@ export default function Home() {
               .map((item) => item.lane),
           );
           const spawnableLanes =
-            kind === "current" && activeMapId === "skyway"
-              ? [...CURRENT_RULES.allowedLaneIndexes]
+            kind === "current"
+              ? [...getCurrentAllowedLaneIndexes(activeMapId)]
               : getTrackLanes(activeLaneCount);
           const lanes = hazardLaneLimitReached
             ? []
@@ -8571,8 +8487,12 @@ export default function Home() {
           const rangerPulled =
             rangerPickup && n.lane !== state.current.lane;
           const currentInteraction =
-            n.kind === "current" && activeMapId === "skyway"
-              ? resolveCurrentInteraction(state.current.lane, n.lane)
+            n.kind === "current"
+              ? resolveCurrentInteraction(
+                  activeMapId,
+                  state.current.lane,
+                  n.lane,
+                )
               : null;
           const currentContact =
             currentInteraction !== null && currentInteraction.kind !== "none";
@@ -10011,7 +9931,11 @@ export default function Home() {
           setVersusOpponentScore(botScoreRef.current);
         }
       }
-      setWaveProgress((value) => value + waveProgressGain);
+      setWaveProgress((value) => {
+        const nextProgress = value + waveProgressGain;
+        waveProgressRef.current = nextProgress;
+        return nextProgress;
+      });
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -10064,7 +9988,7 @@ export default function Home() {
   ]);
   useEffect(() => {
     if (!running) return;
-    const next = Math.floor(waveProgress / 2250) + 1;
+    const next = Math.floor(waveProgress / WAVE_PROGRESS_LENGTH) + 1;
     if (next !== wave) {
       const completedWave = next - 1;
       let characterChoiceOpened = false;
@@ -10550,7 +10474,7 @@ export default function Home() {
         const botAttacks: VersusAttackKind[] = [];
         const attackLimit = Math.min(6, 1 + Math.ceil(wave / 3));
         const availableAttackIds = getAvailableAttacks(activeMapId);
-        while (botBudget >= 6 && botAttacks.length < attackLimit) {
+        while (botAttacks.length < attackLimit) {
           const affordable = VERSUS_ATTACKS.filter(
             (attack) =>
               availableAttackIds.includes(attack.kind) &&
@@ -10598,9 +10522,9 @@ export default function Home() {
                 attack === "spike" ? "spikes" : attack,
               ),
               () => id.current++,
-              getAttackGroupSpacing(wave),
               state.current.lane,
               activeLaneCount,
+              activeMapId,
             ),
           );
         setVersusResult(
@@ -10736,15 +10660,16 @@ export default function Home() {
                     () => id.current++,
                     activeLaneCount,
                     state.current.lane,
-                    getAttackGroupSpacing(wave),
+                    activeMapId,
                   )
                 : appendSafeAttackWave(
                     [],
                     attacks.map((attack) => attack.kind),
                     () => id.current++,
-                    getAttackGroupSpacing(wave),
                     state.current.lane,
                     activeLaneCount,
+                    activeMapId,
+                    attacks.map((attack) => attack.id),
                   ),
             );
           }
@@ -11258,6 +11183,7 @@ export default function Home() {
     setItems([]);
     setOver(false);
     setScore(0);
+    waveProgressRef.current = 0;
     setWaveProgress(0);
     setLastRunXpBreakdown(null);
     setSettingsOpen(false);
@@ -11987,10 +11913,24 @@ export default function Home() {
         focusedCharacter.rarity,
       )
     : "";
-  const pacerCharacterOptions = CHARACTER_ROSTER.filter(
-    (character) =>
-      getCharacterClassKey(character.key) !== "runner" &&
-      canUseCharacter(character.key),
+  const canReceivePacerBaton = (characterKey: CharacterKey) => {
+    const characterClass = getCharacterClassKey(characterKey);
+    if (characterClass === "runner" || !canUseCharacter(characterKey))
+      return false;
+    if (effectiveCharacterTestMode) return true;
+    if (
+      mode === "impossible" ||
+      (mode === "hardcore" &&
+        (characterClass === "medic" || characterClass === "tank"))
+    )
+      return false;
+    return (
+      !isVersusRun ||
+      isCharacterClassAllowed(activeMapId, characterClass)
+    );
+  };
+  const pacerCharacterOptions = CHARACTER_ROSTER.filter((character) =>
+    canReceivePacerBaton(character.key as CharacterKey),
   );
   const brewTonic = (strength: 1 | 2 | 3) => {
     const cost = strength * 5;
@@ -12019,8 +11959,7 @@ export default function Home() {
   const choosePacerCharacter = (characterKey: CharacterKey) => {
     if (
       abilityChoice?.kind !== "pacer-character" ||
-      getCharacterClassKey(characterKey) === "runner" ||
-      !canUseCharacter(characterKey)
+      !canReceivePacerBaton(characterKey)
     )
       return;
     setRunCharacterOverride(characterKey);
@@ -13407,9 +13346,9 @@ export default function Home() {
                   </header>
                   <p className="versus-armory-note">
                     These prices use match-only attack points—not permanent
-                    gems. Every formation targets where the rival is standing,
-                    then rotates its safe lane so camping does not work. Map
-                    restrictions still apply.
+                    gems. Purchased hazards are released one at a time through
+                    the next wave and wait for a clear lane. Map restrictions
+                    still apply.
                   </p>
                   <div className="versus-attack-catalog">
                     {VERSUS_ATTACKS.map((attack) => (
@@ -14537,8 +14476,8 @@ export default function Home() {
                     points. {activeMapRules.waveAttackReward.kind === "fixed"
                       ? `Completing the wave adds ${activeMapRules.waveAttackReward.points}.`
                       : "The mushroom winner gets 14; a tie gives both players 7."}{" "}
-                    Purchased formations target {versusOpponent}&apos;s lane and
-                    rotate the opening next wave.
+                    Purchased hazards trickle into {versusOpponent}&apos;s next
+                    wave between natural obstacles, with a clear escape route.
                   </small>
                   {versusResult && (
                     <div

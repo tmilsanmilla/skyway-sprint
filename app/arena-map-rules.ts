@@ -52,6 +52,7 @@ export const ATTACK_IDS = [
 ] as const;
 
 export type AttackId = (typeof ATTACK_IDS)[number];
+export type PurchasableAttackId = Exclude<AttackId, "car">;
 export type RandomSource = () => number;
 export type ObstacleDensityMode =
   | "classic-baseline"
@@ -64,6 +65,8 @@ export interface HealthModifiers {
   readonly maxHpMultiplier: number;
   readonly maxHpBonus: number;
   readonly healingMultiplier: number;
+  /** Optional map-level healing ceiling used to restrict Healer characters. */
+  readonly healingCap: number | null;
   readonly obstacleDamageMultiplier: number;
 }
 
@@ -116,6 +119,7 @@ const NORMAL_HEALTH: HealthModifiers = {
   maxHpMultiplier: 1,
   maxHpBonus: 0,
   healingMultiplier: 1,
+  healingCap: null,
   obstacleDamageMultiplier: 1,
 };
 
@@ -123,33 +127,34 @@ const ATTACKS_WITH_SNOWFLAKE: readonly AttackId[] = [
   "log",
   "barrel",
   "snowflake",
+  "current",
   "spike",
-  "car",
   "rock",
 ];
 const ATTACKS_WITHOUT_SNOWFLAKE: readonly AttackId[] = [
   "log",
   "barrel",
+  "current",
   "spike",
-  "car",
   "rock",
 ];
 
-/** The explicit 6/7/8 attack-point table is authoritative. */
-export const ATTACK_POINT_COSTS: Readonly<Record<AttackId, 6 | 7 | 8>> = {
-  log: 6,
+/** Armory prices. Car is retained as an AttackId only for legacy payloads. */
+export const ATTACK_POINT_COSTS: Readonly<
+  Record<PurchasableAttackId, 4 | 5 | 6 | 8>
+> = {
+  log: 4,
   barrel: 6,
-  snowflake: 7,
-  current: 7,
-  spike: 8,
-  car: 8,
-  rock: 8,
+  snowflake: 4,
+  current: 8,
+  spike: 5,
+  rock: 5,
 };
 
 export const CURRENT_RULES = {
   mapId: "skyway",
   naturalSpawnWeight: 15,
-  attackPointCost: 7,
+  attackPointCost: 8,
   /** Current moves at 95% of Barrel's speed. */
   barrelSpeedMultiplier: 0.95,
   allowedLaneIndexes: [1, 2, 3, 4],
@@ -233,6 +238,7 @@ export const MAP_RULES = {
       maxHpMultiplier: 2,
       maxHpBonus: 0,
       healingMultiplier: 1,
+      healingCap: null,
       obstacleDamageMultiplier: 1,
     },
     // The explicit spawn table lists Snowflake at 5%, so it wins over the
@@ -286,7 +292,7 @@ export const MAP_RULES = {
       snowflake: 20,
       current: 15,
     },
-    availableAttacks: [...ATTACKS_WITH_SNOWFLAKE, "current"],
+    availableAttacks: ATTACKS_WITH_SNOWFLAKE,
     attackPointsPerCoin: 5,
     waveAttackReward: { kind: "fixed", points: 5 },
     specialRules: ["current"],
@@ -395,10 +401,22 @@ export const getMapForMode = (
   selectedOneVersusOneMap: MapId = "classic",
 ): MapId => (mode === "endless" ? ENDLESS_MAP_ID : selectedOneVersusOneMap);
 
+export const isHealerAllowedByHealthRules = (
+  health: HealthModifiers,
+): boolean =>
+  health.healingMultiplier > 0 &&
+  (health.healingCap === null || health.healingCap > 1);
+
 export const isCharacterClassAllowed = (
   mapId: MapId,
   characterClass: CharacterClassId,
-): boolean => getMapRules(mapId).allowedClasses.includes(characterClass);
+): boolean => {
+  const map = getMapRules(mapId);
+  return (
+    map.allowedClasses.includes(characterClass) &&
+    (characterClass !== "medic" || isHealerAllowedByHealthRules(map.health))
+  );
+};
 
 export const getForcedCharacterId = (mapId: MapId): "runner_ace" | null =>
   MAP_RULES[mapId].forcedCharacterId;
@@ -480,8 +498,10 @@ export const getAvailableAttacks = (mapId: MapId): readonly AttackId[] =>
 export const getAttackPointCost = (
   mapId: MapId,
   attackId: AttackId,
-): 6 | 7 | 8 | null =>
-  isAttackAvailable(mapId, attackId) ? ATTACK_POINT_COSTS[attackId] : null;
+): 4 | 5 | 6 | 8 | null => {
+  if (attackId === "car" || !isAttackAvailable(mapId, attackId)) return null;
+  return ATTACK_POINT_COSTS[attackId];
+};
 
 export const getAttackPointsForCoin = (mapId: MapId): number =>
   MAP_RULES[mapId].attackPointsPerCoin;
@@ -521,24 +541,34 @@ const assertLane = (lane: number, laneCount: number, label: string) => {
   }
 };
 
-export const isCurrentLaneAllowed = (lane: number): boolean =>
-  Number.isInteger(lane) &&
-  (CURRENT_RULES.allowedLaneIndexes as readonly number[]).includes(lane);
+export const getCurrentAllowedLaneIndexes = (mapId: MapId): readonly number[] => {
+  const laneCount = MAP_RULES[mapId].laneCount;
+  if (laneCount === 3) return [0, 2];
+  return Array.from({ length: laneCount - 2 }, (_, index) => index + 1);
+};
+
+export const isCurrentLaneAllowed = (mapId: MapId, lane: number): boolean =>
+  Number.isInteger(lane) && getCurrentAllowedLaneIndexes(mapId).includes(lane);
 
 export const chooseCurrentLane = (
+  mapId: MapId,
   random: RandomSource = Math.random,
-): (typeof CURRENT_RULES.allowedLaneIndexes)[number] =>
-  chooseUniformly(CURRENT_RULES.allowedLaneIndexes, random);
+): number => chooseUniformly(getCurrentAllowedLaneIndexes(mapId), random);
 
 export const resolveCurrentInteraction = (
+  mapId: MapId,
   playerLane: number,
   currentLane: number,
 ): CurrentInteraction => {
-  const laneCount = MAP_RULES.skyway.laneCount;
+  const map = MAP_RULES[mapId];
+  const laneCount = map.laneCount;
   assertLane(playerLane, laneCount, "Player lane");
   assertLane(currentLane, laneCount, "Current lane");
-  if (!isCurrentLaneAllowed(currentLane)) {
-    throw new RangeError("Current may only use Skyway's middle four lanes (1-4).");
+  if (!isCurrentLaneAllowed(mapId, currentLane)) {
+    const allowedLanes = getCurrentAllowedLaneIndexes(mapId).join(", ");
+    throw new RangeError(
+      `Current may only use ${map.name}'s allowed lanes (${allowedLanes}).`,
+    );
   }
 
   if (playerLane === currentLane) {
@@ -960,18 +990,72 @@ export const validateArenaMapRules = (): readonly string[] => {
     if (map.forcedCharacterId && map.allowedClasses.length !== 1) {
       errors.push(`${map.name} forced character should also force one class.`);
     }
+    if (
+      !isHealerAllowedByHealthRules(map.health) &&
+      (map.allowedClasses as readonly CharacterClassId[]).includes("medic")
+    ) {
+      errors.push(
+        `${map.name} disables or caps healing and must reject Medics.`,
+      );
+    }
   }
   if (MAP_VOTE_COUNT !== 2) errors.push("1v1 map voting must use two picks.");
-  if (ATTACK_POINT_COSTS.current !== 7) {
-    errors.push("Current must cost exactly 7 attack points.");
+  const expectedAttackPointCosts = {
+    snowflake: 4,
+    log: 4,
+    spike: 5,
+    rock: 5,
+    barrel: 6,
+    current: 8,
+  } as const;
+  for (const [attackId, expectedCost] of Object.entries(
+    expectedAttackPointCosts,
+  ) as [keyof typeof expectedAttackPointCosts, number][]) {
+    if (ATTACK_POINT_COSTS[attackId] !== expectedCost) {
+      errors.push(`${attackId} must cost exactly ${expectedCost} attack points.`);
+    }
+  }
+  if (CURRENT_RULES.attackPointCost !== ATTACK_POINT_COSTS.current) {
+    errors.push("Current's special rules and Armory price must agree.");
   }
   for (const mapId of MAP_IDS) {
-    if (mapId !== "skyway" && MAP_RULES[mapId].availableAttacks.includes("current")) {
-      errors.push(`Current attack must not be available on ${MAP_RULES[mapId].name}.`);
+    const map = MAP_RULES[mapId];
+    if (!map.availableAttacks.includes("current")) {
+      errors.push(`Current attack must be available on ${map.name}.`);
+    }
+    if (map.availableAttacks.includes("car")) {
+      errors.push(`Car attack must not be purchasable on ${map.name}.`);
+    }
+    const naturalCurrentWeight =
+      (map.naturalObstacleWeights as MapRules["naturalObstacleWeights"])
+        .current ?? 0;
+    if (
+      mapId === "skyway"
+        ? naturalCurrentWeight !== CURRENT_RULES.naturalSpawnWeight
+        : naturalCurrentWeight !== 0
+    ) {
+      errors.push(
+        mapId === "skyway"
+          ? "Skyway must use Current's configured natural spawn weight."
+          : `Current must not spawn naturally on ${map.name}.`,
+      );
+    }
+    const currentLanes = getCurrentAllowedLaneIndexes(mapId);
+    if (
+      currentLanes.length === 0 ||
+      currentLanes.some(
+        (lane) =>
+          !Number.isInteger(lane) || lane < 0 || lane >= map.laneCount,
+      )
+    ) {
+      errors.push(`${map.name} must provide safe valid lanes for Current.`);
     }
   }
   if (MAP_RULES.skyway.laneCount !== 6) {
     errors.push("Skyway must have 6 lanes for Current's middle-four-lane rule.");
+  }
+  if ((MAP_RULES.factory.naturalObstacleWeights.car ?? 0) <= 0) {
+    errors.push("Car must remain supported as a natural Factory obstacle.");
   }
   return errors;
 };

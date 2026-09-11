@@ -28,6 +28,8 @@
 --     an eliminated caller can disconnect without truncating the survivor run.
 --   * pending_attacks[].lane_index is authoritative.  Paid/reflected attacks
 --     must not be passed through a client planner that preserves a safe lane.
+--   * Every map armory offers Current and no map armory offers Car. Alley
+--     Current uses lanes 0/2; every other map keeps Current on interior lanes.
 --   * Point-award constraints and function locals do not block a later
 --     character migration from retaining every fractional earning exactly.
 
@@ -94,7 +96,7 @@ insert into app_private.one_v_one_map_rules(
 ) values
   (
     'classic', 1, 'Classic', 5, 'normal', true, 6, 8,
-    array['log','barrel','snowflake','spike','car','rock']::text[],
+    array['snowflake','log','spike','rock','barrel','current']::text[],
     array['runner','medic','tank','trickster','misc']::text[], null,
     '{"log":30,"spike":30,"barrel":15,"rock":15,"snowflake":10}'::jsonb,
     jsonb_build_object(
@@ -104,7 +106,7 @@ insert into app_private.one_v_one_map_rules(
   ),
   (
     'alley', 2, 'Alley', 3, 'same_total', true, 7, 7,
-    array['log','barrel','snowflake','spike','car','rock']::text[],
+    array['snowflake','log','spike','rock','barrel','current']::text[],
     array['runner','medic','tank','trickster','misc']::text[], null,
     '{"log":40,"spike":25,"rock":20,"barrel":10,"snowflake":5}'::jsonb,
     jsonb_build_object(
@@ -115,7 +117,7 @@ insert into app_private.one_v_one_map_rules(
   ),
   (
     'desert', 3, 'Desert', 7, 'same_total', false, 5, 5,
-    array['log','barrel','spike','car','rock']::text[],
+    array['log','spike','rock','barrel','current']::text[],
     array['runner','trickster']::text[], null,
     '{"log":25,"spike":25,"barrel":30,"rock":20}'::jsonb,
     jsonb_build_object(
@@ -126,7 +128,7 @@ insert into app_private.one_v_one_map_rules(
   ),
   (
     'skyway', 4, 'Skyway', 6, 'same_total', true, 5, 5,
-    array['log','barrel','snowflake','current','spike','car','rock']::text[],
+    array['snowflake','log','spike','rock','barrel','current']::text[],
     array['runner','medic','tank','misc']::text[], null,
     '{"log":25,"spike":25,"barrel":5,"rock":10,"snowflake":20,"current":15}'::jsonb,
     jsonb_build_object(
@@ -143,7 +145,7 @@ insert into app_private.one_v_one_map_rules(
   ),
   (
     'pitch', 5, 'Pitch', 6, 'same_total', true, 6, 6,
-    array['log','barrel','snowflake','spike','car','rock']::text[],
+    array['snowflake','log','spike','rock','barrel','current']::text[],
     array['runner','medic','tank','trickster','misc']::text[], null,
     '{"log":25,"spike":30,"barrel":20,"rock":20,"snowflake":5}'::jsonb,
     jsonb_build_object(
@@ -158,7 +160,7 @@ insert into app_private.one_v_one_map_rules(
   ),
   (
     'volcano', 6, 'Volcano', 7, 'same_total', true, 5, 5,
-    array['log','barrel','spike','car','rock']::text[],
+    array['log','spike','rock','barrel','current']::text[],
     array['runner']::text[], 'runner_ace',
     '{"log":15,"spike":20,"barrel":25,"rock":40}'::jsonb,
     jsonb_build_object(
@@ -171,7 +173,7 @@ insert into app_private.one_v_one_map_rules(
   ),
   (
     'factory', 7, 'Factory', 4, 'same_per_lane', true, 5, 5,
-    array['log','barrel','snowflake','spike','car','rock']::text[],
+    array['snowflake','log','spike','rock','barrel','current']::text[],
     array['runner','medic','tank','trickster','misc']::text[], null,
     '{"log":15,"spike":30,"barrel":5,"rock":35,"snowflake":5,"car":10}'::jsonb,
     jsonb_build_object(
@@ -185,7 +187,7 @@ insert into app_private.one_v_one_map_rules(
   ),
   (
     'grove', 8, 'Grove', 6, 'same_per_lane', true, 5, 0,
-    array['log','barrel','spike','car','rock']::text[],
+    array['log','spike','rock','barrel','current']::text[],
     array['runner','medic','tank','trickster','misc']::text[], null,
     '{"log":30,"spike":20,"barrel":15,"rock":20,"mushroom":15}'::jsonb,
     jsonb_build_object(
@@ -211,6 +213,24 @@ on conflict (map_key) do update set
   natural_spawn_weights = excluded.natural_spawn_weights,
   gameplay_rules = excluded.gameplay_rules;
 
+alter table app_private.one_v_one_map_rules
+  drop constraint if exists one_v_one_map_rules_disabled_healing_class_check;
+alter table app_private.one_v_one_map_rules
+  add constraint one_v_one_map_rules_disabled_healing_class_check check (
+    not ('medic' = any(allowed_character_classes))
+    or (
+      healing_enabled
+      and case
+        when not (gameplay_rules ? 'healing_cap') then true
+        when jsonb_typeof(gameplay_rules->'healing_cap') = 'number'
+          then (gameplay_rules->>'healing_cap')::numeric > 1
+        else false
+      end
+    )
+  ) not valid;
+alter table app_private.one_v_one_map_rules
+  validate constraint one_v_one_map_rules_disabled_healing_class_check;
+
 create or replace function app_private.one_v_one_map_rules_json(p_map_key text)
 returns jsonb
 language sql
@@ -231,8 +251,8 @@ as $$
     'forced_character_key', rules.forced_character_key,
     'natural_spawn_weights', rules.natural_spawn_weights,
     'attack_costs', jsonb_build_object(
-      'log', 6, 'barrel', 6, 'snowflake', 7, 'current', 7,
-      'spike', 8, 'car', 8, 'rock', 8
+      'snowflake', 4, 'log', 4, 'spike', 5,
+      'rock', 5, 'barrel', 6, 'current', 8
     ),
     'gameplay', rules.gameplay_rules
   )
@@ -564,8 +584,9 @@ create unique index if not exists multiplayer_players_match_death_order_uidx
   on public.multiplayer_players(match_id, death_order)
   where death_order is not null;
 
--- Existing paid attacks are normalized to the authoritative 6/7/8 economy.
--- Reflected Pitch attacks use zero cost and are explicitly marked as katana.
+-- This historical setup step retains its original paid-attack normalization;
+-- later price changes never rewrite those receipt rows. Reflected Pitch
+-- attacks use zero cost and are explicitly marked as katana.
 alter table public.multiplayer_attacks
   add column if not exists source text not null default 'purchased',
   add column if not exists lane_index smallint,
@@ -607,7 +628,7 @@ alter table public.multiplayer_attacks
     obstacle_type in ('barrel','log','car','snowflake','current','spike','rock')
   ) not valid,
   add constraint multiplayer_attacks_point_cost_check check (
-    point_cost in (0, 6, 7, 8)
+    point_cost between 0 and 8
   ) not valid,
   add constraint multiplayer_attacks_source_check check (
     source in ('purchased', 'katana')
@@ -644,7 +665,7 @@ alter table public.multiplayer_attacks
     )
   ) not valid,
   add constraint multiplayer_attacks_source_cost_check check (
-    (source = 'purchased' and point_cost in (6, 7, 8))
+    (source = 'purchased' and point_cost between 1 and 8)
     or (source = 'katana' and point_cost = 0)
   ) not valid;
 alter table public.multiplayer_attacks
@@ -746,7 +767,9 @@ create table if not exists public.multiplayer_katana_events (
   reflection_id text not null,
   wave integer not null check (wave >= 1),
   obstacle_type text not null
-    check (obstacle_type in ('barrel','log','car','snowflake','spike','rock')),
+    check (obstacle_type in (
+      'barrel','log','car','snowflake','current','spike','rock'
+    )),
   outcome text not null check (outcome in ('reflected', 'broken')),
   source_attack_id uuid references public.multiplayer_attacks(id)
     on delete set null,
@@ -757,6 +780,16 @@ create table if not exists public.multiplayer_katana_events (
     references public.multiplayer_players(match_id, user_id) on delete cascade,
   check (length(reflection_id) between 1 and 160)
 );
+alter table public.multiplayer_katana_events
+  drop constraint if exists multiplayer_katana_events_obstacle_type_check;
+alter table public.multiplayer_katana_events
+  add constraint multiplayer_katana_events_obstacle_type_check check (
+    obstacle_type in (
+      'barrel','log','car','snowflake','current','spike','rock'
+    )
+  ) not valid;
+alter table public.multiplayer_katana_events
+  validate constraint multiplayer_katana_events_obstacle_type_check;
 alter table public.multiplayer_katana_events
   add column if not exists source_attack_id uuid
     references public.multiplayer_attacks(id) on delete set null;
@@ -773,7 +806,7 @@ comment on column public.multiplayer_attacks.lane_group is
 comment on column public.multiplayer_attacks.wall_parity is
   'Logical checkerboard hazard parity (lane modulo 2); the next wall flips it.';
 comment on column public.multiplayer_attacks.wall_lane_index is
-  'Logical lane covered by this wall member. Skyway Current may occupy the adjacent legal lane to cover an edge.';
+  'Logical lane covered by this wall member. Current may occupy an adjacent legal lane to cover a restricted edge.';
 comment on column public.multiplayer_attacks.wall_size is
   'Number of logical parity lanes in this wall, always between one and four.';
 comment on column public.multiplayer_players.melons_collected is
@@ -787,8 +820,8 @@ comment on column public.multiplayer_players.mushrooms_collected is
 -- the prior wall is covered instead of leaving a permanently campable lane.
 -- A partially purchased final wall simply contains the leading subset, with
 -- the reported/prior escape lane assigned first so even one attack pressures
--- the runner. Skyway Current keeps the same logical wall but maps logical edge
--- coverage to legal lanes 1/4; its central escapes alternate 3 <-> 2.
+-- the runner. Current maps logical edge coverage into each map's legal lanes:
+-- Alley uses its two edges, while every other map uses interior lanes only.
 create or replace function app_private.next_1v1_attack_placement(
   p_match_id uuid,
   p_sender_user_id uuid,
@@ -947,17 +980,66 @@ begin
     end if;
   end if;
 
-  -- Current can occupy only lanes 1..4. Mapping a logical edge to its adjacent
-  -- legal lane still pressures that edge via Current's one-damage rule. The
-  -- parity metadata retains which opening the next wall must cover.
+  -- Alley Current uses only lanes 0/2. Every other map uses its interior
+  -- lanes; mapping a logical edge inward still pressures that edge through
+  -- Current's adjacent-lane interaction. Wall parity remains logical so the
+  -- next wall still closes the advertised opening.
   v_chosen := case
-    when p_obstacle_type = 'current' and v_logical_lane = 0 then 1
-    when p_obstacle_type = 'current'
+    when p_obstacle_type = 'current' and v_map_key = 'alley'
+      and v_logical_lane = 1 and v_escape = 0 then 2
+    when p_obstacle_type = 'current' and v_map_key = 'alley'
+      and v_logical_lane = 1 then 0
+    when p_obstacle_type = 'current' and v_map_key <> 'alley'
+      and v_logical_lane = 0 then 1
+    when p_obstacle_type = 'current' and v_map_key <> 'alley'
       and v_logical_lane = v_lane_count - 1 then v_lane_count - 2
     else v_logical_lane
   end;
-  if p_obstacle_type = 'current' and v_chosen not between 1 and 4 then
+  if p_obstacle_type = 'current' and (
+       (v_map_key = 'alley' and v_chosen not in (0, 2))
+       or (v_map_key <> 'alley'
+           and v_chosen not between 1 and v_lane_count - 2)
+     ) then
     raise exception 'Current has no safe legal lane for this wall';
+  end if;
+
+  -- The advertised escape must itself have no Current interaction. Alley uses
+  -- its opposite edge; every wider map chooses the nearest lane at least two
+  -- positions away from the remapped Current lane.
+  if p_obstacle_type = 'current' then
+    if v_map_key = 'alley' then
+      v_escape := case when v_chosen = 0 then 2 else 0 end;
+    else
+      select candidate.lane into v_escape
+      from generate_series(0, v_lane_count - 1) candidate(lane)
+      where abs(candidate.lane - v_chosen) > 1
+      order by
+        abs(candidate.lane - coalesce(v_escape, v_target_lane, candidate.lane)),
+        candidate.lane
+      limit 1;
+    end if;
+    if v_escape is null then
+      raise exception 'Current has no non-contact escape lane';
+    end if;
+  end if;
+
+  -- Every released attack must advertise a lane other than the lane it
+  -- occupies. A Current can rewrite the group's escape, so a later member of
+  -- that legacy group may otherwise inherit its own lane as the escape. Pick
+  -- the nearest opposite-parity lane to keep that escape outside the logical
+  -- checkerboard wall.
+  if v_escape = v_chosen then
+    select candidate.lane into v_escape
+    from generate_series(0, v_lane_count - 1) candidate(lane)
+    where candidate.lane <> v_chosen
+    order by
+      case when mod(candidate.lane, 2) <> v_parity then 0 else 1 end,
+      abs(candidate.lane - coalesce(v_target_lane, candidate.lane)),
+      candidate.lane
+    limit 1;
+  end if;
+  if v_escape is null or v_escape = v_chosen then
+    raise exception 'No safe 1v1 escape lane';
   end if;
 
   return query
@@ -2020,14 +2102,9 @@ begin
       updated_at = v_now
   where match_id = p_match_id and user_id = v_uid;
 
-  if p_status = 'intermission' then
-    update public.multiplayer_attacks
-    set delivered_at = v_now
-    where match_id = p_match_id
-      and target_user_id = v_uid
-      and delivered_at is null
-      and spawn_wave < p_wave;
-  end if;
+  -- Incoming attacks are delivered only when the client acknowledges their
+  -- exact ids. Never bulk-expire a slow trickle at the wave boundary; queued
+  -- attacks remain durable through a reconnect or the following wave.
 
   if p_hearts = 0 or p_status = 'eliminated' then
     perform app_private.mark_1v1_eliminated(p_match_id, v_uid, v_now);
@@ -2573,13 +2650,12 @@ begin
   if v_uid is null then raise exception 'Sign in required'; end if;
   if v_type = 'spikes' then v_type := 'spike'; end if;
   v_cost := case v_type
-    when 'log' then 6
+    when 'snowflake' then 4
+    when 'log' then 4
+    when 'spike' then 5
+    when 'rock' then 5
     when 'barrel' then 6
-    when 'snowflake' then 7
-    when 'current' then 7
-    when 'spike' then 8
-    when 'car' then 8
-    when 'rock' then 8
+    when 'current' then 8
     else null
   end;
   if v_cost is null then raise exception 'Unknown obstacle type'; end if;
@@ -2761,7 +2837,9 @@ begin
     raise exception 'A valid katana reflection id is required';
   end if;
   if v_type = 'spikes' then v_type := 'spike'; end if;
-  if v_type not in ('barrel', 'log', 'car', 'snowflake', 'spike', 'rock') then
+  if v_type not in (
+    'barrel', 'log', 'car', 'snowflake', 'current', 'spike', 'rock'
+  ) then
     raise exception 'That obstacle cannot interact with the Pitch katana';
   end if;
 
@@ -3205,6 +3283,27 @@ select
       from jsonb_each_text(rules.natural_spawn_weights) weight
     ) <> 100
   ) as every_spawn_table_totals_100,
+  not exists (
+    select 1 from app_private.one_v_one_map_rules rules
+    where 'car' = any(rules.allowed_attacks)
+       or not ('current' = any(rules.allowed_attacks))
+  ) as current_is_purchasable_and_car_is_not,
+  (
+    select array_agg(rules.map_key order by rules.sort_order)
+    from app_private.one_v_one_map_rules rules
+    where rules.natural_spawn_weights ? 'current'
+  ) = array['skyway']::text[] as current_is_natural_only_on_skyway,
+  not exists (
+    select 1 from app_private.one_v_one_map_rules rules
+    where not rules.healing_enabled
+      and 'medic' = any(rules.allowed_character_classes)
+  ) as disabled_healing_excludes_medics,
+  not exists (
+    select 1 from app_private.one_v_one_map_rules rules
+    where 'medic' = any(rules.allowed_character_classes)
+      and jsonb_typeof(rules.gameplay_rules->'healing_cap') = 'number'
+      and (rules.gameplay_rules->>'healing_cap')::numeric <= 1
+  ) as no_map_caps_healing_at_one_hp,
   (
     select coin_point_reward = 6 and wave_point_reward = 8
     from app_private.one_v_one_map_rules where map_key = 'classic'
@@ -3244,10 +3343,10 @@ select
     ))
   ) = 0 as exact_hidden_hp_is_accepted,
   position(
-    $$when 'current' then 7$$ in pg_get_functiondef(to_regprocedure(
+    $$when 'current' then 8$$ in pg_get_functiondef(to_regprocedure(
       'public.send_1v1_attack(uuid,text,integer)'
     ))
-  ) > 0 as current_costs_seven,
+  ) > 0 as current_costs_eight,
   position(
     $$v_method := 'votes_overlap'$$ in pg_get_functiondef(to_regprocedure(
       'app_private.choose_1v1_map(uuid,uuid)'

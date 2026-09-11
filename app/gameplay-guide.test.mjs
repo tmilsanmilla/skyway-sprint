@@ -3,6 +3,7 @@ import { registerHooks } from "node:module";
 import test from "node:test";
 
 import {
+  ATTACK_POINT_COSTS,
   CURRENT_RULES,
   FACTORY_RULES,
   GROVE_RULES,
@@ -68,6 +69,23 @@ test("item guide includes the exact core hazard and pickup behavior", () => {
   assert.match(ITEM_GUIDES.snowflake.description, /0\.25-second/);
   assert.match(ITEM_GUIDES.melon.description, /200 base score/);
   assert.match(ITEM_GUIDES.coin.description, /1v1-only/);
+  for (const attackId of [
+    "snowflake",
+    "log",
+    "spike",
+    "rock",
+    "barrel",
+    "current",
+  ]) {
+    assert.match(
+      ITEM_GUIDES.coin.description,
+      new RegExp(`${attackId} ${ATTACK_POINT_COSTS[attackId]}`, "i"),
+    );
+  }
+  assert.match(ITEM_GUIDES.car.description, /cannot be bought/i);
+  assert.match(ITEM_GUIDES.current.description, /every 1v1 map/i);
+  assert.match(ITEM_GUIDES.current.description, /naturally only on Skyway/i);
+  assert.match(ITEM_GUIDES.current.description, /three-lane Alley.*edges/i);
   assert.match(ITEM_GUIDES.gem.description, /stay at 5 for five more gems/);
   assert.match(ITEM_GUIDES.gem.description, /cap at 7 until damage/);
   assert.match(

@@ -1,4 +1,5 @@
 import {
+  ATTACK_POINT_COSTS,
   CURRENT_RULES,
   FACTORY_RULES,
   GROVE_RULES,
@@ -49,6 +50,7 @@ export const MAP_GUIDES: Readonly<Record<MapId, MapGuide>> = {
       "Only three lanes carry the same total traffic as Classic, so every lane is busier. Starting HP and maximum HP are doubled.",
     rules: [
       "Every character class is allowed.",
+      "Bought Currents travel in an edge lane, leaving the opposite edge safe.",
       "Coins give 7 attack points and each completed wave gives 7.",
       "Logs are most common; snowflakes are rare but still possible.",
     ],
@@ -125,7 +127,7 @@ export const ITEM_GUIDES: Readonly<Record<GameplayItemId, GuideEntry>> = {
   coin: {
     name: "Attack Coin",
     description:
-      "1v1-only pickup. It adds the current map's attack-point amount to this match so you can buy hazards during intermission.",
+      `1v1-only pickup. It adds the current map's attack-point amount to this match so you can buy hazards during intermission. Armory prices are Snowflake ${ATTACK_POINT_COSTS.snowflake}, Log ${ATTACK_POINT_COSTS.log}, Spike ${ATTACK_POINT_COSTS.spike}, Rock ${ATTACK_POINT_COSTS.rock}, Barrel ${ATTACK_POINT_COSTS.barrel}, and Current ${ATTACK_POINT_COSTS.current}.`,
   },
   melon: {
     name: "Melon",
@@ -147,7 +149,8 @@ export const ITEM_GUIDES: Readonly<Record<GameplayItemId, GuideEntry>> = {
   },
   car: {
     name: "Car",
-    description: "Moves faster than a normal hazard and deals 1 HP on contact.",
+    description:
+      "Moves faster than a normal hazard and deals 1 HP on contact. Cars remain natural and legacy hazards, but cannot be bought from the 1v1 Armory.",
   },
   snowflake: {
     name: "Snowflake",
@@ -157,7 +160,7 @@ export const ITEM_GUIDES: Readonly<Record<GameplayItemId, GuideEntry>> = {
   current: {
     name: "Current",
     description:
-      "Skyway-only moving wave. A direct hit deals 0.5 HP; an edge beside it can deal 1 HP, and its pull ignores frozen input delay.",
+      `Purchasable on every 1v1 map for ${ATTACK_POINT_COSTS.current} attack points, but spawns naturally only on Skyway. A direct hit deals 0.5 HP; an edge beside it can deal 1 HP, and its pull ignores frozen input delay. It uses middle lanes except on three-lane Alley, where it uses the edges.`,
   },
   rock: {
     name: "Rock",
