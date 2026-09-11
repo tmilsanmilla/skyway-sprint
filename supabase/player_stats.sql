@@ -18,7 +18,7 @@ begin
        where table_schema='public' and table_name='multiplayer_matches'
          and column_name='mode'
      ) then
-    raise exception 'Current extraction or multiplayer setup is missing. Run Leaderboard 02, Multi-device 01, and Leaderboard 03 first.';
+    raise exception 'Current extraction or multiplayer setup is missing. Run Multi-device 01 Leaderboards, Multi-device 02 1v1, and Multi-device 03 Ranked first.';
   end if;
 end
 $$;
@@ -95,7 +95,7 @@ create policy "Players read their own stats" on public.player_stats
   for select to authenticated using ((select auth.uid()) = user_id);
 
 -- Permanent XP uses a private receipt ledger. Level L starts at cumulative
--- 5,000,000*L*(L+1) XP, level zero needs 10M XP, and overflow carries.
+-- 10,000,000*L*(L+1) XP, level zero needs 20M XP, and overflow carries.
 create table if not exists public.player_progression_events(
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
