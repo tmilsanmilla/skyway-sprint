@@ -117,6 +117,7 @@ import {
   GROVE_RULES,
   MAP_IDS,
   MAP_RULES,
+  MAP_VOTE_COUNT,
   ONE_V_ONE_SCORING_RULES,
   PITCH_KATANA_RULES,
   VOLCANO_RULES,
@@ -143,12 +144,7 @@ import {
   type MapPriorityList,
   type PitchKatanaState,
 } from "./arena-map-rules";
-import {
-  CONTROL_GUIDES,
-  ITEM_GUIDES,
-  MAP_GUIDES,
-  type GameplayItemId,
-} from "./gameplay-guide";
+import { MAP_GUIDES } from "./gameplay-guide";
 import {
   advanceGemStreak,
   formatGemStreakNotice,
@@ -619,6 +615,7 @@ const readFactoryConveyorFromWaveRules = (
 };
 type MapPriorityPayload = {
   configured?: boolean;
+  map_votes?: string[];
   map_order?: string[];
   catalog?: Array<{ map_key?: string; display_name?: string }>;
 };
@@ -626,7 +623,7 @@ const isMapId = (value: unknown): value is MapId =>
   typeof value === "string" && (MAP_IDS as readonly string[]).includes(value);
 const normalizeMapId = (value: unknown): MapId =>
   isMapId(value) ? value : "classic";
-const DEFAULT_MAP_PRIORITY: MapPriorityList = [...MAP_IDS];
+const DEFAULT_MAP_VOTES: MapPriorityList = [];
 const TRACK_LANES = [0, 1, 2, 3, 4] as const;
 const getTrackLanes = (laneCount: number) =>
   Array.from({ length: Math.max(1, Math.round(laneCount)) }, (_, lane) => lane);
@@ -2057,6 +2054,7 @@ export default function Home() {
     [wavePause, setWavePause] = useState(false),
     [waveMessage, setWaveMessage] = useState(""),
     [over, setOver] = useState(false),
+    [versusGuideOpen, setVersusGuideOpen] = useState(false),
     [flash, setFlash] = useState(""),
     [invincible, setInvincible] = useState(false),
     [slowed, setSlowed] = useState(false),
@@ -2612,7 +2610,7 @@ export default function Home() {
       "random",
     ),
     [mapPriority, setMapPriority] = useState<MapId[]>([
-      ...DEFAULT_MAP_PRIORITY,
+      ...DEFAULT_MAP_VOTES,
     ]),
     [mapPriorityConfigured, setMapPriorityConfigured] = useState(false),
     [mapPriorityBusy, setMapPriorityBusy] = useState(false),
@@ -2865,20 +2863,32 @@ export default function Home() {
     if (userIdRef.current !== requestUserId) return;
     setMapPriorityBusy(false);
     if (error) {
-      setMapPriorityStatus("MAP PRIORITY DATABASE SETUP IS MISSING");
+      setMapPriorityStatus("MAP VOTE DATABASE SETUP IS MISSING");
       return;
     }
     const payload = (data ?? {}) as MapPriorityPayload;
-    const order = (payload.map_order ?? []).filter(isMapId);
-    if (order.length === MAP_IDS.length && new Set(order).size === MAP_IDS.length)
-      setMapPriority(order);
-    else setMapPriority([...DEFAULT_MAP_PRIORITY]);
-    setMapPriorityConfigured(payload.configured === true);
+    const savedVotes = (payload.map_votes ?? payload.map_order ?? [])
+      .filter(isMapId)
+      .filter((mapId, index, votes) => votes.indexOf(mapId) === index);
+    const votes = savedVotes.slice(0, MAP_VOTE_COUNT);
+    setMapPriority(votes);
+    setMapPriorityConfigured(
+      payload.configured === true &&
+        savedVotes.length === MAP_VOTE_COUNT &&
+        votes.length === MAP_VOTE_COUNT,
+    );
   }, []);
   const saveMapPriority = useCallback(async () => {
     if (!userIdRef.current || mapPriorityBusy) return;
+    if (
+      mapPriority.length !== MAP_VOTE_COUNT ||
+      new Set(mapPriority).size !== MAP_VOTE_COUNT
+    ) {
+      setMapPriorityStatus("CHOOSE EXACTLY 2 DIFFERENT MAPS");
+      return;
+    }
     setMapPriorityBusy(true);
-    setMapPriorityStatus("SAVING PRIORITY LIST…");
+    setMapPriorityStatus("SAVING MAP VOTES…");
     const { data, error } = await supabase.rpc("set_1v1_map_priorities", {
       p_map_order: mapPriority,
     });
@@ -2888,18 +2898,20 @@ export default function Home() {
       return;
     }
     const payload = (data ?? {}) as MapPriorityPayload;
-    const order = (payload.map_order ?? mapPriority).filter(isMapId);
-    if (order.length === MAP_IDS.length) setMapPriority(order);
+    const votes = (payload.map_votes ?? payload.map_order ?? mapPriority)
+      .filter(isMapId)
+      .filter((mapId, index, savedVotes) => savedVotes.indexOf(mapId) === index)
+      .slice(0, MAP_VOTE_COUNT);
+    if (votes.length === MAP_VOTE_COUNT) setMapPriority(votes);
     setMapPriorityConfigured(true);
-    setMapPriorityStatus("PRIORITY LIST SAVED");
+    setMapPriorityStatus("2 MAP VOTES SAVED");
   }, [mapPriority, mapPriorityBusy]);
-  const moveMapPriority = useCallback((index: number, direction: -1 | 1) => {
-    const destination = index + direction;
-    if (destination < 0 || destination >= MAP_IDS.length) return;
+  const toggleMapVote = useCallback((mapId: MapId) => {
     setMapPriority((current) => {
-      const next = [...current];
-      [next[index], next[destination]] = [next[destination], next[index]];
-      return next;
+      if (current.includes(mapId))
+        return current.filter((selectedMap) => selectedMap !== mapId);
+      if (current.length >= MAP_VOTE_COUNT) return current;
+      return [...current, mapId];
     });
     setMapPriorityConfigured(false);
     setMapPriorityStatus("UNSAVED CHANGES");
@@ -3001,22 +3013,6 @@ export default function Home() {
   const activeCenterLane = Math.floor(activeLaneCount / 2);
   const healingEnabled = activeMapRules.health.healingMultiplier > 0;
   const activeMapGuide = MAP_GUIDES[activeMapId];
-  const activeNaturalGuideItems = Object.keys(
-    activeMapRules.naturalObstacleWeights,
-  ).map((itemId) =>
-    itemId === "spike" ? "spikes" : (itemId as GameplayItemId),
-  );
-  const activePickupGuideItems: GameplayItemId[] = isVersusRun
-    ? activeMapId === "grove"
-      ? ["gem", "coin", "mushroom"]
-      : ["gem", "coin"]
-    : ["gem", "melon"];
-  const activeGuideItems = Array.from(
-    new Set<GameplayItemId>([
-      ...activePickupGuideItems,
-      ...activeNaturalGuideItems,
-    ]),
-  );
   const [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
     [inventoryCharacter, setInventoryCharacter] = useState<{
       classKey: keyof typeof CLASS_CHARACTERS;
@@ -7132,6 +7128,7 @@ export default function Home() {
     );
     if (versusMatchRef.current !== matchId) return false;
     setPlayScope("versus");
+    if (!preserveRunState) setVersusGuideOpen(true);
     setOver(selfEliminated || matchFinished);
     setRunning(!selfEliminated && !matchFinished);
 
@@ -7422,8 +7419,8 @@ export default function Home() {
     const practiceMap =
       practiceMapChoice === "random"
         ? selectOneVersusOneMap({
-            playerOnePriority: mapPriorityConfigured ? mapPriority : null,
-            playerTwoPriority: null,
+            playerOneVotes: mapPriorityConfigured ? mapPriority : null,
+            playerTwoVotes: null,
           })
         : practiceMapChoice;
     versusMapRef.current = practiceMap;
@@ -7439,6 +7436,7 @@ export default function Home() {
     botScoreCarryRef.current = 0;
     setMainView("versus");
     setPlayScope("practice");
+    setVersusGuideOpen(true);
     setVersusPhase("playing");
     setVersusOpponent("TRAINING BOT");
     // Practice Mimic copies the bot's default Runner instead of becoming inert.
@@ -13226,9 +13224,8 @@ export default function Home() {
                           <>
                             <b>RANDOM ARENA</b>
                             <p>
-                              Uses your saved priority when possible, then picks
-                              one of the eight Arena maps. Open the full map guide
-                              below before starting.
+                              Uses your two saved map votes when possible, then
+                              picks an Arena at random.
                             </p>
                           </>
                         ) : (
@@ -13267,65 +13264,65 @@ export default function Home() {
                   <header>
                     <span>02</span>
                     <div>
-                      <small>YOUR MATCHMAKING PREFERENCE</small>
-                      <h3 id="versus-map-priority-title">MAP PRIORITY</h3>
+                      <small>CHOOSE EXACTLY TWO ARENAS</small>
+                      <h3 id="versus-map-priority-title">MAP VOTES</h3>
                     </div>
                   </header>
                   <p className="versus-map-priority-note">
-                    Rank every Arena map from favorite to least favorite. The
-                    match combines both players&apos; lists; an unsaved list is
-                    treated as random.
+                    Each player votes for two maps. One shared vote wins. If both
+                    votes match, one of those two is picked at random. With no
+                    shared votes, the match randomly picks from all four votes.
                   </p>
                   {guest ? (
                     <div className="versus-hub-empty">
-                      Sign in to save your map priority.
+                      Sign in to choose and save your two map votes.
                     </div>
                   ) : (
                     <>
-                      <ol className="versus-map-priority-list">
-                        {mapPriority.map((mapId, index) => (
-                          <li key={mapId}>
-                            <strong>{index + 1}</strong>
-                            <span>
-                              <b>{MAP_RULES[mapId].name}</b>
-                              <small>{MAP_GUIDES[mapId].description}</small>
-                            </span>
-                            <div>
-                              <button
-                                type="button"
-                                aria-label={`Move ${MAP_RULES[mapId].name} higher`}
-                                disabled={
-                                  mapPriorityBusy ||
-                                  versusPhase === "searching" ||
-                                  index === 0
-                                }
-                                onClick={() => moveMapPriority(index, -1)}
-                              >
-                                ↑
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={`Move ${MAP_RULES[mapId].name} lower`}
-                                disabled={
-                                  mapPriorityBusy ||
-                                  versusPhase === "searching" ||
-                                  index === mapPriority.length - 1
-                                }
-                                onClick={() => moveMapPriority(index, 1)}
-                              >
-                                ↓
-                              </button>
-                            </div>
-                          </li>
-                        ))}
-                      </ol>
+                      <div
+                        className="versus-map-vote-grid"
+                        aria-label="Choose two maps to vote for"
+                      >
+                        {MAP_IDS.map((mapId) => {
+                          const selected = mapPriority.includes(mapId);
+                          return (
+                            <button
+                              key={mapId}
+                              type="button"
+                              className={selected ? "selected" : ""}
+                              aria-pressed={selected}
+                              disabled={
+                                mapPriorityBusy ||
+                                versusPhase === "searching" ||
+                                (!selected &&
+                                  mapPriority.length >= MAP_VOTE_COUNT)
+                              }
+                              onClick={() => toggleMapVote(mapId)}
+                            >
+                              <strong aria-hidden="true">
+                                {selected ? "✓" : "○"}
+                              </strong>
+                              <span>
+                                <b>{MAP_RULES[mapId].name}</b>
+                                <small>{MAP_GUIDES[mapId].description}</small>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
                       <button
                         type="button"
                         className="versus-save-priority"
-                        disabled={mapPriorityBusy || versusPhase === "searching"}
+                        disabled={
+                          mapPriorityBusy ||
+                          versusPhase === "searching" ||
+                          mapPriority.length !== MAP_VOTE_COUNT
+                        }
                         onClick={() => void saveMapPriority()}
                       >
-                        {mapPriorityBusy ? "SAVING…" : "SAVE MAP PRIORITY"}
+                        {mapPriorityBusy
+                          ? "SAVING…"
+                          : `SAVE ${mapPriority.length}/2 MAP VOTES`}
                       </button>
                       <small
                         className={`versus-priority-status${mapPriorityConfigured ? " saved" : ""}`}
@@ -13334,7 +13331,7 @@ export default function Home() {
                         {mapPriorityStatus ||
                           (mapPriorityConfigured
                             ? "SAVED TO THIS ACCOUNT"
-                            : "NOT SAVED · RANDOM PRIORITY WILL BE USED")}
+                            : "PICK 2 DIFFERENT MAPS TO SAVE YOUR VOTES")}
                       </small>
                     </>
                   )}
@@ -13562,55 +13559,49 @@ export default function Home() {
                 </em>
               </div>
             )}
-            <details className="gameplay-guide-drawer">
-              <summary>
-                <span>
-                  <small>{isVersusRun ? "ARENA GUIDE" : "RUN GUIDE"}</small>
-                  <b>{activeMapGuide.name.toUpperCase()}</b>
-                </span>
-                <strong>{activeLaneCount} LANES</strong>
-                {activeMapId === "grove" && (
-                  <em>
-                    🍄 {versusSelfMushrooms} — {versusOpponentMushrooms} 🍄
-                  </em>
-                )}
-              </summary>
-              <div className="gameplay-guide-body">
-                <p className="gameplay-guide-intro">
-                  {activeMapGuide.description}
-                </p>
-                <section className="gameplay-guide-section">
-                  <b>MAP RULES</b>
-                  <ul>
-                    {activeMapGuide.rules.map((rule) => (
-                      <li key={rule}>{rule}</li>
-                    ))}
-                  </ul>
-                </section>
-                <section className="gameplay-guide-section">
-                  <b>PICKUPS &amp; HAZARDS ON THIS MAP</b>
-                  <div className="gameplay-guide-grid">
-                    {activeGuideItems.map((itemId) => (
-                      <article className="gameplay-guide-item" key={itemId}>
-                        <b>{ITEM_GUIDES[itemId].name}</b>
-                        <p>{ITEM_GUIDES[itemId].description}</p>
-                      </article>
-                    ))}
-                  </div>
-                </section>
-                <section className="gameplay-guide-section">
-                  <b>CONTROLS</b>
-                  <div className="gameplay-guide-grid">
-                    {CONTROL_GUIDES.map((control) => (
-                      <article className="gameplay-guide-item" key={control.name}>
-                        <b>{control.name}</b>
-                        <p>{control.description}</p>
-                      </article>
-                    ))}
-                  </div>
-                </section>
-              </div>
-            </details>
+            {isVersusRun && (
+              <details
+                className="gameplay-guide-drawer"
+                open={versusGuideOpen}
+                onToggle={(event) =>
+                  setVersusGuideOpen(event.currentTarget.open)
+                }
+              >
+                <summary>
+                  <span>
+                    <small>ARENA GUIDE</small>
+                    <b>{activeMapGuide.name.toUpperCase()}</b>
+                  </span>
+                  <strong>{activeLaneCount} LANES</strong>
+                  {activeMapId === "grove" && (
+                    <em>
+                      🍄 {versusSelfMushrooms} — {versusOpponentMushrooms} 🍄
+                    </em>
+                  )}
+                </summary>
+                <div className="gameplay-guide-body">
+                  <p className="gameplay-guide-intro">
+                    {activeMapGuide.description}
+                  </p>
+                  <section className="gameplay-guide-section">
+                    <b>MAP RULES</b>
+                    <ul>
+                      {activeMapGuide.rules.map((rule) => (
+                        <li key={rule}>{rule}</li>
+                      ))}
+                    </ul>
+                  </section>
+                  <section className="gameplay-guide-section gameplay-runner-ability">
+                    <b>
+                      YOUR RUNNER · {activeCharacterDefinition.name.toUpperCase()}
+                    </b>
+                    <p>
+                      <strong>{activeAbility.name}</strong> · {activeAbility.description}
+                    </p>
+                  </section>
+                </div>
+              </details>
+            )}
             {isVersusRun &&
               versusResult &&
               !over &&

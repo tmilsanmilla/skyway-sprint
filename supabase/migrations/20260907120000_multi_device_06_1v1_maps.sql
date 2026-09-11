@@ -4,8 +4,12 @@
 -- remains Classic in the browser.  This migration owns only online 1v1 state.
 --
 -- Frontend contract (all map keys are lowercase):
---   * set_1v1_map_priorities(text[]) accepts one exact eight-map permutation.
---   * get_1v1_map_priorities() returns configured, map_order, and catalog.
+--   * set_1v1_map_priorities(text[]) accepts exactly two distinct map votes.
+--   * get_1v1_map_priorities() returns configured, map_votes, the legacy
+--     map_order alias, and catalog.
+--   * Matchmaking has no hidden fixed map weights. One shared vote wins; two
+--     shared votes are chosen uniformly; no overlap is chosen uniformly from
+--     the four distinct votes.
 --   * join_1v1_queue(...) adds map_key and map_rules to its existing JSON.
 --   * get_1v1_state(uuid) adds map metadata, mushroom/death/katana fields,
 --     a caller-relative outcome, and server-selected pending-attack lanes.
@@ -259,7 +263,7 @@ $$;
 create table if not exists public.player_1v1_map_priorities (
   user_id uuid not null references auth.users(id) on delete cascade,
   map_key text not null,
-  priority smallint not null check (priority between 1 and 8),
+  priority smallint not null check (priority between 1 and 2),
   updated_at timestamptz not null default now(),
   primary key (user_id, map_key),
   unique (user_id, priority),
@@ -269,12 +273,23 @@ create table if not exists public.player_1v1_map_priorities (
   ))
 );
 
+-- Reruns also upgrade accounts that previously stored an eight-map ordering.
+delete from public.player_1v1_map_priorities
+where priority > 2;
+alter table public.player_1v1_map_priorities
+  drop constraint if exists player_1v1_map_priorities_priority_check;
+alter table public.player_1v1_map_priorities
+  add constraint player_1v1_map_priorities_priority_check
+    check (priority between 1 and 2) not valid;
+alter table public.player_1v1_map_priorities
+  validate constraint player_1v1_map_priorities_priority_check;
+
 alter table public.player_1v1_map_priorities enable row level security;
 revoke all on table public.player_1v1_map_priorities
   from public, anon, authenticated;
 
 comment on table public.player_1v1_map_priorities is
-  'Private per-account online 1v1 map ordering. Priority 1 is highest; 8 is lowest. Missing/incomplete orderings are randomized by matchmaking.';
+  'Private per-account online 1v1 map votes. Each configured player selects exactly two distinct maps; missing votes are safely randomized by matchmaking.';
 
 create or replace function public.set_1v1_map_priorities(p_map_order text[])
 returns jsonb
@@ -287,8 +302,8 @@ declare
   v_order text[];
 begin
   if v_uid is null then raise exception 'Sign in required'; end if;
-  if p_map_order is null or cardinality(p_map_order) <> 8 then
-    raise exception 'Map priorities must contain all eight maps exactly once';
+  if p_map_order is null or cardinality(p_map_order) <> 2 then
+    raise exception 'Choose exactly two maps to vote for';
   end if;
 
   select array_agg(lower(trim(item.map_key)) order by item.ordinality)
@@ -296,7 +311,7 @@ begin
   from unnest(p_map_order) with ordinality as item(map_key, ordinality);
 
   if exists (select 1 from unnest(v_order) item where item is null or item = '')
-     or (select count(distinct item) from unnest(v_order) item) <> 8
+     or (select count(distinct item) from unnest(v_order) item) <> 2
      or exists (
        select 1 from unnest(v_order) item
        where item not in (
@@ -304,7 +319,7 @@ begin
          'pitch', 'volcano', 'factory', 'grove'
        )
      ) then
-    raise exception 'Map priorities must be an exact permutation of the eight map keys';
+    raise exception 'Choose exactly two different maps from the map list';
   end if;
 
   delete from public.player_1v1_map_priorities where user_id = v_uid;
@@ -316,7 +331,9 @@ begin
 
   return jsonb_build_object(
     'configured', true,
+    'map_votes', to_jsonb(v_order),
     'map_order', to_jsonb(v_order),
+    'max_selections', 2,
     'catalog', public.get_1v1_map_catalog()
   );
 end;
@@ -340,15 +357,19 @@ begin
   where priority.user_id = v_uid;
 
   return jsonb_build_object(
-    'configured', coalesce(cardinality(v_order), 0) = 8,
+    'configured', coalesce(cardinality(v_order), 0) = 2,
+    'map_votes', coalesce(to_jsonb(v_order), '[]'::jsonb),
     'map_order', coalesce(to_jsonb(v_order), '[]'::jsonb),
+    'max_selections', 2,
     'catalog', public.get_1v1_map_catalog()
   );
 end;
 $$;
 
--- Exact distribution: integer rolls 0..24 are the fixed 25%; 25..99 use the
--- priority algorithm.  Candidate samples are distinct and uniform shuffles.
+-- Each player votes for two distinct maps. A single shared vote is selected;
+-- matching pairs are chosen uniformly; disjoint pairs are chosen uniformly
+-- from their four-map union. Missing/incomplete settings receive two random
+-- distinct votes so matchmaking can never fail on a legacy account.
 create or replace function app_private.choose_1v1_map(
   p_player_one uuid,
   p_player_two uuid
@@ -360,114 +381,68 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_roll integer := floor(random() * 100)::integer;
-  v_candidates text[];
-  v_nonclassic constant text[] :=
-    array['alley','desert','skyway','pitch','volcano','factory','grove']::text[];
   v_all constant text[] :=
     array['classic','alley','desert','skyway','pitch','volcano','factory','grove']::text[];
-  v_one_count integer;
-  v_two_count integer;
-  v_one_last text;
-  v_two_last text;
-  v_remaining text[];
+  v_one_votes text[];
+  v_two_votes text[];
+  v_shared text[];
+  v_pool text[];
+  v_method text;
 begin
-  if v_roll < 10 then
-    return query select 'classic'::text, 'fixed'::text, array['classic']::text[];
-    return;
-  elsif v_roll < 14 then
-    return query select 'pitch'::text, 'fixed'::text, array['pitch']::text[];
-    return;
-  elsif v_roll < 18 then
-    return query select 'alley'::text, 'fixed'::text, array['alley']::text[];
-    return;
-  elsif v_roll < 20 then
-    return query select 'skyway'::text, 'fixed'::text, array['skyway']::text[];
-    return;
-  elsif v_roll < 22 then
-    return query select 'factory'::text, 'fixed'::text, array['factory']::text[];
-    return;
-  elsif v_roll < 23 then
-    return query select 'desert'::text, 'fixed'::text, array['desert']::text[];
-    return;
-  elsif v_roll < 24 then
-    return query select 'grove'::text, 'fixed'::text, array['grove']::text[];
-    return;
-  elsif v_roll < 25 then
-    return query select 'volcano'::text, 'fixed'::text, array['volcano']::text[];
-    return;
-  end if;
+  select array_agg(vote.map_key order by vote.priority)
+  into v_one_votes
+  from public.player_1v1_map_priorities vote
+  where vote.user_id = p_player_one;
 
-  if random() < 0.5 then
-    select array['classic']::text[] || array_agg(sample.map_key)
-    into v_candidates
+  if coalesce(cardinality(v_one_votes), 0) <> 2 then
+    select array_agg(sample.map_key)
+    into v_one_votes
     from (
       select item.map_key
-      from unnest(v_nonclassic) item(map_key)
+      from unnest(v_all) item(map_key)
       order by random()
       limit 2
     ) sample;
-  else
+  end if;
+
+  select array_agg(vote.map_key order by vote.priority)
+  into v_two_votes
+  from public.player_1v1_map_priorities vote
+  where vote.user_id = p_player_two;
+
+  if coalesce(cardinality(v_two_votes), 0) <> 2 then
     select array_agg(sample.map_key)
-    into v_candidates
+    into v_two_votes
     from (
       select item.map_key
-      from unnest(v_nonclassic) item(map_key)
+      from unnest(v_all) item(map_key)
       order by random()
-      limit 3
+      limit 2
     ) sample;
   end if;
 
-  select count(*) into v_one_count
-  from public.player_1v1_map_priorities priority
-  where priority.user_id = p_player_one;
-  if v_one_count = 8 then
-    select priority.map_key into v_one_last
-    from public.player_1v1_map_priorities priority
-    where priority.user_id = p_player_one
-      and priority.map_key = any(v_candidates)
-    order by priority.priority desc
-    limit 1;
+  select array_agg(item order by item)
+  into v_shared
+  from unnest(v_one_votes) item
+  where item = any(v_two_votes);
+
+  if coalesce(cardinality(v_shared), 0) > 0 then
+    v_pool := v_shared;
+    v_method := 'votes_overlap';
   else
-    v_one_last := v_candidates[1 + floor(random() * 3)::integer];
+    select array_agg(distinct_votes.item order by distinct_votes.item)
+    into v_pool
+    from (
+      select distinct candidate.item
+      from unnest(v_one_votes || v_two_votes) candidate(item)
+    ) distinct_votes;
+    v_method := 'votes_union';
   end if;
 
-  select count(*) into v_two_count
-  from public.player_1v1_map_priorities priority
-  where priority.user_id = p_player_two;
-  if v_two_count = 8 then
-    select priority.map_key into v_two_last
-    from public.player_1v1_map_priorities priority
-    where priority.user_id = p_player_two
-      and priority.map_key = any(v_candidates)
-    order by priority.priority desc
-    limit 1;
-  else
-    v_two_last := v_candidates[1 + floor(random() * 3)::integer];
-  end if;
-
-  if v_one_last <> v_two_last then
-    select array_agg(item) into v_remaining
-    from unnest(v_candidates) item
-    where item <> v_one_last and item <> v_two_last;
-    return query select v_remaining[1], 'preferences'::text, v_candidates;
-    return;
-  end if;
-
-  if 'classic' = any(v_candidates) and v_one_last <> 'classic' then
-    return query select 'classic'::text, 'preferences'::text, v_candidates;
-    return;
-  end if;
-
-  -- Shared last place with no remaining Classic: choose uniformly among all
-  -- seven maps other than that shared last, not merely the two candidates.
-  select array_agg(item) into v_remaining
-  from unnest(v_all) item
-  where item <> v_one_last;
   return query
-  select v_remaining[1 + floor(random() * 7)::integer],
-         'preferences_shared_last'::text,
-         v_candidates;
+  select v_pool[1 + floor(random() * cardinality(v_pool))::integer],
+         v_method,
+         v_pool;
 end;
 $$;
 
@@ -492,11 +467,12 @@ alter table public.multiplayer_matches
   )) not valid,
   add constraint multiplayer_matches_map_selection_method_check check (
     map_selection_method in (
-      'legacy_default', 'fixed', 'preferences', 'preferences_shared_last'
+      'legacy_default', 'fixed', 'preferences', 'preferences_shared_last',
+      'votes_overlap', 'votes_union'
     )
   ) not valid,
   add constraint multiplayer_matches_map_candidates_check check (
-    cardinality(map_candidates) in (1, 3)
+    cardinality(map_candidates) between 1 and 4
   ) not valid;
 alter table public.multiplayer_matches
   validate constraint multiplayer_matches_map_key_check;
@@ -3114,7 +3090,9 @@ $$;
 comment on function public.get_1v1_map_catalog() is
   'Authenticated catalog for the eight server-owned online 1v1 map rules.';
 comment on function public.set_1v1_map_priorities(text[]) is
-  'Replaces the caller map ranking atomically; array position 1 is highest priority.';
+  'Replaces the caller two-map 1v1 vote atomically; both selected maps have equal weight.';
+comment on function public.get_1v1_map_priorities() is
+  'Returns the caller two equal 1v1 map votes and the public map catalog.';
 comment on function public.update_1v1_position(uuid, integer) is
   'Reports the caller zero-based lane for safe server attack-lane planning.';
 comment on function public.award_1v1_mushroom(uuid, integer, text) is
@@ -3271,15 +3249,25 @@ select
     ))
   ) > 0 as current_costs_seven,
   position(
-    $$v_roll < 25$$ in pg_get_functiondef(to_regprocedure(
+    $$v_method := 'votes_overlap'$$ in pg_get_functiondef(to_regprocedure(
       'app_private.choose_1v1_map(uuid,uuid)'
     ))
-  ) > 0 as fixed_25_percent_bucket_installed,
+  ) > 0 as shared_vote_pool_installed,
   position(
-    $$random() * 7$$ in pg_get_functiondef(to_regprocedure(
+    $$v_method := 'votes_union'$$ in pg_get_functiondef(to_regprocedure(
       'app_private.choose_1v1_map(uuid,uuid)'
     ))
-  ) > 0 as shared_last_uses_all_other_seven,
+  ) > 0 as disjoint_four_vote_pool_installed,
+  position(
+    $$v_roll$$ in pg_get_functiondef(to_regprocedure(
+      'app_private.choose_1v1_map(uuid,uuid)'
+    ))
+  ) = 0 as fixed_map_weighting_removed,
+  position(
+    $$cardinality(p_map_order) <> 2$$ in pg_get_functiondef(
+      to_regprocedure('public.set_1v1_map_priorities(text[])')
+    )
+  ) > 0 as setter_requires_exactly_two_votes,
   position(
     $$player.score + 280$$ in pg_get_functiondef(to_regprocedure(
       'app_private.finalize_1v1_after_second_death(uuid,timestamp with time zone)'

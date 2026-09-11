@@ -849,179 +849,93 @@ export const resolveOneVersusOneScores = (
   };
 };
 
-export type MapPriorityList = readonly MapId[];
-export type MapPriorityRanks = Readonly<Record<MapId, number>>;
-export type MapPriorityInput = MapPriorityList | MapPriorityRanks | null | undefined;
+export const MAP_VOTE_COUNT = 2;
+
+export type MapVoteList = readonly MapId[];
+export type MapVoteInput = MapVoteList | null | undefined;
+// Compatibility aliases for the existing client while the saved preference UI
+// moves from an eight-map ranking to a two-map vote.
+export type MapPriorityList = MapVoteList;
+export type MapPriorityInput = MapVoteInput;
 
 const isMapId = (value: unknown): value is MapId =>
   typeof value === "string" && (MAP_IDS as readonly string[]).includes(value);
 
-const isPriorityList = (input: MapPriorityInput): input is MapPriorityList =>
-  Array.isArray(input);
+export const isValidMapVotes = (input: MapVoteInput): input is MapVoteList =>
+  Array.isArray(input) &&
+  input.length === MAP_VOTE_COUNT &&
+  input.every(isMapId) &&
+  new Set(input).size === MAP_VOTE_COUNT;
 
-export const isValidMapPriority = (input: MapPriorityInput): boolean => {
-  if (isPriorityList(input)) {
-    return (
-      input.length === MAP_IDS.length &&
-      input.every(isMapId) &&
-      new Set(input).size === MAP_IDS.length
-    );
-  }
-  if (!input || typeof input !== "object") return false;
-  const rankInput = input as MapPriorityRanks;
-  const ranks = MAP_IDS.map((mapId) => Number(rankInput[mapId]));
-  return (
-    ranks.every(
-      (rank) => Number.isInteger(rank) && rank >= 1 && rank <= MAP_IDS.length,
-    ) && new Set(ranks).size === MAP_IDS.length
-  );
-};
+export const isValidMapPriority = isValidMapVotes;
 
-export const createRandomMapPriority = (
+export const createRandomMapVotes = (
   random: RandomSource = Math.random,
-): MapPriorityList => sampleWithoutReplacement(MAP_IDS, MAP_IDS.length, random);
+): MapVoteList => sampleWithoutReplacement(MAP_IDS, MAP_VOTE_COUNT, random);
+
+export const createRandomMapPriority = createRandomMapVotes;
 
 /**
- * Returns highest-to-lowest preference. Missing or malformed saved lists are
- * treated as completely random, matching the account fallback rule.
+ * Returns two distinct votes. Missing or malformed saved votes are randomized,
+ * matching the matchmaking fallback rule.
  */
-export const normalizeMapPriority = (
-  input: MapPriorityInput,
+export const normalizeMapVotes = (
+  input: MapVoteInput,
   random: RandomSource = Math.random,
-): MapPriorityList => {
-  if (!isValidMapPriority(input)) return createRandomMapPriority(random);
-  if (isPriorityList(input)) return [...input];
-  const ranks = input as MapPriorityRanks;
-  return [...MAP_IDS].sort((left, right) => ranks[left] - ranks[right]);
-};
+): MapVoteList =>
+  isValidMapVotes(input) ? [...input] : createRandomMapVotes(random);
 
-export const IMMEDIATE_MAP_SELECTION_WEIGHTS = [
-  { mapId: "classic", percent: 10 },
-  { mapId: "pitch", percent: 4 },
-  { mapId: "alley", percent: 4 },
-  { mapId: "skyway", percent: 2 },
-  { mapId: "factory", percent: 2 },
-  { mapId: "desert", percent: 1 },
-  { mapId: "grove", percent: 1 },
-  { mapId: "volcano", percent: 1 },
-] as const;
-
-export const PRIORITY_ALGORITHM_PERCENT = 75;
+export const normalizeMapPriority = normalizeMapVotes;
 
 export interface OneVersusOneMapSelectionOptions {
+  readonly playerOneVotes?: MapVoteInput;
+  readonly playerTwoVotes?: MapVoteInput;
+  /** @deprecated Use playerOneVotes. */
   readonly playerOnePriority?: MapPriorityInput;
+  /** @deprecated Use playerTwoVotes. */
   readonly playerTwoPriority?: MapPriorityInput;
   readonly random?: RandomSource;
 }
 
-export type OneVersusOneMapSelection =
-  | {
-      readonly mapId: MapId;
-      readonly reason: "immediate";
-      readonly candidates: null;
-      readonly sharedLeast: null;
-    }
-  | {
-      readonly mapId: MapId;
-      readonly reason:
-        | "different-least"
-        | "shared-least-classic"
-        | "shared-least-random";
-      readonly candidates: readonly [MapId, MapId, MapId];
-      readonly sharedLeast: MapId | null;
-    };
-
-const choosePriorityCandidates = (
-  random: RandomSource,
-): [MapId, MapId, MapId] => {
-  const nonClassic = MAP_IDS.filter((mapId) => mapId !== "classic");
-  if (readRandom(random) < 0.5) {
-    const [one, two] = sampleWithoutReplacement(nonClassic, 2, random);
-    return ["classic", one, two];
-  }
-  return sampleWithoutReplacement(nonClassic, 3, random) as [
-    MapId,
-    MapId,
-    MapId,
-  ];
+export type OneVersusOneMapSelection = {
+  readonly mapId: MapId;
+  readonly reason:
+    | "shared-vote"
+    | "shared-pair-random"
+    | "no-overlap-random";
+  readonly candidates: readonly MapId[];
+  readonly sharedVotes: readonly MapId[];
 };
-
-const leastFavoriteCandidate = (
-  priority: MapPriorityList,
-  candidates: readonly MapId[],
-): MapId =>
-  candidates.reduce((least, candidate) =>
-    priority.indexOf(candidate) > priority.indexOf(least) ? candidate : least,
-  );
 
 export const selectOneVersusOneMapDetailed = (
   options: OneVersusOneMapSelectionOptions = {},
 ): OneVersusOneMapSelection => {
   const random = options.random ?? Math.random;
-  const directRoll = readRandom(random) * 100;
-  let threshold = 0;
-  for (const entry of IMMEDIATE_MAP_SELECTION_WEIGHTS) {
-    threshold += entry.percent;
-    if (directRoll < threshold) {
-      return {
-        mapId: entry.mapId,
-        reason: "immediate",
-        candidates: null,
-        sharedLeast: null,
-      };
-    }
-  }
-
-  const candidates = choosePriorityCandidates(random);
-  const playerOnePriority = normalizeMapPriority(
-    options.playerOnePriority,
+  const playerOneVotes = normalizeMapVotes(
+    options.playerOneVotes ?? options.playerOnePriority,
     random,
   );
-  const playerTwoPriority = normalizeMapPriority(
-    options.playerTwoPriority,
+  const playerTwoVotes = normalizeMapVotes(
+    options.playerTwoVotes ?? options.playerTwoPriority,
     random,
   );
-  const playerOneLeast = leastFavoriteCandidate(
-    playerOnePriority,
-    candidates,
+  const sharedVotes = playerOneVotes.filter((mapId) =>
+    playerTwoVotes.includes(mapId),
   );
-  const playerTwoLeast = leastFavoriteCandidate(
-    playerTwoPriority,
-    candidates,
-  );
-
-  if (playerOneLeast !== playerTwoLeast) {
-    const selected = candidates.find(
-      (mapId) => mapId !== playerOneLeast && mapId !== playerTwoLeast,
-    )!;
-    return {
-      mapId: selected,
-      reason: "different-least",
-      candidates,
-      sharedLeast: null,
-    };
-  }
-
-  const remainingCandidates = candidates.filter(
-    (mapId) => mapId !== playerOneLeast,
-  );
-  if (remainingCandidates.includes("classic")) {
-    return {
-      mapId: "classic",
-      reason: "shared-least-classic",
-      candidates,
-      sharedLeast: playerOneLeast,
-    };
-  }
-
-  // The fallback is all seven maps other than the shared C, not merely the
-  // two candidates that remain and not six maps as the prose typo states.
-  const fallbackMaps = MAP_IDS.filter((mapId) => mapId !== playerOneLeast);
+  const candidates =
+    sharedVotes.length > 0
+      ? sharedVotes
+      : Array.from(new Set([...playerOneVotes, ...playerTwoVotes]));
   return {
-    mapId: chooseUniformly(fallbackMaps, random),
-    reason: "shared-least-random",
+    mapId: chooseUniformly(candidates, random),
+    reason:
+      sharedVotes.length === 1
+        ? "shared-vote"
+        : sharedVotes.length === MAP_VOTE_COUNT
+          ? "shared-pair-random"
+          : "no-overlap-random",
     candidates,
-    sharedLeast: playerOneLeast,
+    sharedVotes,
   };
 };
 
@@ -1047,13 +961,7 @@ export const validateArenaMapRules = (): readonly string[] => {
       errors.push(`${map.name} forced character should also force one class.`);
     }
   }
-  const immediateTotal = IMMEDIATE_MAP_SELECTION_WEIGHTS.reduce(
-    (total, entry) => total + entry.percent,
-    0,
-  );
-  if (immediateTotal + PRIORITY_ALGORITHM_PERCENT !== 100) {
-    errors.push("Immediate and priority-algorithm selection weights must total 100%.");
-  }
+  if (MAP_VOTE_COUNT !== 2) errors.push("1v1 map voting must use two picks.");
   if (ATTACK_POINT_COSTS.current !== 7) {
     errors.push("Current must cost exactly 7 attack points.");
   }
