@@ -1220,15 +1220,15 @@ $$;
 -- Explicit starter provisioning: one default kit in each of the four gameplay
 -- classes. Existing earned items are never deleted or inferred from loadouts.
 update public.extraction_catalog
-set rarity='uncommon'
+set rarity='common'
 where item_key='trickster_rogue'
   and item_type='character'
-  and rarity is distinct from 'uncommon';
+  and rarity is distinct from 'common';
 update public.player_unlocks
-set rarity='uncommon'
+set rarity='common'
 where item_key='trickster_rogue'
   and item_type='character'
-  and rarity is distinct from 'uncommon';
+  and rarity is distinct from 'common';
 
 insert into public.player_unlocks(
   user_id,item_key,item_type,rarity,unlocked_at

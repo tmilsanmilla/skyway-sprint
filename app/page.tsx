@@ -1752,6 +1752,7 @@ const UNIQUE_WEAPON_EFFECTS: Partial<Record<CharacterKey, string>> = {
   medic_lifeline: "RESCUE HOOK · 3 TIME-STOP LANE ZIPS",
   medic_seraph: "10% GEM CHANCE · HEAL 1 HP",
   tank_atlas: "HALF DAMAGE FOR 2 SECONDS AFTER A LANE CHANGE",
+  trickster_rogue: "+4% DISTANCE SCORE",
   trickster_gambit: "DRAWS 5 CARDS EACH WAVE · 10-CARD HAND LIMIT",
   trickster_echo: "CHANNELS MIRROR QUESTS · OPENS A 10-SECOND MIRROR REALM",
   trickster_hex: "R ERASES 1 LANE HAZARD · 10s COOLDOWN · SENDS 3 IN 1V1",
@@ -1768,9 +1769,11 @@ const getCharacterWeaponScoreBonus = (
     ? 0.1
     : characterKey === "tank_brace"
       ? 0.15
-    : UNIQUE_WEAPON_EFFECTS[characterKey]
-      ? 0
-      : getWeaponScoreBonus(rarity);
+      : characterKey === "trickster_rogue"
+        ? 0.04
+        : UNIQUE_WEAPON_EFFECTS[characterKey]
+          ? 0
+          : getWeaponScoreBonus(rarity);
 const getCharacterWeaponLabel = (
   characterKey: CharacterKey,
   rarity: Rarity,
