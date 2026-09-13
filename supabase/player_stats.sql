@@ -3290,12 +3290,12 @@ strict
 set search_path=''
 as $$
   select case lower(p_rarity)
+    when 'epic' then 2
     when 'legendary' then 2
-    when 'mythic' then 3
+    when 'mythic' then 2
     when 'common' then 1
     when 'uncommon' then 1
     when 'rare' then 1
-    when 'epic' then 1
     else null
   end;
 $$;
@@ -3902,7 +3902,7 @@ comment on function public.claim_player_gem(uuid,text) is
 comment on function public.reset_endless_gem_streak(uuid) is
   'Clears the caller''s current verified Endless gem streak after damage.';
 comment on function public.extract_items(integer,text) is
-  'Atomic QTY 1-100 Normal/ten-box extraction at 3 gems per item, with rarity-based duplicate refunds.';
+  'Atomic QTY 1-100 Normal/ten-box extraction at 3 gems per item. Common through Rare duplicates refund one-third; Epic through Mythic refund one-half rounded up to a whole gem.';
 comment on function public.purchase_catalog_item(text) is
   'Atomically buys one chosen, unowned active catalog item at its server-owned rarity price.';
 comment on column public.extraction_transactions.refund_amount is
@@ -3934,9 +3934,11 @@ begin
     raise exception 'Endless gem streak reward curve is incorrect';
   end if;
   if app_private.duplicate_gem_refund('common')<>1
-     or app_private.duplicate_gem_refund('epic')<>1
+     or app_private.duplicate_gem_refund('uncommon')<>1
+     or app_private.duplicate_gem_refund('rare')<>1
+     or app_private.duplicate_gem_refund('epic')<>2
      or app_private.duplicate_gem_refund('legendary')<>2
-     or app_private.duplicate_gem_refund('mythic')<>3
+     or app_private.duplicate_gem_refund('mythic')<>2
      or app_private.direct_catalog_price('common')<>5
      or app_private.direct_catalog_price('uncommon')<>10
      or app_private.direct_catalog_price('rare')<>15

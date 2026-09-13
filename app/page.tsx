@@ -1765,9 +1765,9 @@ const DUPLICATE_REFUNDS: Readonly<Record<Rarity, number>> = {
   common: 1,
   uncommon: 1,
   rare: 1,
-  epic: 1,
+  epic: 2,
   legendary: 2,
-  mythic: 3,
+  mythic: 2,
 };
 const EXTRACTION_BOXES = {
   regular: {
@@ -1778,7 +1778,7 @@ const EXTRACTION_BOXES = {
     mix: "5% CHARACTER + WEAPON · 95% COSMETIC",
     oddsLabel: "NORMAL PULL ODDS",
     note:
-      "DUPLICATES REFUND BY RARITY · EVERY 10TH ITEM IN ONE MULTI-OPEN USES THE 10× BONUS ODDS",
+      "DUPLICATES REFUND ⅓ OR ½ OF A PULL · WHOLE-GEM REFUNDS ROUND UP · EVERY 10TH ITEM USES THE 10× BONUS ODDS",
     odds: [
       ["common", "45.75%"],
       ["uncommon", "30.2%"],
@@ -1795,7 +1795,8 @@ const EXTRACTION_BOXES = {
     icon: "◇×10",
     mix: "9 NORMAL PULLS · 1 LEGENDARY-ODDS PULL",
     oddsLabel: "10TH: 20% CHARACTER + WEAPON · 80% COSMETIC",
-    note: "DUPLICATES REFUND BY RARITY · THE 10TH PULL IS NOT GUARANTEED NEW",
+    note:
+      "DUPLICATES REFUND ⅓ OR ½ OF A PULL · WHOLE-GEM REFUNDS ROUND UP · THE 10TH PULL IS NOT GUARANTEED NEW",
     odds: [
       ["common", "3%"],
       ["uncommon", "12%"],
