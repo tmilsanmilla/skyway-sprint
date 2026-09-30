@@ -9,6 +9,12 @@ export type SfxName =
   | "freeze"
   | "shield"
   | "wave"
+  | "heal"
+  | "intermission"
+  | "attackSent"
+  | "rivalHit"
+  | "rivalCritical"
+  | "rivalDown"
   | "click";
 
 type AudioContextConstructor = typeof AudioContext;
@@ -158,6 +164,32 @@ export class AudioEngine {
       case "wave":
         [392, 523, 659, 784].forEach((frequency, index) => {
           this.tone("sfx", frequency, now + index * 0.09, 0.24, 0.15, "square");
+        });
+        break;
+      case "heal":
+        [523, 659, 784].forEach((frequency, index) => {
+          this.tone("sfx", frequency, now + index * 0.055, 0.2, 0.12, "sine");
+        });
+        break;
+      case "intermission":
+        this.tone("sfx", 392, now, 0.14, 0.12, "triangle", 523);
+        this.tone("sfx", 659, now + 0.13, 0.18, 0.14, "triangle", 784);
+        break;
+      case "attackSent":
+        this.tone("sfx", 440, now, 0.08, 0.16, "square", 660);
+        this.tone("sfx", 880, now + 0.07, 0.14, 0.13, "sawtooth", 1100);
+        break;
+      case "rivalHit":
+        this.tone("sfx", 740, now, 0.1, 0.15, "square", 520);
+        break;
+      case "rivalCritical":
+        [880, 880, 1047].forEach((frequency, index) => {
+          this.tone("sfx", frequency, now + index * 0.09, 0.11, 0.15, "square");
+        });
+        break;
+      case "rivalDown":
+        [784, 587, 392, 196].forEach((frequency, index) => {
+          this.tone("sfx", frequency, now + index * 0.08, 0.22, 0.16, "sawtooth");
         });
         break;
       case "click":

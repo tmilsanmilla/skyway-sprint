@@ -8,9 +8,36 @@ import {
   useRef,
   useState,
 } from "react";
-import { createBrowserClient } from "@supabase/ssr";
 import { audioEngine, type Soundtrack } from "./audio-engine";
 import { AdminPlayerEditor } from "./admin-player-editor";
+import { isMigrationMaintenanceMode } from "./migration-maintenance";
+import { UPDATE_LOG } from "./update-log";
+import {
+  ACTIVE_VERSUS_SESSION_STORAGE_KEY,
+  isResumableVersusMatchStatus,
+  parseActiveVersusSessionStorageValue,
+  serializeActiveVersusSession,
+  shouldAnnounceHydratedVersusWave,
+  shouldBlockNonVersusStart,
+  shouldNotifyServerBeforeVersusExit,
+} from "./versus-session-rules";
+import {
+  CloudflareVersusRealtime,
+  realtimeMode,
+} from "./cloudflare-realtime";
+import {
+  changeManagedPassword,
+  checkGuestDeviceAccess,
+  completeManagedPasswordReset,
+  ensureNeonCompatibleSession,
+  getDataAccessToken,
+  isNeonDataEnabled,
+  revokeDataSessionForSignOut,
+  setDataSession,
+  setRealtimeMutationListener,
+  supabase,
+  verifyCurrentNeonSession,
+} from "./skyway-client";
 import {
   getEffectiveCharacterTestMode,
   getEffectiveOneVOneMode,
@@ -1034,6 +1061,47 @@ const secondsUntil = (value: unknown, fallback: number) => {
   if (!Number.isFinite(deadline)) return fallback;
   return Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
 };
+const readActiveVersusSession = () => {
+  if (typeof window === "undefined") return null;
+  try {
+    const rawValue = window.sessionStorage.getItem(
+      ACTIVE_VERSUS_SESSION_STORAGE_KEY,
+    );
+    const session = parseActiveVersusSessionStorageValue(rawValue);
+    if (rawValue !== null && !session)
+      window.sessionStorage.removeItem(ACTIVE_VERSUS_SESSION_STORAGE_KEY);
+    return session;
+  } catch {
+    return null;
+  }
+};
+const rememberActiveVersusSession = (
+  matchId: string,
+  status: unknown,
+) => {
+  if (typeof window === "undefined") return;
+  const serialized = serializeActiveVersusSession({
+    matchId,
+    status: isResumableVersusMatchStatus(status) ? status : "playing",
+  });
+  if (!serialized) return;
+  try {
+    window.sessionStorage.setItem(
+      ACTIVE_VERSUS_SESSION_STORAGE_KEY,
+      serialized,
+    );
+  } catch {
+    // A blocked storage API should not stop an otherwise healthy 1v1.
+  }
+};
+const forgetActiveVersusSession = () => {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(ACTIVE_VERSUS_SESSION_STORAGE_KEY);
+  } catch {
+    // A blocked storage API should not stop cleanup elsewhere.
+  }
+};
 type VersusPhase =
   | "idle"
   | "searching"
@@ -1125,7 +1193,7 @@ const CLASS_CHARACTERS = {
     { key: "misc_prospector", name: "Prospector", weapon: "Gem Pick", rarity: "uncommon" },
     { key: "misc_lantern", name: "Lantern", weapon: "Glow Rod", rarity: "uncommon" },
     { key: "runner_fortune", name: "Fortune", weapon: "Lucky Compass", rarity: "rare" },
-    { key: "misc_scribe", name: "Scribe", weapon: "Rune Quill", rarity: "rare" },
+    { key: "misc_scribe", name: "Scribe", weapon: "Rune Quill", rarity: "epic" },
     { key: "misc_weaver", name: "Weaver", weapon: "Thread Blades", rarity: "rare" },
     { key: "trickster_wildcard", name: "Wildcard", weapon: "Dice Fans", rarity: "epic" },
     { key: "misc_mimic", name: "Mimic", weapon: "Copy Mask", rarity: "epic" },
@@ -1154,7 +1222,7 @@ const getCharacterClassKey = (characterKey: string): CharacterClassKey =>
 const CHARACTER_ABILITIES = {
   runner_ace: {
     name: "MOMENTUM",
-    description: "Can earn 10% more score.",
+    description: "Earns 10% more score at all times.",
   },
   runner_dash: {
     name: "JET DASH",
@@ -1273,7 +1341,7 @@ const CHARACTER_ABILITIES = {
   },
   medic_bloom: {
     name: "HEALING BLOOM",
-    description: "Can heal 0.5 HP with the first gem collected each wave.",
+    description: "The first Gem collected each wave heals 0.5 HP.",
   },
   medic_mercy: {
     name: "GRACE GUARD",
@@ -1318,7 +1386,7 @@ const CHARACTER_ABILITIES = {
   },
   medic_halo: {
     name: "RADIANT PACE",
-    description: "Can earn 15% more score while at full HP.",
+    description: "Earns 15% more score while at full HP.",
   },
   tank_bulwark: {
     name: "HEAVY PLATE",
@@ -1347,7 +1415,7 @@ const CHARACTER_ABILITIES = {
   },
   tank_glacier: {
     name: "FROST ARMOR",
-    description: "Can ignore snowflake freeze.",
+    description: "Snowflakes cannot freeze movement.",
   },
   tank_brace: {
     name: "SPIKE BRACE",
@@ -1381,7 +1449,7 @@ const CHARACTER_ABILITIES = {
   tank_plow: {
     name: "LANE PLOW",
     description:
-      "Can clear the remaining hazards in the current lane after surviving a hit.",
+      "After surviving a hit, clears every remaining hazard in the current lane.",
   },
   tank_reactor: {
     name: "DANGER CORE",
@@ -1399,7 +1467,7 @@ const CHARACTER_ABILITIES = {
   },
   trickster_echo: {
     name: "THE MIRROR",
-    description: "Completes sequential Mirror quests to earn shards and borrow passives; its final realm reflects damage and changes death rules.",
+    description: "Complete the shown Mirror quests to earn shards and choose borrowed passives. After all quests, hold E for 10 seconds to awaken: Endless grants 8 max HP and 80% less damage. Press E again for a 10-second Mirror Realm where hits heal 0.5 HP and reflect damage.",
   },
   trickster_flicker: {
     name: "FATE FLICKER",
@@ -1463,7 +1531,7 @@ const CHARACTER_ABILITIES = {
   },
   misc_broker: {
     name: "MARKET FUNDS",
-    description: "Stores gems, coins, and Melons in separate funds that move by 1–50% each wave with a 60% chance to rise.",
+    description: "Collected Gems, Attack Coins, and Melon score enter separate funds. Each fund changes by 1–50% after every wave with a 60% chance to rise; cash them out with the on-screen controls or collect everything when the run ends.",
   },
   misc_prospector: {
     name: "GEM SURVEY",
@@ -1475,7 +1543,7 @@ const CHARACTER_ABILITIES = {
   },
   misc_scribe: {
     name: "HAZARD CAP",
-    description: "At wave end, chooses one hazard to cap at at least 1 and otherwise wave divided by 10 spawns next wave.",
+    description: "After every wave, choose one hazard. During the next wave, that hazard can spawn at most 1 time per 10 wave levels, rounded down with a minimum of 1.",
   },
   misc_weaver: {
     name: "THAWING JACKET",
@@ -1491,11 +1559,11 @@ const CHARACTER_ABILITIES = {
   },
   misc_harvester: {
     name: "HARVEST",
-    description: "Every pickup fund unlocks its own E power at 10 collected and a much stronger version at 50.",
+    description: "Tracks Gems, Melons, and Attack Coins separately. Collect 10 of one type to unlock its E ability; collect 50 to upgrade that same ability. The live kit panel shows each unlocked action.",
   },
   misc_muse: {
     name: "RHYTHM BREAK",
-    description: "Caps the screen at 5 hazards and uses a one-time 15-second, 30-hit rhythm challenge with its own Muse theme to unlock lasting music, defense, score, healing, and revive tiers.",
+    description: "Only 5 hazards can be on screen. Press E once per run for a 15-second rhythm challenge capped at 30 hits; higher hit tiers grant stronger lasting score, defense, healing, and revive bonuses shown in the live kit panel.",
   },
 } as const satisfies Record<
   RosterCharacterKey,
@@ -1728,27 +1796,27 @@ const INVENTORY_CLASSES: ReadonlyArray<{
   {
     key: "runner",
     label: "RUNNER",
-    description: "Movement or score.",
+    description: "Abilities mainly change movement or score.",
   },
   {
     key: "medic",
     label: "HEALER",
-    description: "Special healing or HP.",
+    description: "Abilities mainly change healing or maximum HP.",
   },
   {
     key: "tank",
     label: "TANK",
-    description: "Less damage or more health, but not healing.",
+    description: "Abilities mainly reduce damage or add health without special healing.",
   },
   {
     key: "trickster",
     label: "TRICKSTER",
-    description: "Special actions trigger invincibility or other rewards.",
+    description: "Special actions trigger shields, invincibility, or other rewards.",
   },
   {
     key: "misc",
     label: "MISC",
-    description: "Everything else.",
+    description: "Abilities that do not fit the other four roles.",
   },
 ];
 const EXTRACTION_UNIT_COST = 3;
@@ -1819,10 +1887,6 @@ const EXTRACTION_BOXES = {
     odds: readonly (readonly [Rarity, string])[];
   }
 >;
-const supabase = createBrowserClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
-);
 function Obstacle({ kind }: { kind: Kind }) {
   if (kind === "gem") return <span>♦</span>;
   if (kind === "coin") return <span>●</span>;
@@ -1877,7 +1941,29 @@ function Obstacle({ kind }: { kind: Kind }) {
     </div>
   );
 }
+function MigrationMaintenanceScreen() {
+  return (
+    <main className="migration-maintenance" role="main">
+      <section aria-labelledby="migration-maintenance-title">
+        <span aria-hidden="true">◆</span>
+        <small>SKYWAY SPRINT</small>
+        <h1 id="migration-maintenance-title">PIT STOP IN PROGRESS</h1>
+        <p>
+          The game is briefly paused while player data moves to its new home.
+          Your account and progress are safe.
+        </p>
+        <strong>PLEASE CHECK BACK SOON</strong>
+      </section>
+    </main>
+  );
+}
+
 export default function Home() {
+  if (isMigrationMaintenanceMode()) return <MigrationMaintenanceScreen />;
+  return <SkywayGame />;
+}
+
+function SkywayGame() {
   const [lane, setLane] = useState(2),
     [items, setItems] = useState<Item[]>([]),
     [score, setScore] = useState(0),
@@ -1914,6 +2000,7 @@ export default function Home() {
     [extractAnimation, setExtractAnimation] =
       useState<ExtractionAnimation>("idle"),
     [leaderboardOpen, setLeaderboardOpen] = useState(false),
+    [updateLogOpen, setUpdateLogOpen] = useState(false),
     [leaders, setLeaders] = useState<Leader[]>([]);
   const [soundtrack, setSoundtrack] = useState<Soundtrack>("energetic"),
     [musicVolume, setMusicVolume] = useState(0.45),
@@ -1921,6 +2008,7 @@ export default function Home() {
     [runCharacterOverride, setRunCharacterOverride] = useState<CharacterKey | null>(null),
     [abilityChoice, setAbilityChoice] = useState<AbilityChoice>(null),
     [abilityStateVersion, setAbilityStateVersion] = useState(0),
+    [abilitySidePanelCollapsed, setAbilitySidePanelCollapsed] = useState(false),
     [tonicIngredients, setTonicIngredients] = useState(0),
     [tonicPotion, setTonicPotion] = useState<0 | 1 | 2 | 3>(0),
     [oracleProphecies, setOracleProphecies] = useState<OracleProphecy[]>([]),
@@ -1988,6 +2076,8 @@ export default function Home() {
     itemsSnapshotRef = useRef<Item[]>(items),
     deferredAttackGroupsRef = useRef<Item[][]>(deferredAttackGroups),
     userIdRef = useRef<string | null>(null),
+    authSessionUserIdRef = useRef<string | null>(null),
+    authSessionGenerationRef = useRef(0),
     runIsTestModeRef = useRef(false),
     gemsRef = useRef(0),
     gemStreakRef = useRef(0),
@@ -2204,6 +2294,7 @@ export default function Home() {
     versusPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     versusAttackBusyRef = useRef(false),
     realtimeRef = useRef<ReturnType<typeof supabase.channel> | null>(null),
+    cloudflareRealtimeRef = useRef<CloudflareVersusRealtime | null>(null),
     incomingAttacksRef = useRef<PendingVersusAttack[]>([]),
     spawnedAttackIdsRef = useRef<Set<string>>(new Set()),
     queuedAttackTokenIdsRef = useRef<Set<string>>(new Set()),
@@ -2231,6 +2322,17 @@ export default function Home() {
     hydrateVersusStateRef = useRef<
       ((matchId: string, preserveRunState?: boolean) => Promise<boolean>) | null
     >(null),
+    beginVersusMatchRef = useRef<
+      ((
+        matchId: string,
+        opponent: string,
+        serverStatus?: string,
+        serverMap?: unknown,
+      ) => Promise<void>) | null
+    >(null),
+    versusReconnectUserRef = useRef<string | null>(null),
+    versusReconnectIntentRef = useRef(0),
+    versusReconnectPendingRef = useRef(false),
     versusSyncRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
       null,
     ),
@@ -2297,6 +2399,8 @@ export default function Home() {
       if (versusPollTimerRef.current)
         clearTimeout(versusPollTimerRef.current);
       if (realtimeRef.current) void supabase.removeChannel(realtimeRef.current);
+      cloudflareRealtimeRef.current?.close();
+      setRealtimeMutationListener(null);
     },
     [],
   );
@@ -2380,7 +2484,9 @@ export default function Home() {
     [password, setPassword] = useState(""),
     [confirmPassword, setConfirmPassword] = useState(""),
     [authMode, setAuthMode] = useState<"signin" | "signup">("signin"),
+    [recoveryToken, setRecoveryToken] = useState(""),
     [authBusy, setAuthBusy] = useState(false),
+    [passwordResetBusy, setPasswordResetBusy] = useState(false),
     [authMessage, setAuthMessage] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false),
     [adminOpen, setAdminOpen] = useState(false),
@@ -2418,10 +2524,30 @@ export default function Home() {
     [usernameInput, setUsernameInput] = useState(""),
     [usernameRequired, setUsernameRequired] = useState(false),
     [usernameStatus, setUsernameStatus] = useState(""),
+    [currentPassword, setCurrentPassword] = useState(""),
     [newPassword, setNewPassword] = useState(""),
     [passwordStatus, setPasswordStatus] = useState("");
   const [editUsername, setEditUsername] = useState(false),
     [editPassword, setEditPassword] = useState(false);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token")?.trim();
+    const recoveryError = params.get("error")?.trim();
+    if (token) {
+      setGuest(false);
+      setAuthMode("signin");
+      setAuthMessage("");
+      setRecoveryToken(token);
+      return;
+    }
+    if (recoveryError) {
+      setAuthMode("signin");
+      setAuthMessage(
+        "That recovery link is invalid or expired. Enter your email and request a new one.",
+      );
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
   const [playerProgression, setPlayerProgression] =
       useState<PlayerProgression>(createEmptyPlayerProgression),
     [progressionRunVersion, setProgressionRunVersion] = useState(0),
@@ -2981,6 +3107,34 @@ export default function Home() {
       : forcedMapCharacter ?? availableCharacter;
   const activeCharacter = (runCharacterOverride ?? equippedCharacter) as CharacterKey;
   const activeClass = getCharacterClassKey(activeCharacter);
+  const previousVersusOpponentHeartsRef = useRef(versusOpponentHearts);
+  const previousPlayerHeartsRef = useRef(hearts);
+  const previousVersusPhaseRef = useRef<VersusPhase>(versusPhase);
+  useEffect(() => {
+    const previousHearts = previousVersusOpponentHeartsRef.current;
+    if (isVersusRun && running && versusOpponentHearts < previousHearts) {
+      if (versusOpponentHearts <= 0)
+        void audioEngine.playSfx("rivalDown");
+      else if (versusOpponentHearts <= 1)
+        void audioEngine.playSfx("rivalCritical");
+      else void audioEngine.playSfx("rivalHit");
+    }
+    previousVersusOpponentHeartsRef.current = versusOpponentHearts;
+  }, [isVersusRun, running, versusOpponentHearts]);
+  useEffect(() => {
+    const previousHearts = previousPlayerHeartsRef.current;
+    if (running && hearts > previousHearts)
+      void audioEngine.playSfx("heal");
+    previousPlayerHeartsRef.current = hearts;
+  }, [hearts, running]);
+  useEffect(() => {
+    if (
+      versusPhase === "intermission" &&
+      previousVersusPhaseRef.current !== "intermission"
+    )
+      void audioEngine.playSfx("intermission");
+    previousVersusPhaseRef.current = versusPhase;
+  }, [versusPhase]);
   const hasCharacterAbility = useCallback((characterKey: CharacterKey) => {
     if (activeCharacter === characterKey) return true;
     if (
@@ -3331,13 +3485,27 @@ export default function Home() {
     audioEngine.setSfxVolume(volume);
     saveAudioPreferences(soundtrack, musicVolume, volume);
   };
-  const refreshPlayerAccess = useCallback(async (blocking = false) => {
-    if (!userIdRef.current) return null;
+  const refreshPlayerAccess = useCallback(async (
+    blocking = false,
+    expectedUserId?: string,
+  ) => {
+    const requestUserId = expectedUserId ?? userIdRef.current;
+    if (
+      !requestUserId ||
+      userIdRef.current !== requestUserId ||
+      authSessionUserIdRef.current !== requestUserId
+    )
+      return null;
     if (blocking) setPlayerAccessChecking(true);
     const { data, error } = await supabase.rpc("register_player_device", {
       p_device_token: getOrCreateDeviceToken(),
       p_label: "Web browser",
     });
+    if (
+      userIdRef.current !== requestUserId ||
+      authSessionUserIdRef.current !== requestUserId
+    )
+      return null;
     if (error) {
       console.error("Could not verify player access:", error.message);
       setPlayerAccessError(error.message);
@@ -3367,9 +3535,9 @@ export default function Home() {
     return access;
   }, []);
   const refreshGuestDeviceAccess = useCallback(async () => {
-    const { data, error } = await supabase.rpc("check_player_device", {
-      p_device_token: getOrCreateDeviceToken(),
-    });
+    const { data, error } = await checkGuestDeviceAccess(
+      getOrCreateDeviceToken(),
+    );
     if (error) {
       setPlayerAccessError(error.message);
       setRunning(false);
@@ -4357,6 +4525,24 @@ export default function Home() {
     trackProgression = true,
     mapOverride?: MapId,
   ) => {
+    if (
+      trackProgression &&
+      shouldBlockNonVersusStart({
+        storedSession: readActiveVersusSession(),
+        reconnecting: versusReconnectPendingRef.current,
+      })
+    ) {
+      setSettingsOpen(false);
+      setAdminOpen(false);
+      setShopOpen(false);
+      setInventoryOpen(false);
+      setLeaderboardOpen(false);
+      setMainView("versus");
+      setPlayScope("single");
+      setVersusPhase("ready");
+      setVersusResult("RESTORING YOUR ACTIVE 1V1");
+      return;
+    }
     const resetIntent = progressionResetIntentRef.current + 1;
     progressionResetIntentRef.current = resetIntent;
     setRunCharacterOverride(null);
@@ -6458,6 +6644,9 @@ export default function Home() {
       void supabase.removeChannel(realtimeRef.current);
       realtimeRef.current = null;
     }
+    cloudflareRealtimeRef.current?.close();
+    cloudflareRealtimeRef.current = null;
+    setRealtimeMutationListener(null);
   };
   const acknowledgeSpawnedVersusAttacks = useCallback(
     async function acknowledgeSpawnedAttacks(
@@ -6498,6 +6687,60 @@ export default function Home() {
   );
   const subscribeToMatch = (matchId: string) => {
     closeVersusChannel();
+    if (realtimeMode !== "supabase") {
+      const accessToken = getDataAccessToken(userIdRef.current);
+      if (accessToken) {
+        const relay = new CloudflareVersusRealtime();
+        cloudflareRealtimeRef.current = relay;
+        setRealtimeMutationListener((functionName, args) => {
+          if (
+            cloudflareRealtimeRef.current !== relay ||
+            args.p_match_id !== matchId
+          )
+            return;
+          if (functionName === "update_1v1_position") {
+            const lane = Number(args.p_lane_index);
+            if (Number.isInteger(lane)) relay.sendMotion(lane);
+            return;
+          }
+          relay.sendInvalidate(
+            ["match", "players", "attacks", "ability", "gambit"],
+            functionName,
+          );
+        });
+        void relay.connect(
+          matchId,
+          () => getDataAccessToken(userIdRef.current),
+          {
+            onInvalidate: async () => {
+              if (versusMatchRef.current === matchId)
+                await hydrateVersusStateRef.current?.(matchId, true);
+            },
+            onOpponentLane: (laneIndex) => {
+              if (versusMatchRef.current !== matchId) return;
+              const laneCount = getMapRules(versusMapRef.current).laneCount;
+              setVersusOpponentLane(
+                Math.max(0, Math.min(laneCount - 1, laneIndex)),
+              );
+            },
+            onPeerStatus: () => {
+              if (versusMatchRef.current === matchId)
+                void hydrateVersusStateRef.current?.(matchId, true);
+            },
+            onFallback: (message) => {
+              if (
+                realtimeMode === "cloudflare" &&
+                versusMatchRef.current === matchId
+              )
+                setVersusResult(message.toUpperCase());
+            },
+          },
+        );
+      }
+    }
+    // Never subscribe to Supabase database events while Neon owns game data.
+    // This guard is intentionally independent of the environment-mode parser.
+    if (isNeonDataEnabled || realtimeMode === "cloudflare") return;
     const channel = supabase
       .channel(`skyway-1v1-${matchId}`)
       .on(
@@ -6635,10 +6878,13 @@ export default function Home() {
             is_draw?: boolean;
             intermission_ends_at?: string | null;
           };
-          if (match.status === "finished") {
+          if (match.status === "finished" || match.status === "cancelled") {
             versusFinishedRef.current = true;
+            forgetActiveVersusSession();
             setVersusResult(
-              match.is_draw
+              match.status === "cancelled"
+                ? "MATCH CANCELLED"
+                : match.is_draw
                 ? "DRAW"
                 : match.winner_user_id === userIdRef.current
                   ? "VICTORY"
@@ -6880,6 +7126,7 @@ export default function Home() {
             getCharacterStartingHearts(characterKey, characterClass),
             getCharacterMaxHearts(characterKey, characterClass),
           ).maxHp;
+    const previousClientWave = waveRef.current;
     const restoredWave = Math.max(1, Number(snapshot.self?.wave) || 1);
     waveRef.current = restoredWave;
     const restoredScore = Math.max(0, Number(snapshot.self?.score) || 0);
@@ -6900,6 +7147,7 @@ export default function Home() {
       setVersusMode(snapshot.match.mode);
     const selfEliminated = snapshot.self?.status === "eliminated";
     const matchFinished = matchStatus === "finished";
+    const matchCancelled = matchStatus === "cancelled";
 
     setSelectedCharacter(characterKey);
     setVersusServerMaxHearts(restoredMaxHearts);
@@ -7037,8 +7285,8 @@ export default function Home() {
     if (versusMatchRef.current !== matchId) return false;
     setPlayScope("versus");
     if (!preserveRunState) setVersusGuideOpen(true);
-    setOver(selfEliminated || matchFinished);
-    setRunning(!selfEliminated && !matchFinished);
+    setOver(selfEliminated || matchFinished || matchCancelled);
+    setRunning(!selfEliminated && !matchFinished && !matchCancelled);
 
     const pending = (snapshot.pending_attacks ?? []).flatMap(
       (attack): PendingVersusAttack[] => {
@@ -7076,7 +7324,8 @@ export default function Home() {
     pending.forEach((attack) => mergedPending.set(attack.id, attack));
     incomingAttacksRef.current = Array.from(mergedPending.values());
 
-    if (matchFinished) {
+    if (matchFinished || matchCancelled) {
+      forgetActiveVersusSession();
       setPaused(false);
       setVersusPhase("finished");
       setVersusIntermissionReady(false);
@@ -7086,17 +7335,20 @@ export default function Home() {
         scoreRef.current = Math.max(0, finalSelfScore);
         setScore(scoreRef.current);
       }
-      const outcome = String(
-        snapshot.outcome ?? snapshot.match?.outcome ?? "",
-      ).toLowerCase();
-      setVersusResult(
-        snapshot.match?.is_draw || outcome === "draw"
-          ? "DRAW"
-          : outcome === "win" ||
-              snapshot.match?.winner_user_id === userIdRef.current
-            ? "VICTORY"
-            : "DEFEAT",
-      );
+      if (matchCancelled) setVersusResult("MATCH CANCELLED");
+      else {
+        const outcome = String(
+          snapshot.outcome ?? snapshot.match?.outcome ?? "",
+        ).toLowerCase();
+        setVersusResult(
+          snapshot.match?.is_draw || outcome === "draw"
+            ? "DRAW"
+            : outcome === "win" ||
+                snapshot.match?.winner_user_id === userIdRef.current
+              ? "VICTORY"
+              : "DEFEAT",
+        );
+      }
     } else if (selfEliminated) {
       setPaused(false);
       setVersusPhase("eliminated");
@@ -7151,20 +7403,48 @@ export default function Home() {
       setVersusIntermissionReady(false);
       setPaused(false);
       void audioEngine.start(soundtrack);
-      if (!preserveRunState)
-        announceWave(restoredWave, freshMatch, characterKey, restoredMap, true);
-      else if (!versusTransitionBusyRef.current)
-        announceWave(restoredWave, true, characterKey, restoredMap, true);
+      if (
+        shouldAnnounceHydratedVersusWave({
+          preserveRunState,
+          previousWave: previousClientWave,
+          restoredWave,
+        })
+      )
+        announceWave(
+          restoredWave,
+          preserveRunState ? true : freshMatch,
+          characterKey,
+          restoredMap,
+          true,
+        );
     }
     return true;
   };
   hydrateVersusStateRef.current = hydrateVersusState;
+  useEffect(() => {
+    if (realtimeMode !== "cloudflare" || playScope !== "versus") return;
+    const matchId = versusMatchRef.current;
+    if (!matchId) return;
+    let pending = false;
+    const sync = async () => {
+      if (pending || versusMatchRef.current !== matchId) return;
+      pending = true;
+      try {
+        await hydrateVersusStateRef.current?.(matchId, true);
+      } finally {
+        pending = false;
+      }
+    };
+    const timer = window.setInterval(() => void sync(), 1_500);
+    return () => window.clearInterval(timer);
+  }, [playScope, versusPhase]);
   const beginVersusMatch = async (
     matchId: string,
     opponent: string,
     serverStatus?: string,
     serverMap?: unknown,
   ) => {
+    versusReconnectPendingRef.current = false;
     cancelPendingProgressionStart();
     runIsTestModeRef.current = adminTestModeActive;
     setRunIsTestMode(adminTestModeActive);
@@ -7175,12 +7455,18 @@ export default function Home() {
     progressionAwardedRunIdRef.current = null;
     setProgressionRunVersion((value) => value + 1);
     versusMatchRef.current = matchId;
+    rememberActiveVersusSession(matchId, serverStatus);
     const joinedMap = normalizeMapId(serverMap);
     versusMapRef.current = joinedMap;
     setVersusMap(joinedMap);
     versusFinishedRef.current = false;
     versusSelfEliminatedRef.current = false;
     setVersusSelfEliminated(false);
+    setSettingsOpen(false);
+    setAdminOpen(false);
+    setShopOpen(false);
+    setInventoryOpen(false);
+    setLeaderboardOpen(false);
     setMainView("versus");
     setVersusOpponent(opponent || "RIVAL");
     setVersusOpponentHearts(3);
@@ -7221,6 +7507,7 @@ export default function Home() {
       retryHydration();
     }
   };
+  beginVersusMatchRef.current = beginVersusMatch;
   const invalidateVersusSearch = () => {
     versusSearchingRef.current = false;
     versusSearchTokenRef.current += 1;
@@ -7260,7 +7547,14 @@ export default function Home() {
       );
       return;
     }
-    if (versusSearchingRef.current || versusLeaving) return;
+    if (
+      versusSearchingRef.current ||
+      versusLeaving ||
+      versusMatchRef.current
+    )
+      return;
+    versusReconnectIntentRef.current += 1;
+    versusReconnectPendingRef.current = false;
     invalidateVersusSearch();
     const searchToken = versusSearchTokenRef.current;
     if (!preserveResult) setVersusResult("");
@@ -7311,10 +7605,30 @@ export default function Home() {
     await poll();
   };
   const startBotPractice = () => {
+    const storedOnlineMatch = readActiveVersusSession();
+    if (
+      versusMatchRef.current ||
+      versusSearchingRef.current ||
+      shouldBlockNonVersusStart({
+        storedSession: storedOnlineMatch,
+        reconnecting: versusReconnectPendingRef.current,
+      })
+    ) {
+      setMainView("versus");
+      setVersusResult(
+        versusMatchRef.current || versusSearchingRef.current
+          ? "LEAVE THE CURRENT 1V1 BEFORE STARTING PRACTICE"
+          : "RESTORING YOUR ACTIVE 1V1 · TRY AGAIN AFTER IT LOADS",
+      );
+      return;
+    }
+    versusReconnectIntentRef.current += 1;
+    versusReconnectPendingRef.current = false;
     cancelPendingProgressionStart();
     invalidateVersusSearch();
     closeVersusChannel();
     versusMatchRef.current = null;
+    forgetActiveVersusSession();
     versusFinishedRef.current = false;
     incomingAttacksRef.current = [];
     spawnedAttackIdsRef.current.clear();
@@ -7361,8 +7675,11 @@ export default function Home() {
     reset(false, practiceMap);
   };
   const clearVersusLocalSession = () => {
+    versusReconnectIntentRef.current += 1;
+    versusReconnectPendingRef.current = false;
     resetVersusClientSync();
     versusMatchRef.current = null;
+    forgetActiveVersusSession();
     closeVersusChannel();
     incomingAttacksRef.current = [];
     spawnedAttackIdsRef.current.clear();
@@ -7400,10 +7717,18 @@ export default function Home() {
   const leaveVersusSession = async () => {
     const wasSearching = versusSearchingRef.current;
     const activeMatchId = versusMatchRef.current;
-    const shouldTellServer = Boolean(
-      userIdRef.current &&
-        (wasSearching || activeMatchId),
+    const storedSession = readActiveVersusSession();
+    const shouldTellServer = shouldNotifyServerBeforeVersusExit(
+      Boolean(userIdRef.current),
+      {
+        activeMatchId,
+        searching: wasSearching,
+        storedSession,
+        reconnecting: versusReconnectPendingRef.current,
+      },
     );
+    versusReconnectIntentRef.current += 1;
+    versusReconnectPendingRef.current = false;
     invalidateVersusSearch();
     setVersusLeaving(shouldTellServer);
     if (!shouldTellServer) {
@@ -7461,7 +7786,11 @@ export default function Home() {
     setMainView("endless");
   };
   const backToMenu = () => {
-    const wasVersus = isVersusRun || Boolean(versusMatchRef.current);
+    const wasVersus =
+      isVersusRun ||
+      Boolean(versusMatchRef.current) ||
+      Boolean(readActiveVersusSession()) ||
+      versusReconnectPendingRef.current;
     if (wasVersus) {
       void leaveVersusSession().then((left) => {
         if (!left) return;
@@ -7603,6 +7932,7 @@ export default function Home() {
         setAbilityStateVersion((value) => value + 1);
       }
       const quantity = Math.max(1, Number(attackResult.data?.quantity) || 1);
+      void audioEngine.playSfx("attackSent");
       setVersusResult(
         quantity > 1 ? `${attack.label} ×${quantity} SENT` : "",
       );
@@ -10822,10 +11152,13 @@ export default function Home() {
         if (pendingVersusCoinPickupIdsRef.current.size === 0)
           applyAuthoritativeVersusPoints(data?.self?.obstacle_points);
         const serverStatus = String(data?.match?.status ?? "");
-        if (serverStatus === "finished") {
+        if (serverStatus === "finished" || serverStatus === "cancelled") {
           versusFinishedRef.current = true;
+          forgetActiveVersusSession();
           setVersusResult(
-            data?.match?.is_draw ||
+            serverStatus === "cancelled"
+              ? "MATCH CANCELLED"
+              : data?.match?.is_draw ||
               String(data?.outcome ?? data?.match?.outcome).toLowerCase() ===
                 "draw"
               ? "DRAW"
@@ -10916,10 +11249,17 @@ export default function Home() {
   }, [over, playScope, running, versusPhase, enqueueVersusStateSync]);
   useEffect(() => {
     const applySession = async (
-      session: Awaited<
+      incomingSession: Awaited<
         ReturnType<typeof supabase.auth.getSession>
       >["data"]["session"],
+      generation: number,
     ) => {
+      const expectedUserId = incomingSession?.user.id ?? null;
+      const session = await ensureNeonCompatibleSession(incomingSession);
+      if (authSessionGenerationRef.current !== generation) return;
+      if (authSessionUserIdRef.current !== expectedUserId) return;
+      if ((session?.user.id ?? null) !== expectedUserId) return;
+      if (!setDataSession(session, expectedUserId)) return;
       const user = session?.user ?? null;
       const nextUserId = user?.id ?? null;
       if (userIdRef.current !== nextUserId) {
@@ -10935,7 +11275,26 @@ export default function Home() {
       setUserEmail(user?.email ?? null);
       if (user) {
         const sessionUserId = user.id;
-        await refreshPlayerAccess();
+        const sessionVerificationError = await verifyCurrentNeonSession();
+        if (
+          userIdRef.current !== sessionUserId ||
+          authSessionGenerationRef.current !== generation
+        )
+          return;
+        if (sessionVerificationError) {
+          console.error(
+            "Could not prepare this account in the game database:",
+            sessionVerificationError.message,
+          );
+          setPlayerAccessError(
+            "Your game data is temporarily unavailable. Please try again.",
+          );
+          setPlayerAccessChecking(false);
+          setAuthReady(true);
+          return;
+        }
+        await refreshPlayerAccess(false, sessionUserId);
+        if (authSessionGenerationRef.current !== generation) return;
         const [
           { data: stats, error: statsError },
           { data: profile },
@@ -10972,7 +11331,11 @@ export default function Home() {
             .maybeSingle(),
           supabase.rpc("get_player_progression"),
         ]);
-        if (userIdRef.current !== sessionUserId) return;
+        if (
+          userIdRef.current !== sessionUserId ||
+          authSessionGenerationRef.current !== generation
+        )
+          return;
         if (statsError)
           console.error("Could not load account stats:", statsError.message);
         if (stats) {
@@ -11042,18 +11405,172 @@ export default function Home() {
       }
       setAuthReady(true);
     };
-    supabase.auth
-      .getSession()
-      .then(({ data }) => void applySession(data.session));
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY") {
         setSettingsOpen(true);
         setPasswordStatus("Verified. Enter your new password below.");
       }
-      void applySession(session);
+      if (event === "TOKEN_REFRESHED") {
+        const refreshedUserId = session?.user.id ?? null;
+        if (
+          refreshedUserId &&
+          authSessionUserIdRef.current === refreshedUserId &&
+          userIdRef.current === refreshedUserId
+        )
+          setDataSession(session, refreshedUserId);
+        return;
+      }
+      const generation = authSessionGenerationRef.current + 1;
+      authSessionGenerationRef.current = generation;
+      const nextAuthUserId = session?.user.id ?? null;
+      authSessionUserIdRef.current = nextAuthUserId;
+      if (userIdRef.current !== nextAuthUserId) userIdRef.current = null;
+      setAuthReady(false);
+      // Revoke browser data access synchronously. The next account's token is
+      // installed only after its refresh finishes and this generation is
+      // still current.
+      setDataSession(null, null);
+      window.setTimeout(() => void applySession(session, generation), 0);
     });
-    return () => data.subscription.unsubscribe();
+    return () => {
+      authSessionGenerationRef.current += 1;
+      authSessionUserIdRef.current = null;
+      setDataSession(null, null);
+      data.subscription.unsubscribe();
+    };
   }, [applyProgressionPayload, refreshPlayerAccess]);
+  useEffect(() => {
+    const userId = userIdRef.current;
+    if (
+      !authReady ||
+      !userId ||
+      !userEmail ||
+      guest ||
+      usernameRequired ||
+      playerAccessChecking ||
+      !playerAccess ||
+      playerAccess.account_banned ||
+      playerAccess.device_banned ||
+      versusMatchRef.current ||
+      versusSearchingRef.current ||
+      versusReconnectUserRef.current === userId
+    )
+      return;
+
+    const storedSession = readActiveVersusSession();
+    if (!storedSession) return;
+    versusReconnectUserRef.current = userId;
+    versusReconnectPendingRef.current = true;
+    const reconnectIntent = ++versusReconnectIntentRef.current;
+
+    // Claim the screen before the first network round trip. Together with the
+    // synchronous reset/practice guards, this prevents a late restore from
+    // replacing a newly started Endless run or leaving a menu over the match.
+    setSettingsOpen(false);
+    setAdminOpen(false);
+    setShopOpen(false);
+    setInventoryOpen(false);
+    setLeaderboardOpen(false);
+    setMainView("versus");
+    setPlayScope("single");
+    setVersusPhase("ready");
+    setVersusResult("RESTORING YOUR ACTIVE 1V1");
+    setRunning(false);
+    setPaused(false);
+
+    let stopped = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const finishRestoreAttempt = () => {
+      if (versusReconnectIntentRef.current === reconnectIntent)
+        versusReconnectPendingRef.current = false;
+    };
+    const restoreActiveMatch = async (attempt = 0) => {
+      const { data, error } = await supabase.rpc("get_1v1_state", {
+        p_match_id: storedSession.matchId,
+      });
+      if (
+        stopped ||
+        userIdRef.current !== userId ||
+        versusMatchRef.current ||
+        versusSearchingRef.current ||
+        versusReconnectIntentRef.current !== reconnectIntent
+      )
+        return;
+      if (error || !data) {
+        const message = error?.message.toLowerCase() ?? "";
+        if (
+          message.includes("match not found") ||
+          message.includes("not a participant") ||
+          error?.code === "PGRST116"
+        ) {
+          forgetActiveVersusSession();
+          finishRestoreAttempt();
+          setVersusPhase("idle");
+          setVersusResult("THAT 1V1 IS NO LONGER ACTIVE");
+          return;
+        }
+        if (attempt >= 3) {
+          finishRestoreAttempt();
+          setVersusPhase("idle");
+          setVersusResult(
+            "1V1 RECONNECT INTERRUPTED · PRESS FIND MATCH TO RETRY",
+          );
+          return;
+        }
+        retryTimer = setTimeout(
+          () => void restoreActiveMatch(attempt + 1),
+          750 * 2 ** attempt,
+        );
+        return;
+      }
+
+      const snapshot = data as VersusStatePayload;
+      const status = snapshot.match?.status;
+      if (!isResumableVersusMatchStatus(status)) {
+        forgetActiveVersusSession();
+        finishRestoreAttempt();
+        setVersusPhase("idle");
+        setVersusResult("YOUR PREVIOUS 1V1 HAS ENDED");
+        return;
+      }
+      const currentStoredSession = readActiveVersusSession();
+      if (
+        currentStoredSession?.matchId !== storedSession.matchId ||
+        versusReconnectIntentRef.current !== reconnectIntent ||
+        versusSearchingRef.current
+      )
+        return;
+      rememberActiveVersusSession(storedSession.matchId, status);
+      await beginVersusMatchRef.current?.(
+        storedSession.matchId,
+        snapshot.opponent?.username || "RIVAL",
+        status,
+        snapshot.match?.map_key,
+      );
+      finishRestoreAttempt();
+    };
+    void restoreActiveMatch();
+    return () => {
+      stopped = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      if (
+        !versusMatchRef.current &&
+        versusReconnectUserRef.current === userId
+      ) {
+        versusReconnectUserRef.current = null;
+        if (versusReconnectIntentRef.current === reconnectIntent)
+          versusReconnectIntentRef.current += 1;
+        versusReconnectPendingRef.current = false;
+      }
+    };
+  }, [
+    authReady,
+    guest,
+    playerAccess,
+    playerAccessChecking,
+    userEmail,
+    usernameRequired,
+  ]);
   useEffect(() => {
     if (!userEmail && !guest) return;
     const verify = () => {
@@ -11080,19 +11597,25 @@ export default function Home() {
       const { error } = await supabase.auth.signUp({
         email,
         password,
-        options: { emailRedirectTo: window.location.origin },
+        options: {
+          emailRedirectTo: window.location.origin,
+          data: { displayName: email.split("@", 1)[0] || "Runner" },
+        },
       });
       setAuthMessage(
         error
           ? error.message
-          : "Check your email to confirm your account, then return here to sign in.",
+          : "Account created. Loading your runner profile…",
       );
     } else {
       const { error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
-      if (error) setAuthMessage(error.message);
+      if (error)
+        setAuthMessage(
+          `${error.message} If this account existed before the Neon move, use Forgot Password once.`,
+        );
     }
     setAuthBusy(false);
   };
@@ -11100,30 +11623,78 @@ export default function Home() {
     targetEmail: string,
     setStatus: (message: string) => void,
   ) => {
-    if (!targetEmail) {
+    const normalizedEmail = targetEmail.trim().toLowerCase();
+    if (!normalizedEmail) {
       setStatus("Enter your email address first.");
       return;
     }
+    setPasswordResetBusy(true);
     setStatus("Sending recovery email…");
-    const { error } = await supabase.auth.resetPasswordForEmail(targetEmail, {
-      redirectTo: window.location.origin,
-    });
-    setStatus(
-      error
-        ? error.message
-        : "Recovery email sent. Open its link to verify your account and choose a new password.",
-    );
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        normalizedEmail,
+        { redirectTo: `${window.location.origin}/` },
+      );
+      setStatus(
+        error
+          ? `Could not send the recovery email: ${error.message}`
+          : "If that email belongs to a Skyway account, a recovery link is on the way. Check inbox and spam; the link expires in 1 hour.",
+      );
+    } catch {
+      setStatus(
+        "Could not contact the account service. Check your connection and try again.",
+      );
+    } finally {
+      setPasswordResetBusy(false);
+    }
+  };
+  const signInWithGoogle = async () => {
+    setAuthBusy(true);
+    setAuthMessage("Opening Google sign-in…");
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: `${window.location.origin}/` },
+      });
+      if (error) {
+        setAuthMessage(`Google sign-in could not start: ${error.message}`);
+        setAuthBusy(false);
+      }
+    } catch {
+      setAuthMessage(
+        "Google sign-in could not start. Check your connection and try again.",
+      );
+      setAuthBusy(false);
+    }
   };
   const signOut = async () => {
     const signingOutUserId = userIdRef.current;
+    authSessionGenerationRef.current += 1;
+    authSessionUserIdRef.current = null;
+    const storedVersusSession = readActiveVersusSession();
     cancelPendingProgressionStart();
     progressionStartIntentRef.current += 1;
     progressionRunIdRef.current = null;
     progressionAwardedRunIdRef.current = null;
-    const shouldLeaveVersus = Boolean(
-      signingOutUserId &&
-        (versusSearchingRef.current || versusMatchRef.current),
+    const shouldLeaveVersus = shouldNotifyServerBeforeVersusExit(
+      Boolean(signingOutUserId),
+      {
+        activeMatchId: versusMatchRef.current,
+        searching: versusSearchingRef.current,
+        storedSession: storedVersusSession,
+        reconnecting: versusReconnectPendingRef.current,
+      },
     );
+    const leaveVersusPromise = revokeDataSessionForSignOut({
+      expectedUserId: signingOutUserId,
+      notifyVersus: shouldLeaveVersus,
+    });
+    const authSignOutPromise =
+      signingOutUserId || userEmail
+        ? supabase.auth.signOut()
+        : Promise.resolve();
+    versusReconnectIntentRef.current += 1;
+    versusReconnectPendingRef.current = false;
     userIdRef.current = null;
     progressionOwnerUserIdRef.current = null;
     setPlayerProgression(createEmptyPlayerProgression());
@@ -11131,6 +11702,7 @@ export default function Home() {
     resetVersusClientSync();
     closeVersusChannel();
     versusMatchRef.current = null;
+    versusReconnectUserRef.current = null;
     incomingAttacksRef.current = [];
     spawnedAttackIdsRef.current.clear();
     queuedAttackTokenIdsRef.current.clear();
@@ -11209,10 +11781,14 @@ export default function Home() {
       characterKey: "runner_ace",
     });
     audioEngine.stop();
-    if (shouldLeaveVersus) await supabase.rpc("leave_1v1");
-    if (userEmail) {
+    if (shouldLeaveVersus) {
+      if (await leaveVersusPromise) forgetActiveVersusSession();
+      // Otherwise keep the marker so the same account can recover if sign-out
+      // races a temporary data-service outage.
+    } else forgetActiveVersusSession();
+    if (signingOutUserId || userEmail) {
       setUserEmail(null);
-      await supabase.auth.signOut();
+      await authSignOutPromise;
     }
   };
   const playGuest = async () => {
@@ -11306,8 +11882,12 @@ export default function Home() {
     });
     if (error) setUsernameStatus(error.message);
     else {
-      setUsername(data.username);
-      setUsernameInput(data.username);
+      const savedUsername =
+        data && typeof data === "object" && "username" in data
+          ? String(data.username)
+          : usernameInput.trim();
+      setUsername(savedUsername);
+      setUsernameInput(savedUsername);
       setUsernameRequired(false);
       setEditUsername(false);
       setUsernameStatus("Username saved. You can change it again in 30 days.");
@@ -11316,13 +11896,41 @@ export default function Home() {
   const changePassword = async (e: FormEvent) => {
     e.preventDefault();
     setPasswordStatus("");
-    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    const { error } = await changeManagedPassword(
+      currentPassword,
+      newPassword,
+    );
     if (error) setPasswordStatus(error.message);
     else {
+      setCurrentPassword("");
       setNewPassword("");
       setEditPassword(false);
       setPasswordStatus("Password updated successfully.");
     }
+  };
+  const completePasswordReset = async (e: FormEvent) => {
+    e.preventDefault();
+    if (newPassword !== confirmPassword) {
+      setAuthMessage("Passwords do not match.");
+      return;
+    }
+    setAuthBusy(true);
+    setAuthMessage("");
+    const { error } = await completeManagedPasswordReset(
+      recoveryToken,
+      newPassword,
+    );
+    if (error) setAuthMessage(error.message);
+    else {
+      if (userEmail || userIdRef.current) await signOut();
+      else setGuest(false);
+      setRecoveryToken("");
+      setNewPassword("");
+      setConfirmPassword("");
+      window.history.replaceState({}, "", window.location.pathname);
+      setAuthMessage("Password reset. Sign in with your new password.");
+    }
+    setAuthBusy(false);
   };
   const loadReports = async () => {
     cancelPendingProgressionStart();
@@ -12700,13 +13308,60 @@ export default function Home() {
       </main>
     );
   }
-  if (!userEmail && !guest)
+  if (recoveryToken || (!userEmail && !guest))
     return (
       <main className="auth-shell">
         <section className="auth-card">
           <div className="auth-logo">S</div>
           <p>FIVE LANES. NO BRAKES.</p>
-          <h1>{authMode === "signin" ? "WELCOME BACK" : "JOIN THE RUN"}</h1>
+          <h1>
+            {recoveryToken
+              ? "RESET PASSWORD"
+              : authMode === "signin"
+                ? "WELCOME BACK"
+                : "JOIN THE RUN"}
+          </h1>
+          {recoveryToken ? (
+            <form onSubmit={completePasswordReset} autoComplete="on">
+              <label>
+                New Password
+                <input
+                  id="recovery-password"
+                  name="recovery-password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="At least 8 characters"
+                  minLength={8}
+                  required
+                  autoComplete="new-password"
+                />
+              </label>
+              <label>
+                Confirm New Password
+                <input
+                  id="recovery-confirm-password"
+                  name="recovery-confirm-password"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Enter the same password again"
+                  minLength={8}
+                  required
+                  autoComplete="new-password"
+                />
+              </label>
+              {authMessage && (
+                <div className="auth-message" role="status">
+                  {authMessage}
+                </div>
+              )}
+              <button disabled={authBusy}>
+                {authBusy ? "PLEASE WAIT…" : "SAVE NEW PASSWORD →"}
+              </button>
+            </form>
+          ) : (
+            <>
           <form onSubmit={submitAuth} autoComplete="on">
             <label>
               Email
@@ -12729,8 +13384,8 @@ export default function Home() {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="At least 6 characters"
-                minLength={6}
+                placeholder="At least 8 characters"
+                minLength={8}
                 required
                 autoComplete={
                   authMode === "signin" ? "current-password" : "new-password"
@@ -12747,7 +13402,7 @@ export default function Home() {
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   placeholder="Enter the same password again"
-                  minLength={6}
+                  minLength={8}
                   required
                   autoComplete="new-password"
                 />
@@ -12768,11 +13423,40 @@ export default function Home() {
           </form>
           {authMode === "signin" && (
             <button
+              type="button"
               className="forgot-button"
+              disabled={passwordResetBusy}
               onClick={() => sendPasswordReset(email, setAuthMessage)}
             >
-              FORGOT PASSWORD?
+              {passwordResetBusy ? "SENDING RECOVERY EMAIL…" : "FORGOT PASSWORD?"}
             </button>
+          )}
+          {authMode === "signin" && (
+            <>
+              <div className="guest-divider auth-provider-divider">
+                <span>OR</span>
+              </div>
+              <button
+                type="button"
+                className="google-auth-button"
+                disabled={authBusy || passwordResetBusy}
+                onClick={() => void signInWithGoogle()}
+              >
+                CONTINUE WITH GOOGLE
+              </button>
+              <small className="google-recovery-note">
+                Recovery email missing? Choose the Google account with the same
+                email as your Skyway account. Your existing stats and inventory
+                stay connected.
+              </small>
+            </>
+          )}
+          {authMode === "signin" && (
+            <small className="migration-auth-note">
+              Existing Skyway account? After the Neon move, use Forgot
+              Password once. Your username, stats, gems, inventory, and records
+              stay attached to the same email.
+            </small>
           )}
           <button
             className="auth-switch"
@@ -12785,15 +13469,21 @@ export default function Home() {
               ? "New runner? Create an account"
               : "Already registered? Sign in"}
           </button>
-          <div className="guest-divider">
-            <span>OR</span>
-          </div>
-          <button className="guest-button" onClick={playGuest}>
-            PLAY AS GUEST
-          </button>
-          <small className="guest-note">
-            Guest gems disappear after every run.
-          </small>
+            </>
+          )}
+          {!recoveryToken && (
+            <>
+              <div className="guest-divider">
+                <span>OR</span>
+              </div>
+              <button className="guest-button" onClick={playGuest}>
+                PLAY AS GUEST
+              </button>
+              <small className="guest-note">
+                Guest gems disappear after every run.
+              </small>
+            </>
+          )}
         </section>
       </main>
     );
@@ -12817,6 +13507,7 @@ export default function Home() {
     !shopOpen &&
     !inventoryOpen &&
     !leaderboardOpen &&
+    !updateLogOpen &&
     !adminOpen &&
     !usernameRequired;
   return (
@@ -12980,6 +13671,18 @@ export default function Home() {
             </span>
             <b>INVENTORY</b>
           </button>
+          <button
+            className="action-updates"
+            onClick={() => {
+              cancelPendingProgressionStart();
+              setUpdateLogOpen(true);
+              setPauseMenuOpen(false);
+              setPaused(true);
+            }}
+          >
+            <span aria-hidden="true">▤</span>
+            <b>UPDATES</b>
+          </button>
           {!guest && !isVersusRun && (
             <button
               className="action-settings"
@@ -13028,6 +13731,13 @@ export default function Home() {
                 <strong>
                   {versusMode === "ranked" ? "ELO ON THE LINE" : "NO ELO · JUST PLAY"}
                 </strong>
+                <button
+                  type="button"
+                  className="versus-update-log"
+                  onClick={() => setUpdateLogOpen(true)}
+                >
+                  ▤ UPDATE LOG
+                </button>
               </header>
               <div className="versus-hub-scroll">
                 <section
@@ -13346,8 +14056,8 @@ export default function Home() {
                     </div>
                   </header>
                   <p className="versus-armory-note">
-                    These prices use match-only attack points—not permanent
-                    gems. Purchased hazards are released one at a time through
+                    Spend the Attack Coins earned in this match. Purchased
+                    hazards are released one at a time through
                     the next wave and wait for a clear lane. Map restrictions
                     still apply.
                   </p>
@@ -13455,7 +14165,7 @@ export default function Home() {
                 <strong>{guest ? "—" : highScore.toLocaleString()}</strong>
               </div>
               <div className={`gem-total ${gemBump ? "bump" : ""}`}>
-                <small>{guest ? "RUN GEMS" : "ALL-TIME GEMS"}</small>
+                <small>{guest ? "RUN GEMS" : "GEMS"}</small>
                 <strong className="gold">● {gems}</strong>
                 {gemBump && <em>+1</em>}
               </div>
@@ -13643,11 +14353,28 @@ export default function Home() {
                 hasCharacterAbility("medic_halo") ||
                 hasCharacterAbility("runner_relay") ||
                 hasCharacterAbility("medic_seraph")) && (
-                <aside className="ability-side-panel" data-ability-version={abilityStateVersion}>
+                <aside className={`ability-side-panel ${abilitySidePanelCollapsed ? "minimized" : ""}`} data-ability-version={abilityStateVersion}>
                   <header>
                     <div><small>LIVE KIT</small><b>ABILITY STATUS</b></div>
+                    <button
+                      type="button"
+                      className="ability-panel-close"
+                      aria-expanded={!abilitySidePanelCollapsed}
+                      aria-controls="ability-side-panel-body"
+                      aria-label={
+                        abilitySidePanelCollapsed
+                          ? "Expand ability status"
+                          : "Minimize ability status"
+                      }
+                      onClick={() =>
+                        setAbilitySidePanelCollapsed((value) => !value)
+                      }
+                    >
+                      {abilitySidePanelCollapsed ? "+" : "−"}
+                    </button>
                   </header>
-                  <div className="ability-panel-body">
+                  {!abilitySidePanelCollapsed && (
+                    <div id="ability-side-panel-body" className="ability-panel-body">
                     {hasCharacterAbility("medic_tonic") && (
                       <>
                         <p className="ability-panel-note">
@@ -13879,7 +14606,8 @@ export default function Home() {
                         )}
                       </section>
                     )}
-                  </div>
+                    </div>
+                  )}
                 </aside>
               )}
             {running && hasCharacterAbility("tank_atlas") && (
@@ -14633,6 +15361,59 @@ export default function Home() {
             </>
           )}
         </section>
+        {updateLogOpen && (
+          <div className="report-backdrop update-log-backdrop">
+            <section
+              className="update-log-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="update-log-title"
+            >
+              <button
+                className="report-close"
+                aria-label="Close update log"
+                onClick={() => {
+                  setUpdateLogOpen(false);
+                  setPaused(false);
+                }}
+              >
+                ×
+              </button>
+              <header className="update-log-heading">
+                <p>WHAT CHANGED</p>
+                <h2 id="update-log-title">UPDATE LOG</h2>
+                <small>Newest updates appear first.</small>
+              </header>
+              <div className="update-log-list">
+                {UPDATE_LOG.map((entry, index) => (
+                  <article key={entry.id} className={index === 0 ? "latest" : ""}>
+                    <header>
+                      <span>{String(UPDATE_LOG.length - index).padStart(2, "0")}</span>
+                      <div>
+                        <h3>{entry.title}</h3>
+                        <time dateTime={entry.publishedAt}>
+                          {new Date(entry.publishedAt).toLocaleString([], {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </time>
+                      </div>
+                      {index === 0 && <b>NEW</b>}
+                    </header>
+                    <ul>
+                      {entry.changes.map((change) => (
+                        <li key={change}>{change}</li>
+                      ))}
+                    </ul>
+                  </article>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
         {(settingsOpen || usernameRequired) && !guest && (
           <div className="report-backdrop" role="dialog" aria-modal="true">
             <section className="settings-modal">
@@ -14736,6 +15517,19 @@ export default function Home() {
                   {editPassword ? (
                     <form onSubmit={changePassword}>
                       <label>
+                        CURRENT PASSWORD
+                        <input
+                          id="current-password"
+                          name="current-password"
+                          autoComplete="current-password"
+                          type="password"
+                          value={currentPassword}
+                          onChange={(e) => setCurrentPassword(e.target.value)}
+                          minLength={8}
+                          required
+                        />
+                      </label>
+                      <label>
                         NEW PASSWORD
                         <input
                           id="new-password"
@@ -14744,7 +15538,7 @@ export default function Home() {
                           type="password"
                           value={newPassword}
                           onChange={(e) => setNewPassword(e.target.value)}
-                          minLength={6}
+                          minLength={8}
                           required
                         />
                       </label>
@@ -14755,16 +15549,23 @@ export default function Home() {
                       <button
                         type="button"
                         className="forgot-settings"
+                        disabled={passwordResetBusy}
                         onClick={() =>
                           sendPasswordReset(userEmail || "", setPasswordStatus)
                         }
                       >
-                        EMAIL ME A RECOVERY LINK
+                        {passwordResetBusy
+                          ? "SENDING RECOVERY EMAIL…"
+                          : "EMAIL ME A RECOVERY LINK"}
                       </button>
                       <button
                         type="button"
                         className="settings-cancel"
-                        onClick={() => setEditPassword(false)}
+                        onClick={() => {
+                          setCurrentPassword("");
+                          setNewPassword("");
+                          setEditPassword(false);
+                        }}
                       >
                         CANCEL
                       </button>
@@ -15536,18 +16337,20 @@ export default function Home() {
                                       : "EQUIP FOR TEST MODE"}
                               </button>
                             </div>
-                            <details className="inventory-subsection character-rules-subsection">
-                              <summary className="inventory-subsection-heading">
-                                <span>
-                                  <b>PASSIVE ABILITY</b>
-                                  <small>{focusedCharacterAbility?.name}</small>
-                                </span>
-                              </summary>
-                              <article className="passive-ability-showcase">
-                                <small>{focusedCharacterAbility?.name}</small>
-                                <p>{focusedCharacterAbility?.description}</p>
-                              </article>
-                            </details>
+                            <section className="character-ability-explainer">
+                              <header>
+                                <small>ABILITY</small>
+                                <b>{focusedCharacterAbility?.name}</b>
+                              </header>
+                              <ul>
+                                {(focusedCharacterAbility?.description ?? "")
+                                  .split(/(?<=[.!?])\s+|;\s+/)
+                                  .filter(Boolean)
+                                  .map((rule) => (
+                                    <li key={rule}>{rule}</li>
+                                  ))}
+                              </ul>
+                            </section>
                             <details className="inventory-subsection character-weapon-subsection">
                               <summary className="inventory-subsection-heading">
                                 <span>

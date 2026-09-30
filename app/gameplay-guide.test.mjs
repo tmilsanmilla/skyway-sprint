@@ -86,8 +86,8 @@ test("item guide includes the exact core hazard and pickup behavior", () => {
   assert.match(ITEM_GUIDES.current.description, /every 1v1 map/i);
   assert.match(ITEM_GUIDES.current.description, /naturally only on Skyway/i);
   assert.match(ITEM_GUIDES.current.description, /three-lane Alley.*edges/i);
-  assert.match(ITEM_GUIDES.gem.description, /stay at 5 for five more gems/);
-  assert.match(ITEM_GUIDES.gem.description, /cap at 7 until damage/);
+  assert.match(ITEM_GUIDES.gem.description, /(?:stay|hold)s? at 5 for five more gems/i);
+  assert.match(ITEM_GUIDES.gem.description, /cap(?:s)? at 7 until.*damage/i);
   assert.match(
     CONTROL_GUIDES.find(({ name }) => name === "Move")?.description ?? "",
     /swipe to move one lane.*tap a lane to step one lane toward it/i,

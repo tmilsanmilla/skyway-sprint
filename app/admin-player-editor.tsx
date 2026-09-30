@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { SkywayRpcClient } from "./skyway-client";
 
 type PlayerSummary = {
   user_id: string;
@@ -485,7 +485,7 @@ export function AdminPlayerEditor({
   isMainAdmin,
   isActive,
 }: {
-  supabase: SupabaseClient;
+  supabase: SkywayRpcClient;
   isMainAdmin: boolean;
   isActive: boolean;
 }) {

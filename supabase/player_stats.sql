@@ -1511,7 +1511,7 @@ insert into canonical_character_kits values
   ('misc_prospector','Prospector','uncommon','misc',true,'Gem Pick',.04),
   ('misc_lantern','Lantern','uncommon','misc',true,'Glow Rod',.04),
   ('runner_fortune','Fortune','rare','misc',true,'Lucky Compass',.05),
-  ('misc_scribe','Scribe','rare','misc',true,'Rune Quill',.05),
+  ('misc_scribe','Scribe','epic','misc',true,'Rune Quill',.06),
   ('misc_weaver','Weaver','rare','misc',true,'Thread Blades',.05),
   ('trickster_wildcard','Wildcard','epic','misc',true,'Dice Fans',.06),
   ('misc_mimic','Mimic','epic','misc',true,'Copy Mask',.06),
@@ -1621,7 +1621,7 @@ with finished_abilities(
   ('misc_prospector','uncommon','Warns five seconds before each gem and highlights its future lane.','Gem Pick adds 4% distance score.',.04),
   ('misc_lantern','uncommon','Press E to freeze every obstacle for 2 seconds.','Glow Rod adds 4% distance score.',.04),
   ('runner_fortune','rare','Adds gem spawn chance equal to gems collected this run, capped at 100%.','Lucky Compass adds 5% distance score.',.05),
-  ('misc_scribe','rare','At wave end chooses one hazard and caps its next-wave spawns at wave divided by 10, minimum 1.','Rune Quill adds 5% distance score.',.05),
+  ('misc_scribe','epic','After every wave, choose one hazard. During the next wave, it can spawn at most floor(wave / 10) times, minimum 1.','Rune Quill adds 6% distance score.',.06),
   ('misc_weaver','rare','After five snowflakes, E weaves permanent snowflake immunity; afterward every second snowflake heals 0.5 HP, capped at 1 HP per wave.','Thread Blades add 5% distance score.',.05),
   ('trickster_wildcard','epic','Draws from a 54-card deck each wave: numbers grant rank x 5% score, face cards grant defense, Aces grant 60% score and defense, and Jokers ignore five hits; exhausting the deck permanently activates Ace and Joker.','Dice Fans add 6% distance score.',.06),
   ('misc_mimic','epic','In 1v1 copies the opponent''s non-mythic character; in Endless selects two passives of Rare rarity or lower.','Copy Mask adds 6% distance score.',.06),
@@ -1653,6 +1653,17 @@ alter table public.multiplayer_players
   add column if not exists last_damage_at timestamptz,
   add column if not exists wave_started_at timestamptz not null default now(),
   add column if not exists run_started_at timestamptz not null default now();
+
+update public.multiplayer_players
+set wave_started_at=coalesce(wave_started_at,now()),
+    run_started_at=coalesce(run_started_at,now())
+where wave_started_at is null or run_started_at is null;
+
+alter table public.multiplayer_players
+  alter column wave_started_at set default now(),
+  alter column wave_started_at set not null,
+  alter column run_started_at set default now(),
+  alter column run_started_at set not null;
 
 create or replace function app_private.one_v_one_attack_point_multiplier(
   p_character_key text,p_wave integer,p_hearts numeric,p_max_hearts numeric,
@@ -3476,13 +3487,9 @@ begin
     v_total_refund:=v_total_refund+v_refund;
     v_gems:=v_gems+v_refund;
 
-    insert into public.extraction_transactions(
-      user_id,box_type,gem_cost,refund_amount,balance_before,balance_after,
-      item_key,item_type,rarity,is_new
-    ) values(
-      v_uid,v_draw_profile,v_item_cost,v_refund,
-      v_balance_before,v_gems,v_item_key,v_item_type,v_rarity,v_is_new
-    );
+    -- Ownership and the returned result are the durable/current state. Do not
+    -- retain one receipt row per pull: the legacy ledger grew without bound
+    -- and was removed during the Neon migration.
 
     v_results:=v_results||jsonb_build_array(jsonb_build_object(
       'pull_number',v_pull,
@@ -3592,13 +3599,8 @@ begin
   update public.player_stats
   set total_gems=total_gems-v_cost,updated_at=now()
   where user_id=v_uid returning total_gems into v_gems;
-  insert into public.extraction_transactions(
-    user_id,box_type,gem_cost,refund_amount,balance_before,balance_after,
-    item_key,item_type,rarity,is_new
-  ) values(
-    v_uid,'direct',v_cost,0,v_balance_before,v_gems,
-    v_item_key,v_item_type,v_rarity,true
-  );
+  -- player_unlocks is the durable ownership record. Direct-purchase receipts
+  -- are intentionally not retained after the Neon migration.
 
   return jsonb_build_object(
     'item_key',v_item_key,
@@ -4047,7 +4049,7 @@ begin
     raise exception 'Not all 64 non-Tank character kits were installed';
   end if;
   if exists(
-    select 1 from preserved_tank_catalog_rows preserved
+    select 1 from player_08_preserved_tank_rows preserved
     left join public.extraction_catalog catalog using(item_key)
     where catalog.item_key is null
        or to_jsonb(catalog) is distinct from preserved.row_data

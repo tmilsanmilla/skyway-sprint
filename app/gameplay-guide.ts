@@ -122,7 +122,7 @@ export const ITEM_GUIDES: Readonly<Record<GameplayItemId, GuideEntry>> = {
   gem: {
     name: "Gem",
     description:
-      "Permanent shop currency for signed-in players. A hitless streak carries between waves: rewards climb from 1 to 5, stay at 5 for five more gems, then reach 6 and cap at 7 until damage.",
+      "Spend Gems in the Shop. A hitless streak raises each pickup from 1 to 5, holds at 5 for five more Gems, then reaches 6 and caps at 7 until you take damage.",
   },
   coin: {
     name: "Attack Coin",

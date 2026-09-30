@@ -9,16 +9,23 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint . --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern .next --ignore-pattern cloudflare/realtime-worker",
+    "check:worker": "tsc -p cloudflare/realtime-worker/tsconfig.json",
+    "test:worker:smoke": "node cloudflare/realtime-worker/test/smoke.mjs",
+    "dev:worker": "wrangler dev --config cloudflare/realtime-worker/wrangler.jsonc",
+    "deploy:worker": "wrangler deploy --config cloudflare/realtime-worker/wrangler.jsonc"
   },
   "dependencies": {
-    "@supabase/ssr": "^0.12.5",
+    "@neondatabase/auth": "^0.5.0-beta",
+    "@neondatabase/postgrest-js": "^0.2.0-beta",
+    "@neondatabase/serverless": "^1.1.0",
     "@supabase/supabase-js": "^2.112.4",
-    "next": "16.2.6",
+    "next": "16.3.5",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260911.1",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
@@ -26,10 +33,14 @@
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.3.5",
     "supabase": "^2.116.0",
     "tailwindcss": "4.2.1",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "wrangler": "^4.131.1"
+  },
+  "overrides": {
+    "vite": "8.3.0"
   },
   "type": "module"
 }

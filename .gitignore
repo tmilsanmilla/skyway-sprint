@@ -35,5 +35,7 @@ next-env.d.ts
 *.tsbuildinfo
 /dist/
 /.wrangler/
+**/.wrangler/
 /outputs/
 /work/
+/neon/generated/

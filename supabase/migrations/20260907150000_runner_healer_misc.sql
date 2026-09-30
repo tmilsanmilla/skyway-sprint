@@ -33,8 +33,16 @@ alter table public.multiplayer_players
 alter table public.multiplayer_point_events
   drop constraint if exists multiplayer_point_events_points_awarded_check;
 
--- Skip type changes once installed so reruns do not collide with the triggers
--- created later in this query.
+-- PostgreSQL will not change a column type while an older trigger definition
+-- explicitly depends on that column. Remove the two legacy triggers first;
+-- their functions remain in place and the triggers are restored immediately
+-- after the type conversion.
+drop trigger if exists enforce_1v1_mirage_invulnerability
+  on public.multiplayer_players;
+drop trigger if exists settle_1v1_heatfeast_income_tax
+  on public.multiplayer_players;
+
+-- Skip type changes once installed so reruns stay inexpensive.
 do $$
 begin
   if exists (
@@ -70,10 +78,44 @@ begin
 end;
 $$;
 
+do $$
+begin
+  if to_regprocedure(
+    'app_private.enforce_1v1_mirage_invulnerability()'
+  ) is not null then
+    execute 'create trigger enforce_1v1_mirage_invulnerability
+      before update of hearts, status, eliminated_at, death_order
+      on public.multiplayer_players
+      for each row execute function
+        app_private.enforce_1v1_mirage_invulnerability()';
+  end if;
+
+  if to_regprocedure(
+    'app_private.settle_1v1_heatfeast_income_tax()'
+  ) is not null then
+    execute 'create trigger settle_1v1_heatfeast_income_tax
+      before update of obstacle_points on public.multiplayer_players
+      for each row execute function
+        app_private.settle_1v1_heatfeast_income_tax()';
+  end if;
+end;
+$$;
+
 alter table public.multiplayer_players
   add column if not exists last_damage_at timestamptz,
   add column if not exists wave_started_at timestamptz not null default now(),
   add column if not exists run_started_at timestamptz not null default now();
+
+update public.multiplayer_players
+set wave_started_at=coalesce(wave_started_at,now()),
+    run_started_at=coalesce(run_started_at,now())
+where wave_started_at is null or run_started_at is null;
+
+alter table public.multiplayer_players
+  alter column wave_started_at set default now(),
+  alter column wave_started_at set not null,
+  alter column run_started_at set default now(),
+  alter column run_started_at set not null;
 
 alter table public.multiplayer_players
   add constraint multiplayer_players_hearts_check
@@ -105,6 +147,12 @@ alter table public.multiplayer_point_events
 alter table public.extraction_catalog
   add column if not exists passive_ability text,
   add column if not exists weapon_effect text;
+
+-- Finished abilities can replace a generic weapon score bonus with an active
+-- effect, represented by a zero bonus. The earlier catalog check required a
+-- strictly positive value, so replace it with the current non-negative rule.
+alter table public.extraction_catalog
+  drop constraint if exists extraction_catalog_character_kit_check;
 
 with finished_abilities(
   item_key, rarity, weapon_name, passive_ability, weapon_effect
@@ -240,6 +288,20 @@ where item_key in (
 )
 and item_type = 'character'
 and character_class in ('runner', 'medic');
+
+alter table public.extraction_catalog
+  add constraint extraction_catalog_character_kit_check check(
+    (
+      item_type='character' and nullif(trim(weapon_name),'') is not null
+      and weapon_score_bonus>=0 and weapon_score_bonus<=1
+    )
+    or (
+      item_type<>'character'
+      and weapon_name is null and weapon_score_bonus is null
+    )
+  ) not valid;
+alter table public.extraction_catalog
+  validate constraint extraction_catalog_character_kit_check;
 
 -- Timestamp exact damage and wave boundaries without trusting the client.
 create or replace function app_private.track_1v1_hidden_state()
