@@ -6,9 +6,14 @@ import { UPDATE_LOG, validateUpdateLog } from "./update-log.ts";
 test("update log launches with a newest-first release archive", () => {
   assert.deepEqual(validateUpdateLog(), []);
   assert.ok(UPDATE_LOG.length >= 10);
-  assert.match(UPDATE_LOG[0].title, /character/i);
+  assert.match(UPDATE_LOG[0].title, /account recovery/i);
   assert.ok(
-    UPDATE_LOG[0].changes.some((change) => /Scribe.*Epic/i.test(change)),
+    UPDATE_LOG[0].changes.some((change) => /Continue with Google/i.test(change)),
+  );
+  assert.ok(
+    UPDATE_LOG.some((entry) =>
+      entry.changes.some((change) => /Scribe.*Epic/i.test(change)),
+    ),
   );
 });
 
