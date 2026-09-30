@@ -13,6 +13,15 @@ export interface UpdateLogEntry {
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
+    id: "2026-09-29-account-recovery",
+    publishedAt: "2026-09-29T22:23:00-04:00",
+    title: "EASIER ACCOUNT RECOVERY",
+    changes: [
+      "Forgot Password now completes through the new account system and clearly reports delivery problems.",
+      "Added Continue with Google as a free recovery option when an email is delayed or missing. Using the same email keeps existing stats and inventory.",
+    ],
+  },
+  {
     id: "2026-09-25-character-copy",
     publishedAt: "2026-09-25T20:21:57-04:00",
     title: "CLEARER CHARACTER GUIDE",
