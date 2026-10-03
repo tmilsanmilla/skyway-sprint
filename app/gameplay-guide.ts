@@ -91,8 +91,8 @@ export const MAP_GUIDES: Readonly<Record<MapId, MapGuide>> = {
     description:
       "A six-lane timing arena where every runner receives a risk-and-reward Katana.",
     rules: [
-      `Click KATANA or press Q for a ${seconds(PITCH_KATANA_RULES.activeSeconds)} guard. A timed hit blocks and reflects every non-rock hazard.`,
-      `Missing the guard costs ${PITCH_KATANA_RULES.whiffSelfDamage} HP and briefly locks movement. The cooldown is ${seconds(PITCH_KATANA_RULES.cooldownSeconds)} and resets each wave.`,
+      `Click KATANA or press Q for a ${seconds(PITCH_KATANA_RULES.activeSeconds)} guard. It blocks and reflects one non-rock hazard, then immediately unwields.`,
+      `Missing the guard costs ${PITCH_KATANA_RULES.whiffSelfDamage} HP and briefly locks movement. The ${seconds(PITCH_KATANA_RULES.cooldownSeconds)} cooldown starts when the guard ends and resets each wave.`,
       "The Katana cannot activate while frozen. A rock breaks it for the rest of the match and still deals damage.",
       "Coins give 6 attack points and each completed wave gives 6.",
     ],
@@ -201,7 +201,7 @@ export const CONTROL_GUIDES: readonly GuideEntry[] = [
   },
   {
     name: "Map weapon / Pause",
-    description: "Q activates your map weapon: Katana on Pitch or Sword on Terminal. Space pauses Endless.",
+    description: "Q activates your map weapon: Katana on Pitch, Sword on Terminal, or Lightsaber in Photon Fury. The bottom-right button shows cooldown in tenths. Space pauses Endless.",
   },
 ];
 

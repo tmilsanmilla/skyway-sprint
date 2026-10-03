@@ -12,6 +12,8 @@ import { audioEngine, type Soundtrack } from "./audio-engine";
 import { AdminPlayerEditor } from "./admin-player-editor";
 import { isMigrationMaintenanceMode } from "./migration-maintenance";
 import { UPDATE_LOG } from "./update-log";
+import { PhotonFury } from "./photon-fury";
+import { addTurnDelays } from "./photon-fury-rules";
 import {
   ACTIVE_VERSUS_SESSION_STORAGE_KEY,
   isResumableVersusMatchStatus,
@@ -417,7 +419,7 @@ type StoredLoadout = {
 type ExtractionOption = "regular" | "ten";
 type ExtractionAnimation = "idle" | "shaking" | "opening";
 type PlayScope = "single" | "versus" | "practice";
-type MainView = "endless" | "versus";
+type MainView = "endless" | "versus" | "photon" | "rng";
 type VersusMode = "casual" | "ranked";
 type PlayerProgression = {
   level: number;
@@ -551,6 +553,7 @@ type VersusStatePayload = {
     is_draw?: boolean;
     second_death_bonus_points?: number;
     intermission_ends_at?: string | null;
+    character_selection_ends_at?: string | null;
     winner_user_id?: string | null;
   };
   self?: {
@@ -1787,7 +1790,6 @@ const GAME_MODE_RULES = {
   GameMode,
   { scoreMultiplier: number; hazardLaneLimit: number }
 >;
-const RANKED_UNLOCK_LEVEL = 20;
 const LEVEL_XP_BASE = 10_000_000;
 const getCumulativeXpForLevel = (level: number) => {
   const normalizedLevel = Math.max(0, Math.floor(level));
@@ -2624,6 +2626,14 @@ function SkywayGame() {
       null,
     ),
     [versusSyncRetry, setVersusSyncRetry] = useState(0);
+  const [characterSelectionEndsAt, setCharacterSelectionEndsAt] = useState<number | null>(null);
+  const [characterPickBusy, setCharacterPickBusy] = useState(false);
+  const [weaponClock, setWeaponClock] = useState(0);
+  useEffect(() => {
+    if (!characterSelectionEndsAt && !(playScope !== "single" && (versusMap === "pitch" || versusMap === "terminal"))) return;
+    const timer = window.setInterval(() => setWeaponClock(Date.now()), 100);
+    return () => window.clearInterval(timer);
+  }, [characterSelectionEndsAt, playScope, versusMap]);
   versusPointsRef.current = versusPoints;
   versusMapRef.current = versusMap;
   versusSelfEliminatedRef.current = versusSelfEliminated;
@@ -2654,7 +2664,7 @@ function SkywayGame() {
           Math.floor(Number(payload.completed_runs) || 0),
         ),
         ranked_unlocked:
-          payload.ranked_unlocked === true || level >= RANKED_UNLOCK_LEVEL,
+          payload.ranked_unlocked === true,
         xp_awarded:
           payload.xp_awarded === undefined
             ? undefined
@@ -5241,7 +5251,11 @@ function SkywayGame() {
           showAbilityNotice("LANE ORBIT · EDGE WRAP", 850);
         }
       };
-      if (frozenUntilRef.current > Date.now()) {
+      const combinedTurnDelay = addTurnDelays(
+        frozenUntilRef.current > Date.now() ? (activeMapId === "meadow" ? .4 : .25) : 0,
+        activeMapId === "volcano" ? VOLCANO_RULES.turnDelaySeconds : 0,
+      );
+      if (combinedTurnDelay > 0) {
         turnLockedRef.current = true;
         delayedMoveTimerRef.current = setTimeout(
           () => {
@@ -5258,26 +5272,8 @@ function SkywayGame() {
             turnLockedRef.current = false;
             delayedMoveTimerRef.current = null;
           },
-          activeMapId === "meadow" ? 400 : 250,
+          combinedTurnDelay * 1000,
         );
-        return;
-      }
-      if (activeMapId === "volcano") {
-        turnLockedRef.current = true;
-        delayedMoveTimerRef.current = setTimeout(() => {
-          if (
-            state.current.running &&
-            !state.current.paused &&
-            !state.current.wavePause &&
-            !(
-              activeCharacter === "trickster_rogue" &&
-              invincibleUntilRef.current > Date.now()
-            )
-          )
-            finishMove();
-          turnLockedRef.current = false;
-          delayedMoveTimerRef.current = null;
-        }, VOLCANO_RULES.turnDelaySeconds * 1000);
         return;
       }
       finishMove();
@@ -7267,6 +7263,7 @@ function SkywayGame() {
           )
         : null;
     const matchStatus = snapshot.match?.status ?? "playing";
+    if (matchStatus !== "countdown") setCharacterSelectionEndsAt(null);
     if (snapshot.match?.mode === "casual" || snapshot.match?.mode === "ranked")
       setVersusMode(snapshot.match.mode);
     const selfEliminated = snapshot.self?.status === "eliminated";
@@ -7412,7 +7409,7 @@ function SkywayGame() {
     setPlayScope("versus");
     if (!preserveRunState) setVersusGuideOpen(true);
     setOver(selfEliminated || matchFinished || matchCancelled);
-    setRunning(!selfEliminated && !matchFinished && !matchCancelled);
+    setRunning(!selfEliminated && !matchFinished && !matchCancelled && matchStatus !== "countdown");
 
     const pending = (restoredMap === "terminal" ? [] : snapshot.pending_attacks ?? []).flatMap(
       (attack): PendingVersusAttack[] => {
@@ -7490,6 +7487,12 @@ function SkywayGame() {
       setVersusIntermissionReady(true);
       setVersusResult("INTERMISSION");
       setPaused(true);
+    } else if (matchStatus === "countdown") {
+      const deadline = Date.parse(snapshot.match?.character_selection_ends_at ?? "");
+      setCharacterSelectionEndsAt(Number.isFinite(deadline) ? deadline : null);
+      setVersusPhase("ready");
+      setPaused(true);
+      setVersusResult("CHOOSE YOUR CHARACTER");
     } else if (snapshot.self?.status === "intermission") {
       setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
       setVersusPhase("intermission");
@@ -7525,6 +7528,7 @@ function SkywayGame() {
               ),
         );
       }
+      setCharacterSelectionEndsAt(null);
       setVersusPhase("playing");
       setVersusIntermissionReady(false);
       setPaused(false);
@@ -7660,7 +7664,7 @@ function SkywayGame() {
       !playerProgression.ranked_unlocked
     ) {
       setVersusResult(
-        `RANKED 1V1 UNLOCKS AT LEVEL ${RANKED_UNLOCK_LEVEL}`,
+        "RANKED IS LOCKED AFTER THE RATING RESET",
       );
       return;
     }
@@ -7786,7 +7790,7 @@ function SkywayGame() {
     setMainView("versus");
     setPlayScope("practice");
     setVersusGuideOpen(true);
-    setVersusPhase("playing");
+    setVersusPhase("ready");
     setVersusOpponent("TRAINING BOT");
     // Practice Mimic copies the bot's default Runner instead of becoming inert.
     setVersusOpponentCharacter("runner_ace");
@@ -7799,8 +7803,22 @@ function SkywayGame() {
     setVersusResult("");
     setVersusIntermissionReady(false);
     reset(false, practiceMap);
+    setRunning(false);
+    setPaused(true);
+    setCharacterSelectionEndsAt(Date.now()+10_000);
   };
+  useEffect(() => {
+    if (playScope !== "practice" || characterSelectionEndsAt === null) return;
+    const timer=window.setTimeout(() => {
+      setCharacterSelectionEndsAt(null);
+      setVersusPhase("playing");
+      setPaused(false);
+      reset(false,versusMap);
+    },Math.max(0,characterSelectionEndsAt-Date.now()));
+    return () => window.clearTimeout(timer);
+  },[characterSelectionEndsAt,playScope,reset,versusMap]);
   const clearVersusLocalSession = () => {
+    setCharacterSelectionEndsAt(null);
     versusReconnectIntentRef.current += 1;
     versusReconnectPendingRef.current = false;
     resetVersusClientSync();
@@ -7894,6 +7912,7 @@ function SkywayGame() {
   const switchMainView = async (nextView: MainView) => {
     if (nextView === mainView && !versusLeaving) return;
     setPauseMenuOpen(false);
+    setCharacterSelectionEndsAt(null);
     if (nextView === "versus") {
       cancelPendingProgressionStart();
       progressionStartIntentRef.current += 1;
@@ -7909,7 +7928,7 @@ function SkywayGame() {
     if (!left) return;
     resetGameToMenu();
     setVersusResult("");
-    setMainView("endless");
+    setMainView(nextView);
   };
   const backToMenu = () => {
     const wasVersus =
@@ -8076,13 +8095,15 @@ function SkywayGame() {
   };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (mainView === "photon" || mainView === "rng") return;
       const target = e.target as HTMLElement | null;
       if (
-        target?.matches(
-          'button, input, textarea, select, [contenteditable="true"]',
+        target?.closest(
+          'input, textarea, select, [contenteditable="true"]',
         )
       )
         return;
+      if (target?.closest("button") && ["Enter", " "].includes(e.key)) return;
       if (hexVoid?.encounter === "hades") {
         e.preventDefault();
         if (!e.repeat) submitHexHadesInput(e.key);
@@ -13692,7 +13713,7 @@ function SkywayGame() {
   const renderedKatanaState = pitchKatanaRef.current;
   const katanaCooldownSeconds = Math.max(
     0,
-    Math.ceil((renderedKatanaState.cooldownUntilMs - Date.now()) / 1000),
+    (renderedKatanaState.cooldownUntilMs - (weaponClock || Date.now())) / 1000,
   );
   const katanaActive = renderedKatanaState.activeUntilMs > Date.now();
   const waitingForVersusResult =
@@ -13765,7 +13786,7 @@ function SkywayGame() {
                 <em>
                   {playerProgression.ranked_unlocked
                     ? "RANKED 1V1 UNLOCKED"
-                    : `${Math.max(0, RANKED_UNLOCK_LEVEL - playerProgression.level)} LEVELS TO RANKED`}
+                    : "RANKED LOCKED · NEW SEASON"}
                 </em>
               </span>
             </div>
@@ -13813,6 +13834,8 @@ function SkywayGame() {
               <small>REALTIME · OUTLAST A RIVAL</small>
             </span>
           </button>
+          <button className={mainView === "photon" ? "active" : ""} aria-pressed={mainView === "photon"} disabled={versusLeaving} onClick={() => void switchMainView("photon")}><span>✦</span><span><b>PHOTON FURY</b><small>LASERDROME · REFLECT & SURVIVE</small></span></button>
+          <button className={mainView === "rng" ? "active" : ""} aria-pressed={mainView === "rng"} disabled={versusLeaving} onClick={() => void switchMainView("rng")}><span>⚄</span><span><b>RNG</b><small>COMING SOON</small></span></button>
         </section>
         {mainView === "endless" && (
           <nav className="game-actions" aria-label="Player menus">
@@ -13907,7 +13930,7 @@ function SkywayGame() {
           )}
           </nav>
         )}
-        <section
+        {mainView === "photon" ? <PhotonFury key={userIdRef.current ?? "guest"} userId={guest ? null : userIdRef.current} level={playerProgression.level} gems={gems} testMode={adminTestModeActive} soundtrack={soundtrack} onGems={value => { gemsRef.current = value; setGems(value); }} /> : mainView === "rng" ? <section className="photon-panel rng-panel" id="main-game-panel"><h2>RNG</h2><p>Coming soon.</p></section> : <section
           id="main-game-panel"
           className={`game-card${mainView === "versus" && playScope === "single" ? " versus-hub-card" : ""}`}
           aria-label={
@@ -13921,7 +13944,26 @@ function SkywayGame() {
               : undefined
           }
         >
-          {mainView === "versus" && playScope === "single" ? (
+          {characterSelectionEndsAt !== null && playScope !== "single" ? (
+            <section className="match-character-picker" aria-label="Choose a character for this match">
+              <header><small>{MAP_GUIDES[versusMap].name ?? versusMap.toUpperCase()}</small><h2>CHOOSE YOUR CHARACTER</h2><strong>{Math.max(0,Math.ceil((characterSelectionEndsAt-(weaponClock || Date.now()))/1000))}s</strong></header>
+              <p>Choose an owned character that follows this map’s rules. Your selected character will be used when the timer ends.</p>
+              <div className="match-character-grid">{CHARACTER_ROSTER.filter(character =>
+                isCharacterAvailable(isCharacterOwned(unlocks,character.key),testCharacterAccessContext) &&
+                isCharacterClassAllowed(versusMap,getCharacterClassKey(character.key)) &&
+                (!getMapRules(versusMap).forcedCharacterId || getMapRules(versusMap).forcedCharacterId===character.key) &&
+                (versusMode!=="ranked" || character.rarity!=="mythic")
+              ).map(character => <button key={character.key} className={selectedCharacter===character.key ? "selected" : ""} disabled={characterPickBusy || (weaponClock || Date.now())>=characterSelectionEndsAt} onClick={async () => {
+                if (playScope==="practice") {setSelectedCharacter(character.key);setVersusResult(`${character.name.toUpperCase()} SELECTED`);return;}
+                const matchId=versusMatchRef.current; if(!matchId) return;
+                setCharacterPickBusy(true);
+                const {error}=await supabase.rpc("choose_1v1_character",{p_match_id:matchId,p_character_key:character.key});
+                if(error) setVersusResult(error.message); else await hydrateVersusState(matchId,false);
+                setCharacterPickBusy(false);
+              }}><b>{character.name}</b><small>{getCharacterClassKey(character.key).toUpperCase()} · {character.rarity.toUpperCase()}</small><span>{CHARACTER_ABILITIES[character.key].description}</span>{selectedCharacter===character.key && <em>SELECTED</em>}</button>)}</div>
+              <p role="status">{versusResult}</p><button onClick={() => void leaveVersusSession().then(left => {if(left){setCharacterSelectionEndsAt(null);resetGameToMenu();}})}>LEAVE MATCH</button>
+            </section>
+          ) : mainView === "versus" && playScope === "single" ? (
             <div className="versus-hub">
               <header className="versus-hub-heading">
                 <div>
@@ -14002,7 +14044,7 @@ function SkywayGame() {
                             "mythic"
                             ? "MYTHIC EQUIPPED · CHOOSE A NON-MYTHIC"
                             : "ELO ENABLED · COMPETITIVE"
-                          : `LOCKED · REACH LEVEL ${RANKED_UNLOCK_LEVEL} (LVL ${playerProgression.level})`}
+                          : "LOCKED · RATING RESET"}
                       </small>
                     </button>
                   </div>
@@ -14239,9 +14281,8 @@ function SkywayGame() {
                       wins, losses, XP, or rating.
                     </li>
                     <li>
-                      Casual never shows or changes Elo. Ranked unlocks at level
-                      {RANKED_UNLOCK_LEVEL}, starts every player at 1500 Elo, and displays ratings
-                      as whole numbers.
+                      Casual never shows or changes Elo. Ranked is locked after
+                      the update. The new ranked pool starts at 1500 Elo.
                     </li>
                   </ol>
                 </section>
@@ -14992,10 +15033,10 @@ function SkywayGame() {
                     {renderedKatanaState.broken
                       ? "BROKEN"
                       : katanaActive
-                        ? "GUARDING"
+                        ? `GUARDING · ${katanaCooldownSeconds.toFixed(1)}s`
                         : katanaCooldownSeconds > 0
-                          ? `${katanaCooldownSeconds}s`
-                          : "READY"}
+                          ? `${katanaCooldownSeconds.toFixed(1)}s`
+                          : "0.0s · READY"}
                   </small>
                   <em className="pitch-katana-description">
                     0.4s GUARD · REFLECTS NON-ROCKS · MISS COSTS 0.5 HP
@@ -15004,7 +15045,7 @@ function SkywayGame() {
               )}
               {activeMapId === "terminal" && isVersusRun && (
                 <button type="button" className={`pitch-katana terminal-sword${terminalSwordRef.current.durability===0 ? " broken" : ""}`} data-version={terminalSwordVersion} onClick={()=>void triggerTerminalSword()} disabled={!running || paused || terminalSwordRef.current.durability===0 || terminalSwordRef.current.cooldownUntil>Date.now()} title={MAP_GUIDES.terminal.rules.join(" ")}>
-                  <span aria-hidden="true">⚔</span><b>SWORD · Q</b><small>{terminalSwordRef.current.durability===0 ? "BROKEN" : `${terminalSwordRef.current.durability}/4 · ${terminalSwordRef.current.cooldownUntil>Date.now() ? `${Math.ceil((terminalSwordRef.current.cooldownUntil-Date.now())/1000)}s` : "READY"}`}</small><em className="pitch-katana-description">MATCH LANE: RIVAL −1 HP · MISS: YOU −0.5 HP<br/>EDGE WRAP: {terminalWrapWaveRef.current===wave ? "USED" : "READY"}</em>
+                  <span aria-hidden="true">⚔</span><b>SWORD · Q</b><small>{terminalSwordRef.current.durability===0 ? "BROKEN" : `${terminalSwordRef.current.durability}/4 · ${Math.max(0,(terminalSwordRef.current.cooldownUntil-Date.now())/1000).toFixed(1)}s`}</small><em className="pitch-katana-description">MATCH LANE: RIVAL −1 HP · MISS: YOU −0.5 HP<br/>EDGE WRAP: {terminalWrapWaveRef.current===wave ? "USED" : "READY"}</em>
                 </button>
               )}
             </div>
@@ -15571,7 +15612,7 @@ function SkywayGame() {
           </footer>
             </>
           )}
-        </section>
+        </section>}
         {updateLogOpen && (
           <div className="report-backdrop update-log-backdrop">
             <section

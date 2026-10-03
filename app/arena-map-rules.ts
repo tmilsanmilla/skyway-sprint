@@ -779,7 +779,7 @@ export const activatePitchKatana = (
       ...state,
       activationStartedAtMs: nowMs,
       activeUntilMs,
-      cooldownUntilMs: nowMs + PITCH_KATANA_RULES.cooldownSeconds * 1_000,
+      cooldownUntilMs: activeUntilMs + PITCH_KATANA_RULES.cooldownSeconds * 1_000,
       movementLockedUntilMs:
         activeUntilMs +
         PITCH_KATANA_RULES.postActiveMovementLockSeconds * 1_000,
@@ -844,7 +844,11 @@ export const resolvePitchKatanaCollision = (
     kind: "deflected",
     blocksDamage: true,
     sendToOpponent: true,
-    state: { ...state, hitDuringActivation: true },
+    state: {
+      ...state, hitDuringActivation: true, whiffSettled: true,
+      activeUntilMs: nowMs,
+      cooldownUntilMs: nowMs + PITCH_KATANA_RULES.cooldownSeconds * 1_000,
+    },
   };
 };
 

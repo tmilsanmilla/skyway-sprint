@@ -13,6 +13,17 @@ export interface UpdateLogEntry {
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
+    id: "2026-10-03-photon-fury",
+    publishedAt: "2026-10-03T15:56:00-04:00",
+    title: "PHOTON FURY + MATCH SETUP",
+    changes: [
+      "Photon Fury brings a four-lane Laserdrome, a one-block Lightsaber, stacking Needles, and permanent Photons. Unlock it at level 15 for 100 Gems.",
+      "Pick an owned, map-legal character during the ten seconds before each 1v1 or practice match.",
+      "Weapon cooldowns show tenths of a second. Katana swings block one hazard; turn delays add and score bonuses multiply.",
+      "Ranked ratings reset to a fresh 1500 baseline and prior access is locked. Added an RNG tab for the upcoming mode.",
+    ],
+  },
+  {
     id: "2026-10-03-meadow-terminal",
     publishedAt: "2026-10-03T14:51:00-04:00",
     title: "MEADOW + TERMINAL",
