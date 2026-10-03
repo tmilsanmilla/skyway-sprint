@@ -13,6 +13,17 @@ export interface UpdateLogEntry {
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
+    id: "2026-10-03-meadow-terminal",
+    publishedAt: "2026-10-03T14:51:00-04:00",
+    title: "MEADOW + TERMINAL",
+    changes: [
+      "Added Meadow: six lanes, a risky score-bonus lane, and Vortex pulls. Frozen turns take 0.4 seconds here.",
+      "Added Terminal: rivals share a metro course as Ace with 4 HP, a limited-durability Sword, and one edge wrap per wave.",
+      "Q activates map weapons. Grove now has five lanes.",
+      "Fixed sign-in refresh and password-reset screens.",
+    ],
+  },
+  {
     id: "2026-09-29-account-recovery",
     publishedAt: "2026-09-29T22:23:00-04:00",
     title: "EASIER ACCOUNT RECOVERY",

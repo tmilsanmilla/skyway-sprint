@@ -13,6 +13,7 @@ export type HazardKind =
   | "rock"
   | "snowflake"
   | "spikes"
+  | "vortex"
   | "other";
 
 export type TankCharacterKey =

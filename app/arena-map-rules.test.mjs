@@ -64,7 +64,9 @@ test("Current lane selection is safe and map-aware", () => {
     pitch: [1, 2, 3, 4],
     volcano: [1, 2, 3, 4, 5],
     factory: [1, 2],
-    grove: [1, 2, 3, 4],
+    grove: [1, 2, 3],
+    meadow: [1, 2, 3, 4],
+    terminal: [1, 2, 3],
   };
 
   for (const mapId of MAP_IDS) {
@@ -103,10 +105,10 @@ test("Current collision behavior works across map lane counts", () => {
     damage: 1,
     nextLane: 0,
   });
-  assert.deepEqual(resolveCurrentInteraction("grove", 5, 1), {
+  assert.deepEqual(resolveCurrentInteraction("grove", 4, 1), {
     kind: "none",
     damage: 0,
-    nextLane: 5,
+    nextLane: 4,
   });
   assert.deepEqual(resolveCurrentInteraction("alley", 1, 0), {
     kind: "push",

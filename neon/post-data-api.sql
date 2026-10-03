@@ -313,6 +313,22 @@ begin
   end if;
 end
 $browser_device_check$;
+
+-- The browser calls this SECURITY DEFINER function immediately after managed
+-- Neon Auth succeeds. Keep unauthenticated roles out while allowing the
+-- authenticated JWT role to perform the account/device access check.
+do $player_device_registration$
+begin
+  if to_regprocedure('public.register_player_device(text,text)') is null then
+    raise exception 'Player device registration function is missing';
+  end if;
+end
+$player_device_registration$;
+revoke all on function public.register_player_device(text, text)
+  from public, anon, anonymous;
+grant execute on function public.register_player_device(text, text)
+  to authenticated;
+
 revoke all on schema app_private from public, anon, anonymous, authenticated;
 grant usage on schema app_private to skyway_server_api;
 revoke all on function app_private.check_guest_device(text, text, text)

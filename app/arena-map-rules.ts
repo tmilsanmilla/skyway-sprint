@@ -14,6 +14,8 @@ export const MAP_IDS = [
   "volcano",
   "factory",
   "grove",
+  "meadow",
+  "terminal",
 ] as const;
 
 export type MapId = (typeof MAP_IDS)[number];
@@ -37,6 +39,7 @@ export const NATURAL_OBSTACLE_IDS = [
   "current",
   "car",
   "mushroom",
+  "vortex",
 ] as const;
 
 export type NaturalObstacleId = (typeof NATURAL_OBSTACLE_IDS)[number];
@@ -101,6 +104,10 @@ export interface MapRules {
     | "volcano-idle-damage"
     | "factory-conveyor"
     | "grove-mushrooms"
+    | "meadow-bonus"
+    | "vortex"
+    | "terminal-sword"
+    | "shared-course"
   )[];
 }
 
@@ -363,9 +370,9 @@ export const MAP_RULES = {
   grove: {
     id: "grove",
     name: "Grove",
-    laneCount: 6,
+    laneCount: 5,
     obstacleDensityMode: "same-per-lane",
-    totalObstacleMultiplier: 6 / 5,
+    totalObstacleMultiplier: 1,
     allowedClasses: ALL_CLASSES,
     forcedCharacterId: null,
     health: {
@@ -389,6 +396,36 @@ export const MAP_RULES = {
       loserPoints: 0,
     },
     specialRules: ["grove-mushrooms"],
+  },
+  meadow: {
+    id: "meadow",
+    name: "Meadow",
+    laneCount: 6,
+    obstacleDensityMode: "classic-baseline",
+    totalObstacleMultiplier: 1,
+    allowedClasses: ALL_CLASSES,
+    forcedCharacterId: null,
+    health: NORMAL_HEALTH,
+    naturalObstacleWeights: { log: 25, spike: 25, barrel: 10, rock: 15, snowflake: 10, vortex: 15 },
+    availableAttacks: ATTACKS_WITH_SNOWFLAKE,
+    attackPointsPerCoin: 6,
+    waveAttackReward: { kind: "fixed", points: 8 },
+    specialRules: ["meadow-bonus", "vortex"],
+  },
+  terminal: {
+    id: "terminal",
+    name: "Terminal",
+    laneCount: 5,
+    obstacleDensityMode: "classic-baseline",
+    totalObstacleMultiplier: 1,
+    allowedClasses: ["runner"],
+    forcedCharacterId: "runner_ace",
+    health: { ...NORMAL_HEALTH, startingHpBonus: 1, maxHpBonus: 1 },
+    naturalObstacleWeights: { log: 25, spike: 40, barrel: 10, rock: 15, snowflake: 10 },
+    availableAttacks: ATTACKS_WITH_SNOWFLAKE,
+    attackPointsPerCoin: 6,
+    waveAttackReward: { kind: "fixed", points: 8 },
+    specialRules: ["terminal-sword", "shared-course"],
   },
 } as const satisfies Record<MapId, MapRules>;
 
@@ -976,7 +1013,7 @@ export const selectOneVersusOneMap = (
 /** Returns human-readable invariant failures; an empty array means valid. */
 export const validateArenaMapRules = (): readonly string[] => {
   const errors: string[] = [];
-  if (Object.keys(MAP_RULES).length !== 8) errors.push("Expected exactly 8 maps.");
+  if (Object.keys(MAP_RULES).length !== MAP_IDS.length) errors.push("Map catalog is incomplete.");
   for (const mapId of MAP_IDS) {
     const map = MAP_RULES[mapId];
     const weightTotal = Object.values(map.naturalObstacleWeights).reduce(

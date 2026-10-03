@@ -31,7 +31,7 @@ const {
 
 test("every arena, item, and control has usable guide copy", () => {
   assert.deepEqual(validateGameplayGuide(), []);
-  assert.deepEqual(Object.keys(MAP_GUIDES), [...MAP_IDS]);
+  assert.deepEqual(Object.keys(MAP_GUIDES).sort(), [...MAP_IDS].sort());
   assert.deepEqual(Object.keys(ITEM_GUIDES).sort(), [
     "barrel",
     "car",
@@ -44,6 +44,7 @@ test("every arena, item, and control has usable guide copy", () => {
     "rock",
     "snowflake",
     "spikes",
+    "vortex",
   ]);
   assert.ok(CONTROL_GUIDES.every((entry) => entry.name && entry.description));
   assert.equal(

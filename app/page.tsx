@@ -174,6 +174,7 @@ import {
   type PurchasableAttackId,
 } from "./arena-map-rules";
 import { MAP_GUIDES } from "./gameplay-guide";
+import { VORTEX_SPEED_FACTOR, createTerminalCourse, combineTerminalCourse, visibleTerminalCourse, mapContactDamage, mapScoreBonus, vortexBlocksTurn, resolveTerminalSword, type SwordState, type CourseItem } from "./meadow-terminal-rules";
 import {
   WAVE_PROGRESS_LENGTH,
   canReleasePurchasedAttack,
@@ -196,7 +197,8 @@ type Kind =
   | "current"
   | "rock"
   | "barrel"
-  | "spikes";
+  | "spikes"
+  | "vortex";
 type Item = {
   id: number;
   lane: number;
@@ -211,6 +213,7 @@ type Item = {
   deactivated?: boolean;
   scheduledAt?: number;
   attackReleaseProgress?: number;
+  sharedCourse?: boolean;
 };
 type GameMode = "normal" | "hardcore" | "impossible";
 type OracleProphecy = "no-hit" | "completion" | "near-death";
@@ -533,6 +536,9 @@ type VersusStatePayload = {
     wave?: number;
     conveyor_lane_index?: number | null;
     conveyor_speed_multiplier?: number | null;
+    bonus_lane_index?: number | null;
+    course_starts_at?: string | null;
+    course_seed?: string | null;
   } | null;
   outcome?: string | null;
   match?: {
@@ -570,6 +576,10 @@ type VersusStatePayload = {
     obstacle_speed_multiplier?: number;
     lane_index?: number | null;
     test_mode?: boolean;
+    sword_durability?: number;
+    sword_cooldown_until?: string | null;
+    sword_damage_total?: number;
+    terminal_wrap_wave?: number;
   };
   opponent?: {
     username?: string;
@@ -588,7 +598,10 @@ type VersusStatePayload = {
     zenith_time_stop_used?: boolean;
     obstacle_speed_multiplier?: number;
     lane_index?: number | null;
+    sword_durability?: number;
+    sword_cooldown_until?: string | null;
   };
+  shared_attacks?: Array<{id: string; obstacle_type: string; lane_index?: number | null; spawn_wave?: number}>;
   pending_attacks?: Array<{
     id?: string;
     obstacle_type?: string;
@@ -1888,6 +1901,7 @@ const EXTRACTION_BOXES = {
   }
 >;
 function Obstacle({ kind }: { kind: Kind }) {
+  if (kind === "vortex") return <span className="vortex-shape" aria-hidden="true">◎</span>;
   if (kind === "gem") return <span>♦</span>;
   if (kind === "coin") return <span>●</span>;
   if (kind === "melon") return <span aria-hidden="true">🍉</span>;
@@ -1964,6 +1978,20 @@ export default function Home() {
 }
 
 function SkywayGame() {
+  const [meadowBonusLane, setMeadowBonusLane] = useState(0);
+  const meadowBonusLaneRef = useRef(0);
+  const vortexGravityRef = useRef({ blockedDirection: 0, until: 0 });
+  const vortexSeenRef = useRef(new Set<number>());
+  const terminalSwordRef = useRef<SwordState>({ durability: 4, cooldownUntil: 0 });
+  const terminalRivalSwordRef = useRef<SwordState>({ durability: 4, cooldownUntil: 0 });
+  const terminalSwordBusyRef = useRef(false);
+  const terminalDamageSeenRef = useRef(0);
+  const terminalWrapWaveRef = useRef(0);
+  const terminalCourseRef = useRef<{ wave: number; startsAt: number; items: readonly CourseItem[] }>({ wave: 0, startsAt: 0, items: [] });
+  const terminalConsumedRef = useRef(new Set<number>());
+  const terminalSharedAttacksRef = useRef<CourseItem[]>([]);
+  const terminalPositionQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const [terminalSwordVersion, setTerminalSwordVersion] = useState(0);
   const [lane, setLane] = useState(2),
     [items, setItems] = useState<Item[]>([]),
     [score, setScore] = useState(0),
@@ -2475,6 +2503,7 @@ function SkywayGame() {
     };
   }, []);
   const [authReady, setAuthReady] = useState(false),
+    [authSessionRefresh, setAuthSessionRefresh] = useState(0),
     [guest, setGuest] = useState(false),
     [userEmail, setUserEmail] = useState<string | null>(null),
     [playerAccess, setPlayerAccess] = useState<PlayerAccess | null>(null),
@@ -2968,6 +2997,7 @@ function SkywayGame() {
   useEffect(() => {
     if (!running || paused || wavePause || versusPhase !== "playing") return;
     const group = deferredAttackGroups[0];
+    if (activeMapId === "terminal") return;
     if (!group) return;
     const releaseProgress = group[0]?.attackReleaseProgress;
     if (
@@ -3098,7 +3128,7 @@ function SkywayGame() {
     !effectiveCharacterTestMode &&
     isVersusRun &&
     !isCharacterClassAllowed(activeMapId, availableClass);
-  const forcedMapCharacter = isVersusRun && !effectiveCharacterTestMode
+  const forcedMapCharacter = isVersusRun && (!effectiveCharacterTestMode || activeMapId === "terminal")
     ? activeMapRules.forcedCharacterId
     : null;
   const equippedCharacter =
@@ -3326,7 +3356,7 @@ function SkywayGame() {
     activeCharacter as CharacterKey,
     activeCharacterDefinition.rarity,
   );
-  const activeWeaponScoreMultiplier = 1 + activeWeaponScoreBonus;
+  const activeWeaponScoreMultiplier = activeMapId === "terminal" ? 1 : 1 + activeWeaponScoreBonus;
   const getActiveGambitEffects = useCallback((
     targetWave: number,
     currentHearts: number,
@@ -4583,7 +4613,7 @@ function SkywayGame() {
     const runCharacter =
       candidateBlockedByMode
         ? "runner_ace"
-        : (!nextRunIsTestMode ? runMapRules.forcedCharacterId : null) ??
+        : (!nextRunIsTestMode || runMapId === "terminal" ? runMapRules.forcedCharacterId : null) ??
           (nextRunIsTestMode || isCharacterClassAllowed(runMapId, candidateClass)
             ? candidateCharacter
             : "runner_ace");
@@ -4617,6 +4647,18 @@ function SkywayGame() {
     setWaveProgress(0);
     setHearts(runStartingHearts);
     setWave(1);
+    terminalSwordRef.current = { durability: 4, cooldownUntil: 0 };
+    terminalRivalSwordRef.current = { durability: 4, cooldownUntil: 0 };
+    terminalDamageSeenRef.current = 0;
+    terminalWrapWaveRef.current = 0;
+    terminalConsumedRef.current.clear();
+    terminalSharedAttacksRef.current = [];
+    terminalCourseRef.current = { wave: 1, startsAt: Date.now(), items: createTerminalCourse(versusMatchRef.current ?? "practice", 1) };
+    setTerminalSwordVersion((value) => value + 1);
+    vortexSeenRef.current.clear();
+    vortexGravityRef.current = { blockedDirection: 0, until: 0 };
+    meadowBonusLaneRef.current = Math.floor(Math.random() * runMapRules.laneCount);
+    setMeadowBonusLane(meadowBonusLaneRef.current);
     setOver(false);
     setVersusSelfEliminated(false);
     versusSelfEliminatedRef.current = false;
@@ -4867,10 +4909,10 @@ function SkywayGame() {
     ],
   );
   const applyDirectMapDamage = useCallback(
-    (damage: number, notice: string) => {
+    (damage: number, notice: string, authoritative = false) => {
       if (
         damage <= 0 ||
-        damageLockedRef.current ||
+        (damageLockedRef.current && !authoritative) ||
         !state.current.running ||
         state.current.hearts <= 0
       )
@@ -4924,6 +4966,64 @@ function SkywayGame() {
       showAbilityNotice,
     ],
   );
+  const applyTerminalSnapshot = useCallback((snapshot: VersusStatePayload, applyHealth = true) => {
+    if (snapshot.match?.map_key !== "terminal") return;
+    const total = Number(snapshot.self?.sword_damage_total) || 0;
+    if (total < terminalDamageSeenRef.current) return;
+    const unseenDamage = total - terminalDamageSeenRef.current;
+    if (applyHealth && unseenDamage > 0) applyDirectMapDamage(unseenDamage, "", true);
+    terminalDamageSeenRef.current = total;
+    terminalSwordRef.current = {
+      durability: Math.min(terminalSwordRef.current.durability, Math.max(0, Number(snapshot.self?.sword_durability) || 0)),
+      cooldownUntil: Math.max(terminalSwordRef.current.cooldownUntil, parseServerTime(snapshot.self?.sword_cooldown_until, 0)),
+    };
+    terminalRivalSwordRef.current = {
+      durability: Math.max(0, Number(snapshot.opponent?.sword_durability) || 0),
+      cooldownUntil: parseServerTime(snapshot.opponent?.sword_cooldown_until, 0),
+    };
+    terminalWrapWaveRef.current = Math.max(terminalWrapWaveRef.current,Number(snapshot.self?.terminal_wrap_wave) || 0);
+    if (Number.isFinite(snapshot.opponent?.hearts)) setVersusOpponentHearts(Number(snapshot.opponent?.hearts));
+    if (Number.isInteger(snapshot.opponent?.lane_index)) setVersusOpponentLane(Number(snapshot.opponent?.lane_index));
+    const rules = snapshot.wave_rules;
+    const courseWave = Number(rules?.wave) || 1;
+    const startsAt = parseServerTime(rules?.course_starts_at, 0);
+    if (startsAt && (terminalCourseRef.current.wave !== courseWave || terminalCourseRef.current.startsAt !== startsAt)) {
+      terminalCourseRef.current = { wave: courseWave, startsAt, items: createTerminalCourse(rules?.course_seed ?? versusMatchRef.current ?? "practice", courseWave) };
+      terminalConsumedRef.current.clear();
+    }
+    terminalSharedAttacksRef.current = (snapshot.shared_attacks ?? []).flatMap((attack, index): CourseItem[] => {
+      const kind = normalizeVersusObstacle(attack.obstacle_type);
+      if (!kind || !["log", "spikes", "barrel", "rock", "snowflake", "current"].includes(kind)) return [];
+      const lane = Number.isInteger(attack.lane_index) ? Number(attack.lane_index) : index % 5;
+      return [{ id: -(courseWave * 100000 + 50000 + index), lane: Math.max(0,Math.min(4,lane)), kind: kind as CourseItem["kind"], at: 3000 + index * 950, speed: .0452 * getWaveSpeedMultiplier(courseWave) }];
+    });
+    setTerminalSwordVersion((value) => value + 1);
+  }, [applyDirectMapDamage]);
+  const triggerTerminalSword = useCallback(async () => {
+    if (activeMapId !== "terminal" || !state.current.running || state.current.paused || state.current.wavePause || terminalSwordBusyRef.current) return;
+    const now = Date.now();
+    if (terminalSwordRef.current.durability <= 0 || terminalSwordRef.current.cooldownUntil > now) return;
+    terminalSwordBusyRef.current = true;
+    try {
+      await terminalPositionQueueRef.current;
+      if (isOnlineVersus && versusMatchRef.current) {
+        const { data, error } = await supabase.rpc("use_1v1_terminal_sword", { p_match_id: versusMatchRef.current });
+        if (error) { showAbilityNotice(error.message.toUpperCase(), 1400); return; }
+        applyTerminalSnapshot(data as VersusStatePayload);
+        showAbilityNotice(data?.sword_hit ? "SWORD HIT · RIVAL −1 HP" : "SWORD MISSED · −0.5 HP · −1 DURABILITY", 1100);
+      } else {
+        const swing = resolveTerminalSword(terminalSwordRef.current, terminalRivalSwordRef.current, state.current.lane, versusOpponentLane, now);
+        if (!swing.used) return;
+        terminalSwordRef.current = swing.self;
+        terminalRivalSwordRef.current = swing.rival;
+        if (swing.selfDamage) applyDirectMapDamage(swing.selfDamage, "SWORD MISSED");
+        if (swing.rivalDamage) setVersusOpponentHearts((hp) => Math.max(0, hp - swing.rivalDamage));
+        setTerminalSwordVersion((value) => value + 1);
+      }
+      void audioEngine.playSfx("hit");
+    } catch { showAbilityNotice("SWORD COULD NOT SYNC · TRY AGAIN", 1200); }
+    finally { terminalSwordBusyRef.current = false; }
+  }, [activeMapId, applyDirectMapDamage, applyTerminalSnapshot, isOnlineVersus, showAbilityNotice, versusOpponentLane]);
   const triggerPitchKatana = useCallback(() => {
     if (
       activeMapId !== "pitch" ||
@@ -5023,11 +5123,17 @@ function SkywayGame() {
       state.current.lane = destination;
       setLane(destination);
       volcanoStationaryMsRef.current = 0;
-      if (isOnlineVersus && versusMatchRef.current)
-        void supabase.rpc("update_1v1_position", {
-          p_match_id: versusMatchRef.current,
-          p_lane_index: destination,
-        });
+      if (isOnlineVersus && versusMatchRef.current) {
+        const matchId = versusMatchRef.current;
+        terminalPositionQueueRef.current = terminalPositionQueueRef.current.then(async () => {
+          if (versusMatchRef.current !== matchId) return;
+          const { error } = await supabase.rpc("update_1v1_position", { p_match_id: matchId, p_lane_index: destination });
+          if (error && activeMapId === "terminal") {
+            showAbilityNotice(error.message.toUpperCase(), 1200);
+            void hydrateVersusStateRef.current?.(matchId, true);
+          }
+        }).catch(() => {});
+      }
       void audioEngine.playSfx("move");
       const now = Date.now();
       lastLaneChangeAtRef.current = now;
@@ -5084,6 +5190,7 @@ function SkywayGame() {
     },
     [
       activeCharacter,
+      activeMapId,
       grantInvincibility,
       hasCharacterAbility,
       isOnlineVersus,
@@ -5096,6 +5203,7 @@ function SkywayGame() {
         !state.current.running ||
         state.current.paused ||
         state.current.wavePause ||
+        (activeMapId === "terminal" && terminalSwordBusyRef.current) ||
         turnLockedRef.current ||
         (anchorLaneLockedRef.current && anchorGuardUntilRef.current > Date.now()) ||
         (activeCharacter === "trickster_rogue" &&
@@ -5104,12 +5212,14 @@ function SkywayGame() {
           isPitchKatanaMovementLocked(pitchKatanaRef.current, Date.now()))
       )
         return;
+      if (vortexBlocksTurn(d, vortexGravityRef.current.blockedDirection, vortexGravityRef.current.until, Date.now())) return;
+      const terminalWrap = activeMapId === "terminal" && terminalWrapWaveRef.current !== waveRef.current && ((state.current.lane === 0 && d < 0) || (state.current.lane === activeLaneCount - 1 && d > 0));
       const orbitWrap =
         hasCharacterAbility("runner_orbit") &&
         orbitCooldownRemainingRef.current <= 0 &&
         ((state.current.lane === 0 && d < 0) ||
           (state.current.lane === activeLaneCount - 1 && d > 0));
-      const destination = orbitWrap
+      const destination = orbitWrap || terminalWrap
         ? state.current.lane === 0
           ? activeLaneCount - 1
           : 0
@@ -5119,7 +5229,13 @@ function SkywayGame() {
           );
       if (destination === state.current.lane) return;
       const finishMove = () => {
+        if (vortexBlocksTurn(d, vortexGravityRef.current.blockedDirection, vortexGravityRef.current.until, Date.now())) return;
         completeMove(destination, d);
+        if (terminalWrap) {
+          terminalWrapWaveRef.current = waveRef.current;
+          showAbilityNotice("TERMINAL · EDGE WRAP USED", 850);
+          setTerminalSwordVersion((value) => value + 1);
+        }
         if (orbitWrap) {
           orbitCooldownRemainingRef.current = 3000;
           showAbilityNotice("LANE ORBIT · EDGE WRAP", 850);
@@ -5142,7 +5258,7 @@ function SkywayGame() {
             turnLockedRef.current = false;
             delayedMoveTimerRef.current = null;
           },
-          250,
+          activeMapId === "meadow" ? 400 : 250,
         );
         return;
       }
@@ -7111,7 +7227,7 @@ function SkywayGame() {
         ? validatedCharacter.characterKey
         : "runner_ace";
     const characterKey =
-      (!restoredRunTestMode ? restoredMapRules.forcedCharacterId : null) ??
+      (!restoredRunTestMode || restoredMap === "terminal" ? restoredMapRules.forcedCharacterId : null) ??
       restoredCandidate;
     const characterClass = getCharacterClassKey(characterKey);
     const rawMaxHearts = Number(snapshot.self?.max_hearts);
@@ -7133,7 +7249,15 @@ function SkywayGame() {
     const restoredHearts = Math.min(
       restoredMaxHearts,
       normalizeVersusHearts(Number(snapshot.self?.hearts) || 0),
+      preserveRunState && restoredMap === "terminal" && restoredWave === previousClientWave
+        ? Math.max(0,state.current.hearts - Math.max(0,(Number(snapshot.self?.sword_damage_total) || 0)-terminalDamageSeenRef.current))
+        : restoredMaxHearts,
     );
+    if (restoredMap === "terminal") applyTerminalSnapshot(snapshot, preserveRunState);
+    if (restoredMap === "meadow" && Number.isInteger(snapshot.wave_rules?.bonus_lane_index)) {
+      meadowBonusLaneRef.current = Number(snapshot.wave_rules?.bonus_lane_index);
+      setMeadowBonusLane(meadowBonusLaneRef.current);
+    }
     const authoritativeConveyor =
       restoredMap === "factory"
         ? readFactoryConveyorFromWaveRules(
@@ -7152,11 +7276,12 @@ function SkywayGame() {
     setSelectedCharacter(characterKey);
     setVersusServerMaxHearts(restoredMaxHearts);
     if (!preserveRunState) {
-      setLane(restoredCenterLane);
-      state.current.lane = restoredCenterLane;
+      const restoredLane = restoredMap === "terminal" && Number.isInteger(snapshot.self?.lane_index) ? Math.max(0,Math.min(4,Number(snapshot.self?.lane_index))) : restoredCenterLane;
+      setLane(restoredLane);
+      state.current.lane = restoredLane;
       void supabase.rpc("update_1v1_position", {
         p_match_id: matchId,
-        p_lane_index: restoredCenterLane,
+        p_lane_index: restoredLane,
       });
       itemsSnapshotRef.current = [];
       setItems([]);
@@ -7209,6 +7334,7 @@ function SkywayGame() {
     setScore(restoredScore);
     setWave(restoredWave);
     setHearts(restoredHearts);
+    state.current.hearts = restoredHearts;
     // A mid-wave poll must not erase locally collected coins that are waiting
     // for the intermission-only batch receipt. The authoritative balance is
     // applied immediately after that batch succeeds.
@@ -7288,7 +7414,7 @@ function SkywayGame() {
     setOver(selfEliminated || matchFinished || matchCancelled);
     setRunning(!selfEliminated && !matchFinished && !matchCancelled);
 
-    const pending = (snapshot.pending_attacks ?? []).flatMap(
+    const pending = (restoredMap === "terminal" ? [] : snapshot.pending_attacks ?? []).flatMap(
       (attack): PendingVersusAttack[] => {
         const kind = normalizeVersusObstacle(attack.obstacle_type);
         if (!attack.id || !kind) return [];
@@ -7999,6 +8125,11 @@ function SkywayGame() {
         e.preventDefault();
         move(1);
       }
+      if (e.key.toLowerCase() === "q" && isVersusRun && !e.repeat) {
+        e.preventDefault();
+        if (activeMapId === "pitch") triggerPitchKatana();
+        else if (activeMapId === "terminal") void triggerTerminalSword();
+      }
       if (
         e.key === " " &&
         state.current.running &&
@@ -8065,6 +8196,7 @@ function SkywayGame() {
     throwHexChakram,
     toggleManualPause,
     triggerPitchKatana,
+    triggerTerminalSword,
     triggerCharacterAction,
     usernameRequired,
   ]);
@@ -8312,6 +8444,7 @@ function SkywayGame() {
         }
       }
       if (
+        activeMapId !== "terminal" &&
         now - last.current >
           Math.max(330, 980 - wave * 55) /
             activeMapRules.totalObstacleMultiplier
@@ -8604,6 +8737,11 @@ function SkywayGame() {
       }
       setItems((old) => {
         let clearRecoveryZone = false;
+        if (activeMapId === "terminal") {
+          const course=terminalCourseRef.current;
+          const elapsed=course.startsAt ? Math.max(0,Date.now()-course.startsAt) : 0;
+          old=visibleTerminalCourse(combineTerminalCourse(course.items,terminalSharedAttacksRef.current),elapsed,terminalConsumedRef.current);
+        }
         let clearDamagedLane = false;
         let relayDischarge = false;
         const getItemSpeedFactor = (item: Item) => {
@@ -8621,6 +8759,8 @@ function SkywayGame() {
                   ? 0.72
                   : item.kind === "rock"
                   ? 0.3
+                  : item.kind === "vortex"
+                  ? VORTEX_SPEED_FACTOR
                   : 1;
           if (isHazard) {
             speedFactor *= permanentObstacleSlowRef.current;
@@ -8733,6 +8873,7 @@ function SkywayGame() {
                 return;
               }
               const proposedY =
+                item.sharedCourse ? item.y :
                 pendingKatanaReflectionIdsRef.current.has(item.id)
                 ? 65
                 : item.y +
@@ -8788,6 +8929,11 @@ function SkywayGame() {
           if (pendingKatanaReflectionIdsRef.current.has(n.id))
             return [n];
           const crossedRunnerBand = item.y < 91 && n.y >= 65;
+          if (n.kind === "vortex" && crossedRunnerBand && Math.abs(n.lane-state.current.lane)===1 && !vortexSeenRef.current.has(n.id)) {
+            vortexSeenRef.current.add(n.id);
+            vortexGravityRef.current = { blockedDirection: Math.sign(state.current.lane-n.lane), until: Date.now()+500 };
+            showAbilityNotice("VORTEX · GRAVITATED", 500);
+          }
           const abilityGraze =
             activeCharacter === "trickster_rogue" &&
             isHazard &&
@@ -8833,6 +8979,12 @@ function SkywayGame() {
             crossedRunnerBand
           ) {
             let phantomIgnore = false;
+            if (n.sharedCourse) terminalConsumedRef.current.add(n.id);
+            if (activeMapId === "terminal" && (n.kind === "rock" || n.kind === "spikes")) {
+              terminalSwordRef.current = { ...terminalSwordRef.current, durability: Math.max(0, terminalSwordRef.current.durability-1) };
+              setTerminalSwordVersion((value) => value + 1);
+              if (isOnlineVersus && versusMatchRef.current) void supabase.rpc("record_1v1_terminal_contact", {p_match_id:versusMatchRef.current,p_item_id:String(n.id),p_kind:n.kind});
+            }
             if (isHazard) {
               collisionWaveRef.current = wave;
               if (activeCharacter === "medic_oracle")
@@ -9708,7 +9860,7 @@ function SkywayGame() {
                   showAbilityNotice("FATE SENSOR · SECOND HIT HALVED", 900);
                 }
               }
-              const damage = abilityAdjustedDamage;
+              const damage = mapContactDamage(activeMapId,n.kind,abilityAdjustedDamage,state.current.lane,meadowBonusLaneRef.current);
               if (damage === 0) {
                 void audioEngine.playSfx("shield");
                 setFlash("shield");
@@ -10010,7 +10162,7 @@ function SkywayGame() {
           return [];
         });
         // Keep the runner in place and clear every nearby object after impact.
-        const recoveryRetained = clearRecoveryZone
+        const recoveryRetained = clearRecoveryZone && activeMapId !== "terminal"
           ? advanced.filter((item) => item.y <= 45 || item.y >= 105)
           : advanced;
         const retained = clearDamagedLane
@@ -10151,7 +10303,7 @@ function SkywayGame() {
         modeMultiplier *
         classScoreMultiplier *
         characterScoreMultiplier *
-        activeWeaponScoreMultiplier;
+        activeWeaponScoreMultiplier * mapScoreBonus(activeMapId,state.current.lane,meadowBonusLaneRef.current,itemsSnapshotRef.current.filter(item=>item.kind==="spikes" && item.y>=-12 && item.y<108).map(item=>item.lane));
       currentCoinMultiplierRef.current = totalScoreMultiplier;
       scoreCarryRef.current +=
         rawProgressGain *
@@ -10858,6 +11010,17 @@ function SkywayGame() {
               activeMapId,
             ),
           );
+        if (activeMapId === "terminal") {
+          terminalCourseRef.current = {wave,startsAt:Date.now(),items:createTerminalCourse("practice",wave)};
+          terminalConsumedRef.current.clear();
+          terminalSharedAttacksRef.current = attacksForPlayer.map((kind,index)=>({id:-(wave*100000+50000+index),lane:index%5,kind:(kind==="spike" ? "spikes" : kind) as CourseItem["kind"],at:3000+index*950,speed:.0452*getWaveSpeedMultiplier(wave)}));
+          deferredAttackGroupsRef.current=[];
+          setDeferredAttackGroups([]);
+        }
+        if (activeMapId === "meadow") {
+          meadowBonusLaneRef.current=Math.floor(Math.random()*6);
+          setMeadowBonusLane(meadowBonusLaneRef.current);
+        }
         setVersusResult(
           botAttacks.length > 0
             ? `TRAINING BOT SENT ${botAttacks.length} HAZARD${botAttacks.length === 1 ? "" : "S"}`
@@ -10891,12 +11054,13 @@ function SkywayGame() {
         if (versusMatchRef.current !== matchId) return;
         await enqueueVersusStateSync(async () => {
           if (versusMatchRef.current !== matchId) return;
-          const { data, error } = await supabase.rpc("update_1v1_state", {
+          const { data, error } = await supabase.rpc(activeMapId === "terminal" ? "update_1v1_terminal_state" : "update_1v1_state", {
             p_match_id: matchId,
             p_hearts: normalizeVersusHeartsForServer(state.current.hearts),
             p_wave: wave,
             p_score: scoreRef.current,
             p_status: "playing",
+            ...(activeMapId === "terminal" ? {p_sword_damage_seen:terminalDamageSeenRef.current} : {}),
           });
           if (versusMatchRef.current !== matchId) return;
           if (error) {
@@ -10906,6 +11070,11 @@ function SkywayGame() {
             return;
           }
           applyAuthoritativeVersusPoints(data?.self?.obstacle_points);
+          if (activeMapId === "terminal") applyTerminalSnapshot(data as VersusStatePayload);
+          if (activeMapId === "meadow" && Number.isInteger(data?.wave_rules?.bonus_lane_index)) {
+            meadowBonusLaneRef.current = Number(data.wave_rules.bonus_lane_index);
+            setMeadowBonusLane(meadowBonusLaneRef.current);
+          }
           const authoritativeConveyor =
             activeMapId === "factory"
               ? readFactoryConveyorFromWaveRules(
@@ -11034,6 +11203,7 @@ function SkywayGame() {
     enqueueDeferredAttackItems,
     enqueueVersusStateSync,
     applyAuthoritativeVersusPoints,
+    applyTerminalSnapshot,
     showAbilityNotice,
   ]);
   useEffect(() => {
@@ -11115,12 +11285,13 @@ function SkywayGame() {
         let data: VersusStatePayload | null = null;
         let syncError = "";
         try {
-          const response = await supabase.rpc("update_1v1_state", {
+          const response = await supabase.rpc(activeMapId === "terminal" ? "update_1v1_terminal_state" : "update_1v1_state", {
             p_match_id: matchId,
             p_hearts: normalizeVersusHeartsForServer(hearts),
             p_wave: wave,
             p_score: scoreRef.current,
             p_status: nextStatus,
+            ...(activeMapId === "terminal" ? {p_sword_damage_seen:terminalDamageSeenRef.current} : {}),
           });
           data = response.data as VersusStatePayload | null;
           syncError = response.error?.message ?? "";
@@ -11142,6 +11313,7 @@ function SkywayGame() {
             }, 1000);
           return;
         }
+        if (activeMapId === "terminal" && data) applyTerminalSnapshot(data);
         if (versusSyncRetryTimerRef.current) {
           clearTimeout(versusSyncRetryTimerRef.current);
           versusSyncRetryTimerRef.current = null;
@@ -11214,6 +11386,8 @@ function SkywayGame() {
     playScope,
     versusPhase,
     versusSyncRetry,
+    activeMapId,
+    applyTerminalSnapshot,
     enqueueVersusStateSync,
     applyAuthoritativeVersusPoints,
   ]);
@@ -11438,7 +11612,7 @@ function SkywayGame() {
       setDataSession(null, null);
       data.subscription.unsubscribe();
     };
-  }, [applyProgressionPayload, refreshPlayerAccess]);
+  }, [applyProgressionPayload, authSessionRefresh, refreshPlayerAccess]);
   useEffect(() => {
     const userId = userIdRef.current;
     if (
@@ -11607,6 +11781,7 @@ function SkywayGame() {
           ? error.message
           : "Account created. Loading your runner profile…",
       );
+      if (!error) setAuthSessionRefresh((value) => value + 1);
     } else {
       const { error } = await supabase.auth.signInWithPassword({
         email,
@@ -11616,6 +11791,10 @@ function SkywayGame() {
         setAuthMessage(
           `${error.message} If this account existed before the Neon move, use Forgot Password once.`,
         );
+      else {
+        setAuthMessage("Signed in. Loading your runner profile…");
+        setAuthSessionRefresh((value) => value + 1);
+      }
     }
     setAuthBusy(false);
   };
@@ -13177,13 +13356,13 @@ function SkywayGame() {
         <div className="auth-card loading">Loading Skyway Sprint…</div>
       </main>
     );
-  if (userEmail && playerAccessChecking)
+  if (!recoveryToken && userEmail && playerAccessChecking)
     return (
       <main className="auth-shell">
         <div className="auth-card loading">Verifying account and device…</div>
       </main>
     );
-  if ((userEmail || guest) && playerAccessError)
+  if (!recoveryToken && (userEmail || guest) && playerAccessError)
     return (
       <main className="auth-shell">
         <section className="auth-card ban-card access-error-card">
@@ -13209,13 +13388,14 @@ function SkywayGame() {
         </section>
       </main>
     );
-  if (userEmail && !playerAccess)
+  if (!recoveryToken && userEmail && !playerAccess)
     return (
       <main className="auth-shell">
         <div className="auth-card loading">Verifying account and device…</div>
       </main>
     );
   if (
+    !recoveryToken &&
     playerAccess &&
     (playerAccess.account_banned || playerAccess.device_banned)
   ) {
@@ -14646,6 +14826,9 @@ function SkywayGame() {
                   )}
                 </div>
               )}
+              {activeMapId === "meadow" && (
+                <div className="meadow-bonus-lane" style={{left:`${meadowBonusLane/activeLaneCount*100}%`,width:`${100/activeLaneCount}%`}} aria-label={`Bonus lane ${meadowBonusLane+1}: 40% more score and double damage`}><span>+40% SCORE · ×2 DAMAGE</span></div>
+              )}
               {activeMapId === "factory" &&
                 (factoryConveyor.lane === 1 || factoryConveyor.lane === 2) && (
                   <div
@@ -14735,7 +14918,7 @@ function SkywayGame() {
                   <Obstacle kind={x.kind} />
                 </div>
               ))}
-              {((mirageInvasion && !mirageInvasion.finished) ||
+              {(activeMapId === "terminal" || (mirageInvasion && !mirageInvasion.finished) ||
                 versusOpponentMirageUntil > Date.now()) && (
                 <div
                   className="mirage-rival-marker"
@@ -14748,6 +14931,7 @@ function SkywayGame() {
                   <b>{versusOpponentLane + 1}</b>
                 </div>
               )}
+              {activeMapId === "terminal" && <div className="runner terminal-rival character-runner_ace" style={{left:`${((versusOpponentLane+.5)/activeLaneCount)*100}%`}} aria-label={`Rival in lane ${versusOpponentLane+1}`}><div className="head"/><div className="body"/><i className="arm a1"/><i className="arm a2"/><i className="leg g1"/><i className="leg g2"/></div>}
               <div
                 className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}${mirageInvasion && !mirageInvasion.finished ? " mirage-invading" : ""}${beaconActiveRef.current ? " beacon-active" : ""}${reviveFlyingRef.current ? " flight-active" : ""}${haloPartsRef.current >= 3 ? " halo-ready" : ""}${phantomLord ? " phantom-lord-form" : ""}${echoKnowingState.chargingSinceMs !== null ? " echo-charging" : ""}${echoKnowingState.awakened ? " echo-awakened" : ""}${echoKnowingState.realmUntilMs > Date.now() ? " echo-realm" : ""}${activeCharacter === "runner_velocity" && velocityDisplayPercent > 0 ? velocityDisplayPercent >= 100 ? " velocity-max" : velocityDisplayPercent >= 50 ? " velocity-charged" : " velocity-charging" : ""}`}
                 style={{ left: `${((lane + 0.5) / activeLaneCount) * 100}%` }}
@@ -14778,10 +14962,10 @@ function SkywayGame() {
                   }
                   onClick={triggerPitchKatana}
                   title={MAP_GUIDES.pitch.rules.join(" ")}
-                  aria-label="Katana: press Space or click for a 0.4-second guard. It reflects non-rock hazards. Missing costs 0.5 HP; rocks break it for the match."
+                  aria-label="Katana: press Q or click for a 0.4-second guard. It reflects non-rock hazards. Missing costs 0.5 HP; rocks break it for the match."
                 >
                   <span aria-hidden="true">刀</span>
-                  <b>KATANA</b>
+                  <b>KATANA · Q</b>
                   <small>
                     {renderedKatanaState.broken
                       ? "BROKEN"
@@ -14794,6 +14978,11 @@ function SkywayGame() {
                   <em className="pitch-katana-description">
                     0.4s GUARD · REFLECTS NON-ROCKS · MISS COSTS 0.5 HP
                   </em>
+                </button>
+              )}
+              {activeMapId === "terminal" && isVersusRun && (
+                <button type="button" className={`pitch-katana terminal-sword${terminalSwordRef.current.durability===0 ? " broken" : ""}`} data-version={terminalSwordVersion} onClick={()=>void triggerTerminalSword()} disabled={!running || paused || terminalSwordRef.current.durability===0 || terminalSwordRef.current.cooldownUntil>Date.now()} title={MAP_GUIDES.terminal.rules.join(" ")}>
+                  <span aria-hidden="true">⚔</span><b>SWORD · Q</b><small>{terminalSwordRef.current.durability===0 ? "BROKEN" : `${terminalSwordRef.current.durability}/4 · ${terminalSwordRef.current.cooldownUntil>Date.now() ? `${Math.ceil((terminalSwordRef.current.cooldownUntil-Date.now())/1000)}s` : "READY"}`}</small><em className="pitch-katana-description">MATCH LANE: RIVAL −1 HP · MISS: YOU −0.5 HP<br/>EDGE WRAP: {terminalWrapWaveRef.current===wave ? "USED" : "READY"}</em>
                 </button>
               )}
             </div>

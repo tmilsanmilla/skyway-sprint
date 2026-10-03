@@ -29,12 +29,23 @@ export type GameplayItemId =
   | "current"
   | "rock"
   | "barrel"
-  | "spikes";
+  | "spikes"
+  | "vortex";
 
 const seconds = (value: number) =>
   `${value.toFixed(Number.isInteger(value) ? 0 : 1)} second${value === 1 ? "" : "s"}`;
 
 export const MAP_GUIDES: Readonly<Record<MapId, MapGuide>> = {
+  meadow: {
+    name: "Meadow",
+    description: "Six lanes of grassland with a marked bonus lane: earn 40% more score there, but take double obstacle damage.",
+    rules: ["Vortex deals 1 HP and pulls adjacent players toward it, preventing movement away for 0.5 seconds.", "Snowflakes freeze for 3 seconds; every frozen turn takes 0.4 seconds here.", "Coins give 6 attack points and each completed wave gives 8."],
+  },
+  terminal: {
+    name: "Terminal",
+    description: "Both rivals share one five-lane metro course as Ace, starting with 4 HP and a Sword with 4 durability.",
+    rules: ["Spikes deal 2 HP. Running in a spike's lane gives 40% extra score, combining with Ace's 10% for 54%.", "Move outward from an edge lane to wrap to the opposite edge once per wave.", "Press Q or click SWORD: matching your rival's lane deals 1 HP to them; missing costs you 0.5 HP and 1 durability.", "Every swing gives you a 3-second cooldown; a successful hit gives both swords that cooldown. Rocks and spikes also cost 1 durability. At zero durability your Sword stays broken for the duel."],
+  },
   classic: {
     name: "Classic",
     description:
@@ -80,7 +91,7 @@ export const MAP_GUIDES: Readonly<Record<MapId, MapGuide>> = {
     description:
       "A six-lane timing arena where every runner receives a risk-and-reward Katana.",
     rules: [
-      `Click KATANA or press Space for a ${seconds(PITCH_KATANA_RULES.activeSeconds)} guard. A timed hit blocks and reflects every non-rock hazard.`,
+      `Click KATANA or press Q for a ${seconds(PITCH_KATANA_RULES.activeSeconds)} guard. A timed hit blocks and reflects every non-rock hazard.`,
       `Missing the guard costs ${PITCH_KATANA_RULES.whiffSelfDamage} HP and briefly locks movement. The cooldown is ${seconds(PITCH_KATANA_RULES.cooldownSeconds)} and resets each wave.`,
       "The Katana cannot activate while frozen. A rock breaks it for the rest of the match and still deals damage.",
       "Coins give 6 attack points and each completed wave gives 6.",
@@ -109,7 +120,7 @@ export const MAP_GUIDES: Readonly<Record<MapId, MapGuide>> = {
   grove: {
     name: "Grove",
     description:
-      "A six-lane mushroom contest. Both starting and maximum HP gain 1, and healing remains enabled.",
+      "A five-lane mushroom contest. Both starting and maximum HP gain 1, and healing remains enabled.",
     rules: [
       `Each mushroom gives ${GROVE_RULES.mushroomScore} score. The player with fewer mushrooms after healing loses ${GROVE_RULES.lowerMushroomHealthPenalty} HP.`,
       `The mushroom winner gets ${GROVE_RULES.mushroomWinnerAttackPoints} attack points; a tie gives each player ${GROVE_RULES.mushroomTieAttackPointsPerPlayer}.`,
@@ -119,6 +130,7 @@ export const MAP_GUIDES: Readonly<Record<MapId, MapGuide>> = {
 };
 
 export const ITEM_GUIDES: Readonly<Record<GameplayItemId, GuideEntry>> = {
+  vortex: { name: "Vortex", description: "Meadow-only hazard worth 1 HP of damage. It moves midway between Log and Spike speed. Passing beside it locks movement away from it for 0.5 seconds." },
   gem: {
     name: "Gem",
     description:
@@ -188,8 +200,8 @@ export const CONTROL_GUIDES: readonly GuideEntry[] = [
     description: "Some characters use R; their live kit panel names the action and cooldown.",
   },
   {
-    name: "Pause / Katana",
-    description: "Space pauses Endless. On Pitch, Space activates the Katana instead.",
+    name: "Map weapon / Pause",
+    description: "Q activates your map weapon: Katana on Pitch or Sword on Terminal. Space pauses Endless.",
   },
 ];
 
