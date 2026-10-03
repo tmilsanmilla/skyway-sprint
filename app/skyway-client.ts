@@ -212,8 +212,12 @@ export const setRealtimeMutationListener = (
 
 export const ensureNeonCompatibleSession = async (session: Session | null) => {
   if (!session || !neonDataClient) return session;
-  const accessToken = await neonAuth.getJWTToken();
-  if (!accessToken) return session;
+  // The Next.js session cache may contain an opaque Better Auth session token.
+  // Data API needs the signed JWT from /token, never that cached session token.
+  const { data, error } = await managedAuthClient.getBetterAuthInstance().token();
+  const accessToken = data?.token;
+  if (error || !accessToken || accessToken.split(".").length !== 3)
+    throw new Error("Could not obtain a Neon database access token.");
   return { ...session, access_token: accessToken };
 };
 

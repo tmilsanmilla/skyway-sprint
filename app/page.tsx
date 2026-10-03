@@ -11429,7 +11429,18 @@ function SkywayGame() {
       generation: number,
     ) => {
       const expectedUserId = incomingSession?.user.id ?? null;
-      const session = await ensureNeonCompatibleSession(incomingSession);
+      let session;
+      try {
+        session = await ensureNeonCompatibleSession(incomingSession);
+      } catch {
+        if (authSessionGenerationRef.current !== generation) return;
+        userIdRef.current = expectedUserId;
+        setUserEmail(incomingSession?.user.email ?? null);
+        setPlayerAccessError("Could not verify your database session. Try again.");
+        setPlayerAccessChecking(false);
+        setAuthReady(true);
+        return;
+      }
       if (authSessionGenerationRef.current !== generation) return;
       if (authSessionUserIdRef.current !== expectedUserId) return;
       if ((session?.user.id ?? null) !== expectedUserId) return;
@@ -11586,12 +11597,23 @@ function SkywayGame() {
       }
       if (event === "TOKEN_REFRESHED") {
         const refreshedUserId = session?.user.id ?? null;
+        const refreshGeneration = authSessionGenerationRef.current;
         if (
           refreshedUserId &&
           authSessionUserIdRef.current === refreshedUserId &&
           userIdRef.current === refreshedUserId
-        )
-          setDataSession(session, refreshedUserId);
+        ) {
+          void ensureNeonCompatibleSession(session).then((databaseSession) => {
+            if (
+              authSessionGenerationRef.current === refreshGeneration &&
+              authSessionUserIdRef.current === refreshedUserId &&
+              userIdRef.current === refreshedUserId
+            ) setDataSession(databaseSession, refreshedUserId);
+          }).catch(() => {
+            if (authSessionGenerationRef.current === refreshGeneration)
+              setDataSession(null, null);
+          });
+        }
         return;
       }
       const generation = authSessionGenerationRef.current + 1;
