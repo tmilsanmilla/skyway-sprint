@@ -329,6 +329,16 @@ revoke all on function public.register_player_device(text, text)
 grant execute on function public.register_player_device(text, text)
   to authenticated;
 
+-- Account hydration reads only the authenticated player's own role, Test Mode,
+-- and progression. Admin status is computed inside the functions; execute
+-- permission does not grant any admin role or access to other players' data.
+revoke all on function public.is_admin(), public.get_admin_role(),
+  public.get_admin_test_mode(), public.get_player_progression()
+  from public, anon, anonymous;
+grant execute on function public.is_admin(), public.get_admin_role(),
+  public.get_admin_test_mode(), public.get_player_progression()
+  to authenticated;
+
 revoke all on schema app_private from public, anon, anonymous, authenticated;
 grant usage on schema app_private to skyway_server_api;
 revoke all on function app_private.check_guest_device(text, text, text)

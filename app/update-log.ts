@@ -13,6 +13,16 @@ export interface UpdateLogEntry {
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
+    id: "2026-10-04-sign-in-access",
+    publishedAt: "2026-10-04T17:26:36-04:00",
+    title: "SIGN-IN ACCESS FIX",
+    changes: [
+      "Fixed a cached-session error that could leave signed-in players stuck on Could Not Verify.",
+      "Try Again now rebuilds your sign-in connection instead of repeating the failed access check.",
+      "Restored admin tools without changing anyone's admin role, and fixed player lookup after the Neon move.",
+    ],
+  },
+  {
     id: "2026-10-03-photon-fury",
     publishedAt: "2026-10-03T15:56:00-04:00",
     title: "PHOTON FURY + MATCH SETUP",

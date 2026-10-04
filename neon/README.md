@@ -17,6 +17,13 @@ is retained only as a rollback copy and is not used by the migrated runtime.
 6. Freeze writes briefly, repeat the data import/checksum audit, then switch
    the production environment and deploy the matching application revision.
 
+After importing the game functions, apply `account-session-access.sql` and
+`admin-session-access.sql`. They restore explicit authenticated startup/tool
+permissions, preserve the existing admin role checks, and adapt the two admin
+lookup readers to managed Neon Auth field names. Neither repair resets accounts
+or grants anyone an admin role. The combined repair is saved in the Neon SQL
+Editor as **Sign-in MISC**.
+
 The generated snapshot is intentionally ignored by Git because it contains
 private account and gameplay data. It excludes the obsolete
 `extraction_transactions` pull-history rows, and the migrated shop functions

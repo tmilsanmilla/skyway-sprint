@@ -72,7 +72,8 @@ test("UI sign-out invalidates auth hydration before revoking the data token", as
 test("Neon data sessions obtain signed JWTs instead of cached opaque session tokens", async () => {
   const client = await readFile(new URL("./skyway-client.ts", import.meta.url), "utf8");
   const sessionSetup = client.slice(client.indexOf("export const ensureNeonCompatibleSession"), client.indexOf("export const changeManagedPassword"));
-  assert.match(sessionSetup, /getBetterAuthInstance\(\)\.token\(\)/);
+  assert.match(sessionSetup, /getBetterAuthInstance\(\)\.token\(\{/);
+  assert.match(sessionSetup, /"X-Force-Fetch": "true"/);
   assert.match(sessionSetup, /accessToken\.split\("\."\)\.length !== 3/);
   assert.doesNotMatch(sessionSetup, /getJWTToken\(\)/);
   const page = await readFile(new URL("./page.tsx", import.meta.url), "utf8");

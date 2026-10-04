@@ -11443,6 +11443,7 @@ function SkywayGame() {
     return () => window.clearInterval(timer);
   }, [over, playScope, running, versusPhase, enqueueVersusStateSync]);
   useEffect(() => {
+    let active = true;
     const applySession = async (
       incomingSession: Awaited<
         ReturnType<typeof supabase.auth.getSession>
@@ -11612,6 +11613,9 @@ function SkywayGame() {
       setAuthReady(true);
     };
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      // The adapter can finish its async INITIAL_SESSION after unsubscribe.
+      // An old subscription must never revoke a newer subscription's token.
+      if (!active) return;
       if (event === "PASSWORD_RECOVERY") {
         setSettingsOpen(true);
         setPasswordStatus("Verified. Enter your new password below.");
@@ -11650,6 +11654,7 @@ function SkywayGame() {
       window.setTimeout(() => void applySession(session, generation), 0);
     });
     return () => {
+      active = false;
       authSessionGenerationRef.current += 1;
       authSessionUserIdRef.current = null;
       setDataSession(null, null);
@@ -13418,11 +13423,14 @@ function SkywayGame() {
           </span>
           <div className="access-error-actions">
             <button
-              onClick={() =>
-                void (userEmail
-                  ? refreshPlayerAccess(true)
-                  : refreshGuestDeviceAccess())
-              }
+              onClick={() => {
+                if (userEmail) {
+                  // Rebuild cookie session -> JWT -> server check -> device
+                  // access. Repeating the last RPC cannot repair a missing JWT.
+                  setAuthReady(false);
+                  setAuthSessionRefresh((value) => value + 1);
+                } else void refreshGuestDeviceAccess();
+              }}
             >
               TRY AGAIN
             </button>
