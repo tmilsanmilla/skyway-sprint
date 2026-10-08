@@ -127,7 +127,7 @@ export function PhotonFury({ userId, level, gems, testMode, soundtrack, onGems }
   const saber = useCallback(() => {
     if (!running || paused || inventory) return;
     const next = activatePhotonSaber(runRef.current);
-    if (next !== runRef.current) { publish(next); void audioEngine.playSfx("shield"); }
+    if (next !== runRef.current) { publish(next); void audioEngine.playSfx("lightsaber"); }
   }, [inventory, paused, publish, running]);
   const heal = useCallback(() => {
     if (!running || paused || inventory) return;

@@ -205,8 +205,8 @@ export const PITCH_KATANA_RULES = {
 } as const;
 
 export const ONE_V_ONE_SCORING_RULES = {
-  secondDeathBonus: 75,
-  tiedEloActualScore: 0.5,
+  secondDeathBonus: 500,
+  secondDeathMultiplier: 1.05,
 } as const;
 
 export const MAP_RULES = {
@@ -896,14 +896,12 @@ export const resolveOneVersusOneScores = (
   secondDeath: PlayerSlot | null,
 ) => {
   const adjustedPlayerOneScore =
-    playerOneScore +
-    (secondDeath === "playerOne" ? ONE_V_ONE_SCORING_RULES.secondDeathBonus : 0);
+    secondDeath === "playerOne" ? Math.round(playerOneScore * 1.05) + 500 : playerOneScore;
   const adjustedPlayerTwoScore =
-    playerTwoScore +
-    (secondDeath === "playerTwo" ? ONE_V_ONE_SCORING_RULES.secondDeathBonus : 0);
-  const winner: PlayerSlot | "draw" =
+    secondDeath === "playerTwo" ? Math.round(playerTwoScore * 1.05) + 500 : playerTwoScore;
+  const winner: PlayerSlot =
     adjustedPlayerOneScore === adjustedPlayerTwoScore
-      ? "draw"
+      ? secondDeath ?? "playerTwo"
       : adjustedPlayerOneScore > adjustedPlayerTwoScore
         ? "playerOne"
         : "playerTwo";
@@ -912,9 +910,7 @@ export const resolveOneVersusOneScores = (
     adjustedPlayerTwoScore,
     winner,
     eloActualScores:
-      winner === "draw"
-        ? ([0.5, 0.5] as const)
-        : winner === "playerOne"
+      winner === "playerOne"
           ? ([1, 0] as const)
           : ([0, 1] as const),
   };

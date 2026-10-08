@@ -4,6 +4,7 @@ export const MODE_UNLOCKS = {
   ranked: { level: 25, gems: 100 },
 } as const;
 export type EndlessMode = "normal" | "hardcore";
+export const HARDCORE_SCORE_MULTIPLIER = 2;
 
 const wholeNonnegative = (value: number) => Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 export const cumulativeXpForLevel = (level: number) => {

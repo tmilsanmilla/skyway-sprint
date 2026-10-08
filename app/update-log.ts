@@ -13,6 +13,29 @@ export interface UpdateLogEntry {
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
+    id: "2026-10-08-update-19",
+    publishedAt: "2026-10-08T19:59:07-04:00",
+    title: "UPDATE 19: DAILY DUELS",
+    changes: [
+      "Game Modes unlocks at level 5 and rotates daily between RNG and Hardcore Duel. RNG assigns temporary characters; Hardcore Duel is Ace-only with one heart and no healing.",
+      "Ban one of four random maps in 10 seconds, see the map reveal, then choose your character by class in 15 seconds. Both ready starts the match early.",
+      "Finishing second gives +5% score and +500. Ties go to the second finisher. Ranked rating changes now use your games from the last 28 days.",
+      "Melons give more score at higher waves. Music plays 30% faster, with new weapon, impact, vortex, wind and highway sounds.",
+      "Removed bot practice and admin Test Mode. Accounts, inventory and past results are kept.",
+    ],
+  },
+  {
+    id: "2026-10-08-update-18",
+    publishedAt: "2026-10-08T19:19:13-04:00",
+    title: "UPDATE 18: EXTRACTION SHOP",
+    changes: [
+      "Normal Boxes cost 11 Gems for 10 pulls. Rare Boxes unlock at level 10 for 19 Gems; Legendary Boxes unlock at level 20 for 27 Gems.",
+      "Each box shows its pull mix and odds. Only Legendary pulls can give Mythics. Duplicates no longer refund Gems.",
+      "Direct unlocks are limited to Common, Uncommon, and Rare items, with separate prices for characters and cosmetics.",
+      "Hardcore uses Ace with a 2× mode score bonus, or 2.2× including Ace.",
+    ],
+  },
+  {
     id: "2026-10-08-update-17",
     publishedAt: "2026-10-08T19:03:01-04:00",
     title: "UPDATE 17: LEVELS AND PHOTONS",

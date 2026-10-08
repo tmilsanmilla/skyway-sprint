@@ -39,6 +39,49 @@ Test Mode exclusions, score validation, and account isolation remain in place.
 The reward is zero below four points, otherwise `(points - 4)^2 + 1` Photons.
 Both changes are saved visibly in **XP and Unlocks MISC** and **Photon Fury MISC**.
 
+## Update 18 coordinated shop release
+
+`update-18-extraction-shop.sql` must ship with the matching Update 18 client.
+It replaces the two existing shop RPCs, keeps inventory and balances intact,
+and changes only Skyway extraction/direct-unlock rules, not Photon Fury.
+Normal/Rare/Legendary boxes cost 11/19/27 Gems and require levels 0/10/20.
+Category and rarity are independent rolls, with no rarity fallback, duplicate
+reroll, unique guarantee, or duplicate refund. Direct purchases allow only
+Common/Uncommon/Rare characters and cosmetics, using their separate prices.
+No pull-history ledger is created.
+
+The migration is saved visibly as **Extraction Shop MISC**.
+Do not activate it ahead of the client: old `regular`/`ten` box requests fail
+closed rather than charging new prices under the old menu. At release, apply
+the migration and deploy the matching client together. Test it safely by
+removing its final `commit;`, appending `update-18-extraction-shop.test.sql`,
+and ending the whole transaction with `rollback;`. The test restores all
+temporary fixture balances and unlocks and checks Photon data is unchanged.
+
+## Update 19 duels and daily modes
+
+The coordinated release applies these rerunnable migrations in this order:
+
+1. `update-19-retire-test-mode.sql` — **Admin 05 Test Mode**, now retired.
+2. `update-19-rotating-modes.sql` — **Game Modes MISC**, daily RNG/Hardcore Duel.
+3. `update-19-match-setup.sql` — **Match Setup MISC**, secret 10-second bans,
+   4-second map reveal, and a 15-second owned-character picker.
+4. `update-19-ranked.sql` — **Multi-device 03 Ranked**, rolling 28-day K,
+   final-score bonuses, and the existing mean-1500 ranked normalization.
+
+Each visible saved query is below Neon's 9,000-character history/save limit.
+The release preserves accounts, inventory, Gems, lifetime results, and old
+Test Mode reward exclusions. No new Test Mode or practice runs can start.
+`update-19.test.sql` is a rollback-only fixture suite, not a saved production
+migration. It checks setup timing, secret bans, ownership, assigned RNG
+characters, Hardcore HP/healing, final scores, permissions, rolling K, and
+rating normalization. Never commit its fixture changes.
+
+Updates 18 and 19 were applied together on 2026-10-08 at 23:59 UTC.
+The committed transaction verified unchanged player stats, balances, inventory,
+profiles, and ranked-result history. All five named saved entries were reopened
+and compared with their complete migration sources before application.
+
 The generated snapshot is intentionally ignored by Git because it contains
 private account and gameplay data. It excludes the obsolete
 `extraction_transactions` pull-history rows, and the migrated shop functions

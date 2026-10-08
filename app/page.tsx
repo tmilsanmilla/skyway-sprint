@@ -15,11 +15,16 @@ import { UPDATE_LOG } from "./update-log";
 import { PhotonFury } from "./photon-fury";
 import {
   cumulativeXpForLevel,
+  HARDCORE_SCORE_MULTIPLIER,
   endlessCharacter,
   isOlderProgression,
   MODE_UNLOCKS,
   type EndlessMode,
 } from "./progression-rules";
+import { EXTRACTION_BOXES, DIRECT_UNLOCK_COSTS, directUnlockCost, canOpenBox, affordableBoxQuantity, type ExtractionOption, type PullProfile } from "./extraction-rules";
+import { ExtractionBoxCards } from "./extraction-box-cards";
+import { DuelHub, MatchSetupPanel, type SetupView } from "./duel-menus";
+import { activeRotatingMode, nextRotationAt, melonBaseScore, type DuelMode, type RotatingMode } from "./update-19-rules";
 import { Obstacle } from "./obstacle-sprite";
 import { addTurnDelays } from "./photon-fury-rules";
 import {
@@ -47,10 +52,10 @@ import {
 } from "./skyway-client";
 import {
   getEffectiveCharacterTestMode,
-  getEffectiveOneVOneMode,
+
   isAdminTestModeActive,
   isCharacterAvailable,
-  isRankedAvailable,
+
 } from "./admin-test-mode-rules";
 import {
   ECHO_QUESTS,
@@ -150,9 +155,9 @@ import {
   CURRENT_RULES,
   GROVE_RULES,
   MAP_IDS,
-  MAP_RULES,
-  MAP_VOTE_COUNT,
-  ONE_V_ONE_SCORING_RULES,
+
+
+
   PITCH_KATANA_RULES,
   VOLCANO_RULES,
   activatePitchKatana,
@@ -171,12 +176,12 @@ import {
   resetPitchKatanaAtWaveEnd,
   resolveCurrentInteraction,
   resolvePitchKatanaCollision,
-  selectOneVersusOneMap,
+
   settlePitchKatanaWindow,
   type AttackId,
   type FactoryConveyorState,
   type MapId,
-  type MapPriorityList,
+
   type PitchKatanaState,
   type PurchasableAttackId,
 } from "./arena-map-rules";
@@ -404,8 +409,7 @@ type ExtractionResult = Unlock & {
   category: "character" | "cosmetic";
   display_name?: string;
   pull_number?: number;
-  draw_profile?: "regular" | "legendary";
-  duplicate_refund?: number;
+  draw_profile?: PullProfile;
 };
 type CatalogItem = Unlock & {
   display_name?: string;
@@ -418,11 +422,10 @@ type StoredLoadout = {
   obstacle_cosmetic?: string | null;
   environment_cosmetic?: string | null;
 } | null;
-type ExtractionOption = "regular" | "ten";
 type ExtractionAnimation = "idle" | "shaking" | "opening";
 type PlayScope = "single" | "versus" | "practice";
-type MainView = "endless" | "versus" | "photon" | "rng";
-type VersusMode = "casual" | "ranked";
+type MainView = "endless" | "versus" | "photon" | "modes";
+type VersusMode = DuelMode;
 type PlayerProgression = {
   level: number;
   xp: number;
@@ -562,6 +565,11 @@ type VersusStatePayload = {
     second_death_bonus_points?: number;
     intermission_ends_at?: string | null;
     character_selection_ends_at?: string | null;
+    setup_phase?: string | null;
+    setup_deadline?: string | null;
+    own_map_ban?: string | null;
+    revealed_bans?: string[] | null;
+    rng_rarity?: string | null;
     winner_user_id?: string | null;
   };
   self?: {
@@ -578,6 +586,7 @@ type VersusStatePayload = {
     eliminated_at?: string | null;
     death_order?: number | null;
     second_death_bonus_awarded?: boolean;
+    character_confirmed?: boolean;
     final_score?: number | null;
     katana_broken?: boolean;
     katana_cooldown_until?: string | null;
@@ -678,17 +687,12 @@ const readFactoryConveyorFromWaveRules = (
     return null;
   return { lane, speedMultiplier };
 };
-type MapPriorityPayload = {
-  configured?: boolean;
-  map_votes?: string[];
-  map_order?: string[];
-  catalog?: Array<{ map_key?: string; display_name?: string }>;
-};
+
 const isMapId = (value: unknown): value is MapId =>
   typeof value === "string" && (MAP_IDS as readonly string[]).includes(value);
 const normalizeMapId = (value: unknown): MapId =>
   isMapId(value) ? value : "classic";
-const DEFAULT_MAP_VOTES: MapPriorityList = [];
+
 const TRACK_LANES = [0, 1, 2, 3, 4] as const;
 const getTrackLanes = (laneCount: number) =>
   Array.from({ length: Math.max(1, Math.round(laneCount)) }, (_, lane) => lane);
@@ -1778,10 +1782,10 @@ const normalizeOwnedLoadout = (
 };
 const BASE_ITEM_SPEED = 0.0452;
 const ATTACK_COIN_SPAWN_CHANCE = 0.27;
-const MELON_BASE_SCORE = 200;
+
 const GAME_MODE_RULES = {
   normal: { scoreMultiplier: 1, hazardLaneLimit: MAX_HAZARD_LANES },
-  hardcore: { scoreMultiplier: 1.75, hazardLaneLimit: 3 },
+  hardcore: { scoreMultiplier: HARDCORE_SCORE_MULTIPLIER, hazardLaneLimit: 3 },
 } as const satisfies Record<
   GameMode,
   { scoreMultiplier: number; hazardLaneLimit: number }
@@ -1830,72 +1834,6 @@ const INVENTORY_CLASSES: ReadonlyArray<{
     description: "Abilities that do not fit the other four roles.",
   },
 ];
-const EXTRACTION_UNIT_COST = 3;
-const EXTRACTION_MAX_QUANTITY = 100;
-const DIRECT_UNLOCK_COSTS: Readonly<Record<Rarity, number>> = {
-  common: 5,
-  uncommon: 10,
-  rare: 15,
-  epic: 25,
-  legendary: 175,
-  mythic: 2000,
-};
-const DUPLICATE_REFUNDS: Readonly<Record<Rarity, number>> = {
-  common: 1,
-  uncommon: 1,
-  rare: 1,
-  epic: 2,
-  legendary: 2,
-  mythic: 2,
-};
-const EXTRACTION_BOXES = {
-  regular: {
-    name: "NORMAL BOX",
-    cost: EXTRACTION_UNIT_COST,
-    pullCount: 1,
-    icon: "◇",
-    mix: "5% CHARACTER + WEAPON · 95% COSMETIC",
-    oddsLabel: "NORMAL PULL ODDS",
-    note: "DUPLICATES REFUND ⅓ OR ½ OF A PULL · WHOLE-GEM REFUNDS ROUND UP · EVERY 10TH ITEM USES THE 10× BONUS ODDS",
-    odds: [
-      ["common", "45.75%"],
-      ["uncommon", "30.2%"],
-      ["rare", "15.4%"],
-      ["epic", "8%"],
-      ["legendary", "1%"],
-      ["mythic", "0.01%"],
-    ],
-  },
-  ten: {
-    name: "10 NORMAL BOXES",
-    cost: EXTRACTION_UNIT_COST * 10,
-    pullCount: 10,
-    icon: "◇×10",
-    mix: "9 NORMAL PULLS · 1 LEGENDARY-ODDS PULL",
-    oddsLabel: "10TH: 20% CHARACTER + WEAPON · 80% COSMETIC",
-    note: "DUPLICATES REFUND ⅓ OR ½ OF A PULL · WHOLE-GEM REFUNDS ROUND UP · THE 10TH PULL IS NOT GUARANTEED NEW",
-    odds: [
-      ["common", "3%"],
-      ["uncommon", "12%"],
-      ["rare", "40.3%"],
-      ["epic", "41.5%"],
-      ["legendary", "3%"],
-      ["mythic", "0.2%"],
-    ],
-  },
-} as const satisfies Record<
-  ExtractionOption,
-  {
-    name: string;
-    cost: number;
-    pullCount: 1 | 10;
-    icon: string;
-    mix: string;
-    oddsLabel: string;
-    note: string;
-    odds: readonly (readonly [Rarity, string])[];
-  }
->;
 function MigrationMaintenanceScreen() {
   return (
     <main className="migration-maintenance" role="main">
@@ -1973,7 +1911,7 @@ function SkywayGame() {
     [extractBusy, setExtractBusy] = useState(false),
     [extractQuantities, setExtractQuantities] = useState<
       Record<ExtractionOption, number>
-    >({ regular: 1, ten: 1 }),
+    >({ normal: 1, rare: 1, legendary: 1 }),
     [extractingOption, setExtractingOption] = useState<ExtractionOption | null>(
       null,
     ),
@@ -2481,8 +2419,7 @@ function SkywayGame() {
     [isAdmin, setIsAdmin] = useState(false),
     [adminRole, setAdminRole] = useState<string | null>(null),
     [adminTestModeEnabled, setAdminTestModeEnabled] = useState(false),
-    [adminTestModeBusy, setAdminTestModeBusy] = useState(false),
-    [adminTestModeStatus, setAdminTestModeStatus] = useState(""),
+
     [adminTab, setAdminTab] = useState<
       "reports" | "admins" | "players" | "appeals"
     >("reports"),
@@ -2548,13 +2485,7 @@ function SkywayGame() {
     [playScope, setPlayScope] = useState<PlayScope>("single"),
     [versusMode, setVersusMode] = useState<VersusMode>("casual"),
     [versusMap, setVersusMap] = useState<MapId>("classic"),
-    [practiceMapChoice, setPracticeMapChoice] = useState<MapId | "random">(
-      "random",
-    ),
-    [mapPriority, setMapPriority] = useState<MapId[]>([...DEFAULT_MAP_VOTES]),
-    [mapPriorityConfigured, setMapPriorityConfigured] = useState(false),
-    [mapPriorityBusy, setMapPriorityBusy] = useState(false),
-    [mapPriorityStatus, setMapPriorityStatus] = useState(""),
+
     [versusPhase, setVersusPhase] = useState<VersusPhase>("idle"),
     [versusOpponent, setVersusOpponent] = useState("WAITING…"),
     [versusOpponentCharacter, setVersusOpponentCharacter] =
@@ -2587,10 +2518,33 @@ function SkywayGame() {
     number | null
   >(null);
   const [characterPickBusy, setCharacterPickBusy] = useState(false);
+  const [matchSetup, setMatchSetup] = useState<SetupView | null>(null);
+  const rngAssignedCharacterRef = useRef<string | null>(null);
+  const [rotatingMode, setRotatingMode] = useState<RotatingMode>(() => activeRotatingMode());
+  const [rotationAt, setRotationAt] = useState(() => nextRotationAt());
+  useEffect(() => {
+    if (mainView !== "modes") return;
+    let cancelled = false;
+    const owner = userIdRef.current;
+    const refresh = async () => {
+      if (!owner || guest) return;
+      const { data, error } = await supabase.rpc("get_rotating_mode");
+      if (cancelled || owner !== userIdRef.current || error) return;
+      if (data?.active_mode === "rng" || data?.active_mode === "hardcore_duel") {
+        setRotatingMode(data.active_mode);
+        if (!versusMatchRef.current && !versusSearchingRef.current) setVersusMode(data.active_mode);
+      }
+      const at = Date.parse(data?.next_rotation_at ?? "");
+      if (Number.isFinite(at)) setRotationAt(at);
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 30_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [mainView, guest]);
   const [weaponClock, setWeaponClock] = useState(0);
   useEffect(() => {
     if (
-      !characterSelectionEndsAt &&
+      !matchSetup && !characterSelectionEndsAt &&
       !(
         playScope !== "single" &&
         (versusMap === "pitch" || versusMap === "terminal")
@@ -2599,7 +2553,7 @@ function SkywayGame() {
       return;
     const timer = window.setInterval(() => setWeaponClock(Date.now()), 100);
     return () => window.clearInterval(timer);
-  }, [characterSelectionEndsAt, playScope, versusMap]);
+  }, [matchSetup, characterSelectionEndsAt, playScope, versusMap]);
   versusPointsRef.current = versusPoints;
   versusMapRef.current = versusMap;
   versusSelfEliminatedRef.current = versusSelfEliminated;
@@ -2806,71 +2760,7 @@ function SkywayGame() {
     },
     [],
   );
-  const loadMapPriority = useCallback(async () => {
-    const requestUserId = userIdRef.current;
-    if (!requestUserId) return;
-    setMapPriorityBusy(true);
-    setMapPriorityStatus("");
-    const { data, error } = await supabase.rpc("get_1v1_map_priorities");
-    if (userIdRef.current !== requestUserId) return;
-    setMapPriorityBusy(false);
-    if (error) {
-      setMapPriorityStatus("MAP VOTE DATABASE SETUP IS MISSING");
-      return;
-    }
-    const payload = (data ?? {}) as MapPriorityPayload;
-    const savedVotes = (payload.map_votes ?? payload.map_order ?? [])
-      .filter(isMapId)
-      .filter((mapId, index, votes) => votes.indexOf(mapId) === index);
-    const votes = savedVotes.slice(0, MAP_VOTE_COUNT);
-    setMapPriority(votes);
-    setMapPriorityConfigured(
-      payload.configured === true &&
-        savedVotes.length === MAP_VOTE_COUNT &&
-        votes.length === MAP_VOTE_COUNT,
-    );
-  }, []);
-  const saveMapPriority = useCallback(async () => {
-    if (!userIdRef.current || mapPriorityBusy) return;
-    if (
-      mapPriority.length !== MAP_VOTE_COUNT ||
-      new Set(mapPriority).size !== MAP_VOTE_COUNT
-    ) {
-      setMapPriorityStatus("CHOOSE EXACTLY 2 DIFFERENT MAPS");
-      return;
-    }
-    setMapPriorityBusy(true);
-    setMapPriorityStatus("SAVING MAP VOTES…");
-    const { data, error } = await supabase.rpc("set_1v1_map_priorities", {
-      p_map_order: mapPriority,
-    });
-    setMapPriorityBusy(false);
-    if (error) {
-      setMapPriorityStatus(error.message);
-      return;
-    }
-    const payload = (data ?? {}) as MapPriorityPayload;
-    const votes = (payload.map_votes ?? payload.map_order ?? mapPriority)
-      .filter(isMapId)
-      .filter((mapId, index, savedVotes) => savedVotes.indexOf(mapId) === index)
-      .slice(0, MAP_VOTE_COUNT);
-    if (votes.length === MAP_VOTE_COUNT) setMapPriority(votes);
-    setMapPriorityConfigured(true);
-    setMapPriorityStatus("2 MAP VOTES SAVED");
-  }, [mapPriority, mapPriorityBusy]);
-  const toggleMapVote = useCallback((mapId: MapId) => {
-    setMapPriority((current) => {
-      if (current.includes(mapId))
-        return current.filter((selectedMap) => selectedMap !== mapId);
-      if (current.length >= MAP_VOTE_COUNT) return current;
-      return [...current, mapId];
-    });
-    setMapPriorityConfigured(false);
-    setMapPriorityStatus("UNSAVED CHANGES");
-  }, []);
-  useEffect(() => {
-    if (mainView === "versus" && userEmail && !guest) void loadMapPriority();
-  }, [guest, loadMapPriority, mainView, userEmail]);
+
   const enqueueVersusStateSync = useCallback((task: () => Promise<void>) => {
     const queued = versusStateSyncQueueRef.current.then(task, task);
     versusStateSyncQueueRef.current = queued.catch(() => undefined);
@@ -2953,14 +2843,32 @@ function SkywayGame() {
   const isOnlineVersus = playScope === "versus";
   const isBotPractice = playScope === "practice";
   const isVersusRun = playScope !== "single";
-  const mode: GameMode = mainView === "versus" ? "normal" : endlessMode;
-  const modeRules = GAME_MODE_RULES[mode];
+  const hardcoreDuel = isVersusRun && versusMode === "hardcore_duel";
+  const mode: GameMode = isVersusRun ? hardcoreDuel ? "hardcore" : "normal" : mainView === "endless" ? endlessMode : "normal";
+  // Hardcore Duel doubles the final score on the server, after the finisher bonus.
+  const modeRules = GAME_MODE_RULES[isVersusRun ? "normal" : mode];
   const activeMapId: MapId = isVersusRun ? versusMap : "classic";
   const activeMapRules = getMapRules(activeMapId);
   const activeLaneCount = activeMapRules.laneCount;
   const activeCenterLane = Math.floor(activeLaneCount / 2);
-  const healingEnabled = activeMapRules.health.healingMultiplier > 0;
+  const healingEnabled = !hardcoreDuel && activeMapRules.health.healingMultiplier > 0;
   const activeMapGuide = MAP_GUIDES[activeMapId];
+  const soundedCurrentsRef = useRef(new Set<number>());
+  useEffect(() => {
+    if (!running || paused || wavePause || activeMapId !== "skyway") return;
+    void audioEngine.playSfx("highwayTraffic");
+    const timer = window.setInterval(() => void audioEngine.playSfx("highwayTraffic"), 4_000);
+    return () => window.clearInterval(timer);
+  }, [running, paused, wavePause, activeMapId]);
+  useEffect(() => {
+    if (!running || paused) return;
+    const live = new Set(items.map(item => item.id));
+    for (const id of soundedCurrentsRef.current) if (!live.has(id)) soundedCurrentsRef.current.delete(id);
+    for (const item of items) if (item.kind === "current" && item.y >= 0 && !soundedCurrentsRef.current.has(item.id)) {
+      soundedCurrentsRef.current.add(item.id);
+      void audioEngine.playSfx("currentWind");
+    }
+  }, [items, running, paused]);
   useEffect(() => {
     if (!running || paused || wavePause || versusPhase !== "playing") return;
     const group = deferredAttackGroups[0];
@@ -3067,11 +2975,11 @@ function SkywayGame() {
   };
   const canUseCharacter = useCallback(
     (characterKey?: string | null) =>
-      isCharacterAvailable(isCharacterOwned(unlocks, characterKey), {
+      (isOnlineVersus && versusMode === "rng" && characterKey === rngAssignedCharacterRef.current) || isCharacterAvailable(isCharacterOwned(unlocks, characterKey), {
         isAdmin,
         testModeEnabled: effectiveCharacterTestMode,
       }),
-    [effectiveCharacterTestMode, isAdmin, unlocks],
+    [effectiveCharacterTestMode, isAdmin, unlocks, isOnlineVersus, versusMode],
   );
   const selectedCharacterAvailable = canUseCharacter(selectedCharacter);
   const availableCharacter = selectedCharacterAvailable
@@ -5015,6 +4923,8 @@ function SkywayGame() {
           return;
         }
         applyTerminalSnapshot(data as VersusStatePayload);
+        void audioEngine.playSfx(data?.sword_hit ? "swordHit" : "swordMiss");
+        if (terminalSwordRef.current.durability <= 0) void audioEngine.playSfx("swordBreak");
         showAbilityNotice(
           data?.sword_hit
             ? "SWORD HIT · RIVAL −1 HP"
@@ -5038,7 +4948,6 @@ function SkywayGame() {
           setVersusOpponentHearts((hp) => Math.max(0, hp - swing.rivalDamage));
         setTerminalSwordVersion((value) => value + 1);
       }
-      void audioEngine.playSfx("hit");
     } catch {
       showAbilityNotice("SWORD COULD NOT SYNC · TRY AGAIN", 1200);
     } finally {
@@ -7217,11 +7126,7 @@ function SkywayGame() {
     freshMatch = false,
   ) => {
     const hydrationIntent = ++versusHydrationIntentRef.current;
-    const [stateResult, testModeResult] = await Promise.all([
-      supabase.rpc("get_1v1_state", { p_match_id: matchId }),
-      supabase.rpc("get_1v1_test_mode", { p_match_id: matchId }),
-    ]);
-    const { data, error } = stateResult;
+    const { data, error } = await supabase.rpc("get_1v1_state", { p_match_id: matchId });
     if (versusMatchRef.current !== matchId) return false;
     if (versusHydrationIntentRef.current !== hydrationIntent) return true;
     if (error || !data) {
@@ -7230,12 +7135,12 @@ function SkywayGame() {
     }
     versusRunHydratedRef.current = true;
     const snapshot = data as VersusStatePayload;
-    const restoredRunTestMode =
-      typeof snapshot.self?.test_mode === "boolean"
-        ? snapshot.self.test_mode
-        : testModeResult.error
-          ? runIsTestModeRef.current
-          : Boolean(testModeResult.data);
+    // Retired Test Mode cannot start new runs; old in-flight test runs stay unranked.
+    const restoredRunTestMode = snapshot.self?.test_mode === true;
+    const restoredMode = snapshot.match?.mode ?? "casual";
+    rngAssignedCharacterRef.current = restoredMode === "rng" ? snapshot.self?.character_key ?? null : null;
+    setVersusMode(restoredMode);
+    setMainView(restoredMode === "rng" || restoredMode === "hardcore_duel" ? "modes" : "versus");
     runIsTestModeRef.current = restoredRunTestMode;
     setRunIsTestMode(restoredRunTestMode);
     const restoredMap = normalizeMapId(snapshot.match?.map_key);
@@ -7249,7 +7154,7 @@ function SkywayGame() {
     );
     const restoredCandidate =
       isCharacterAvailable(
-        isCharacterOwned(unlocks, validatedCharacter.characterKey),
+        restoredMode === "rng" || isCharacterOwned(unlocks, validatedCharacter.characterKey),
         {
           isAdmin,
           testModeEnabled: restoredRunTestMode,
@@ -7320,9 +7225,7 @@ function SkywayGame() {
           )
         : null;
     const matchStatus = snapshot.match?.status ?? "playing";
-    if (matchStatus !== "countdown") setCharacterSelectionEndsAt(null);
-    if (snapshot.match?.mode === "casual" || snapshot.match?.mode === "ranked")
-      setVersusMode(snapshot.match.mode);
+    if (matchStatus !== "countdown") { setCharacterSelectionEndsAt(null); setMatchSetup(null); }
     const selfEliminated = snapshot.self?.status === "eliminated";
     const matchFinished = matchStatus === "finished";
     const matchCancelled = matchStatus === "cancelled";
@@ -7554,7 +7457,17 @@ function SkywayGame() {
       setCharacterSelectionEndsAt(Number.isFinite(deadline) ? deadline : null);
       setVersusPhase("ready");
       setPaused(true);
-      setVersusResult("CHOOSE YOUR CHARACTER");
+      const setupPhase = snapshot.match?.setup_phase;
+      setMatchSetup({
+        phase: setupPhase === "ban" || setupPhase === "announce" ? setupPhase : "character",
+        deadline: parseServerTime(snapshot.match?.setup_deadline ?? snapshot.match?.character_selection_ends_at, Date.now() + 15_000),
+        candidates: snapshot.match?.map_candidates ?? [],
+        ownBan: snapshot.match?.own_map_ban ?? null,
+        revealedBans: snapshot.match?.revealed_bans ?? [],
+        rarity: snapshot.match?.rng_rarity ?? null,
+        confirmed: snapshot.self?.character_confirmed === true,
+      });
+      setVersusResult("");
     } else if (snapshot.self?.status === "intermission") {
       setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
       setVersusPhase("intermission");
@@ -7747,34 +7660,32 @@ function SkywayGame() {
       versusPollTimerRef.current = null;
     }
   };
+  const submitMatchChoice = async (kind: "ban" | "character", key: string) => {
+    const matchId = versusMatchRef.current;
+    if (!matchId || characterPickBusy) return;
+    setCharacterPickBusy(true);
+    try {
+      const { error } = await supabase.rpc(kind === "ban" ? "ban_1v1_map" : "choose_1v1_character",
+        kind === "ban" ? { p_match_id: matchId, p_map_key: key } : { p_match_id: matchId, p_character_key: key });
+      if (versusMatchRef.current !== matchId) return;
+      if (error) setVersusResult(error.message);
+      else await hydrateVersusState(matchId, kind === "ban");
+    } catch { setVersusResult("COULD NOT SAVE YOUR CHOICE · TRY AGAIN"); }
+    finally { setCharacterPickBusy(false); }
+  };
   const findVersusMatch = async (preserveResult = false) => {
     if (guest) {
       setVersusResult("SIGN IN TO PLAY 1V1");
       return;
     }
-    const effectiveVersusMode = getEffectiveOneVOneMode(
-      versusMode,
-      adminTestModeContext,
-    );
-    if (effectiveVersusMode !== versusMode) {
-      setVersusMode(effectiveVersusMode);
-      setVersusResult("TEST MODE USES CASUAL 1V1 · NO ELO OR REWARDS");
-    }
-    if (
-      effectiveVersusMode === "ranked" &&
-      !playerProgression.ranked_unlocked
-    ) {
+    const effectiveVersusMode = versusMode;
+    if (effectiveVersusMode === "ranked" && !playerProgression.ranked_unlocked) {
       setVersusResult("RANKED REQUIRES LEVEL 25 AND A ONE-TIME 100-GEM UNLOCK");
       return;
     }
-    if (
-      effectiveVersusMode === "ranked" &&
-      getCharacterDefinition(equippedCharacter).rarity === "mythic"
-    ) {
-      setVersusResult(
-        "MYTHIC CHARACTERS ARE DISABLED IN RANKED · CHOOSE ANOTHER CHARACTER",
-      );
-      return;
+    if ((effectiveVersusMode === "rng" || effectiveVersusMode === "hardcore_duel") &&
+        (playerProgression.level < 5 || effectiveVersusMode !== rotatingMode)) {
+      setVersusResult("REACH LEVEL 5 AND CHOOSE TODAY’S ACTIVE MODE"); return;
     }
     if (versusSearchingRef.current || versusLeaving || versusMatchRef.current)
       return;
@@ -7805,8 +7716,7 @@ function SkywayGame() {
         return;
       }
       if (data?.match_id) {
-        if (data.mode === "casual" || data.mode === "ranked")
-          setVersusMode(data.mode);
+        if (["casual", "ranked", "rng", "hardcore_duel"].includes(data.mode)) setVersusMode(data.mode);
         versusSearchingRef.current = false;
         if (versusPollTimerRef.current) {
           clearTimeout(versusPollTimerRef.current);
@@ -7829,93 +7739,10 @@ function SkywayGame() {
     versusMatchRef.current = null;
     await poll();
   };
-  const startBotPractice = () => {
-    const storedOnlineMatch = readActiveVersusSession();
-    if (
-      versusMatchRef.current ||
-      versusSearchingRef.current ||
-      shouldBlockNonVersusStart({
-        storedSession: storedOnlineMatch,
-        reconnecting: versusReconnectPendingRef.current,
-      })
-    ) {
-      setMainView("versus");
-      setVersusResult(
-        versusMatchRef.current || versusSearchingRef.current
-          ? "LEAVE THE CURRENT 1V1 BEFORE STARTING PRACTICE"
-          : "RESTORING YOUR ACTIVE 1V1 · TRY AGAIN AFTER IT LOADS",
-      );
-      return;
-    }
-    versusReconnectIntentRef.current += 1;
-    versusReconnectPendingRef.current = false;
-    cancelPendingProgressionStart();
-    invalidateVersusSearch();
-    closeVersusChannel();
-    versusMatchRef.current = null;
-    forgetActiveVersusSession();
-    versusFinishedRef.current = false;
-    incomingAttacksRef.current = [];
-    spawnedAttackIdsRef.current.clear();
-    queuedAttackTokenIdsRef.current.clear();
-    deferredAttackGroupsRef.current = [];
-    setDeferredAttackGroups([]);
-    botAttackPointsRef.current = 0;
-    playerAttacksAgainstBotRef.current = [];
-    progressionRunIdRef.current = null;
-    progressionAwardedRunIdRef.current = null;
-    const practiceMap =
-      practiceMapChoice === "random"
-        ? selectOneVersusOneMap({
-            playerOneVotes: mapPriorityConfigured ? mapPriority : null,
-            playerTwoVotes: null,
-          })
-        : practiceMapChoice;
-    versusMapRef.current = practiceMap;
-    setVersusMap(practiceMap);
-    const practiceBotHealth = applyMapHealthModifiers(
-      practiceMap,
-      BOT_MAX_HEARTS,
-      BOT_MAX_HEARTS,
-    );
-    practiceBotMaxHeartsRef.current = practiceBotHealth.maxHp;
-    practiceBotNextWaveHeartsRef.current = null;
-    botScoreRef.current = 0;
-    botScoreCarryRef.current = 0;
-    setMainView("versus");
-    setPlayScope("practice");
-    setVersusGuideOpen(true);
-    setVersusPhase("ready");
-    setVersusOpponent("TRAINING BOT");
-    // Practice Mimic copies the bot's default Runner instead of becoming inert.
-    setVersusOpponentCharacter("runner_ace");
-    setVersusOpponentLane(Math.floor(getMapRules(practiceMap).laneCount / 2));
-    setVersusOpponentHearts(practiceBotHealth.startingHp);
-    setVersusOpponentScore(0);
-    setVersusPoints(0);
-    versusPointsRef.current = 0;
-    setVersusCountdown(VERSUS_INTERMISSION_SECONDS);
-    setVersusResult("");
-    setVersusIntermissionReady(false);
-    reset(false, practiceMap);
-    setRunning(false);
-    setPaused(true);
-    setCharacterSelectionEndsAt(Date.now() + 10_000);
-  };
-  useEffect(() => {
-    if (playScope !== "practice" || characterSelectionEndsAt === null) return;
-    const timer = window.setTimeout(
-      () => {
-        setCharacterSelectionEndsAt(null);
-        setVersusPhase("playing");
-        setPaused(false);
-        reset(false, versusMap);
-      },
-      Math.max(0, characterSelectionEndsAt - Date.now()),
-    );
-    return () => window.clearTimeout(timer);
-  }, [characterSelectionEndsAt, playScope, reset, versusMap]);
+
   const clearVersusLocalSession = () => {
+    setMatchSetup(null);
+    rngAssignedCharacterRef.current = null;
     setCharacterSelectionEndsAt(null);
     versusReconnectIntentRef.current += 1;
     versusReconnectPendingRef.current = false;
@@ -8011,15 +7838,15 @@ function SkywayGame() {
     if (nextView === mainView && !versusLeaving) return;
     setPauseMenuOpen(false);
     setCharacterSelectionEndsAt(null);
-    if (nextView === "versus") {
+    if ((nextView === "versus" || nextView === "modes") && !isVersusRun && !versusSearchingRef.current) {
       cancelPendingProgressionStart();
       progressionStartIntentRef.current += 1;
       progressionRunIdRef.current = null;
       progressionAwardedRunIdRef.current = null;
       if (running && playScope === "single") resetGameToMenu();
       setPaused(false);
-      setMainView("versus");
-      if (versusMode === "ranked") void loadVersusLeaderboard();
+      setMainView(nextView);
+      setVersusMode(nextView === "modes" ? rotatingMode : "casual");
       return;
     }
     const left = await leaveVersusSession();
@@ -8038,7 +7865,7 @@ function SkywayGame() {
       void leaveVersusSession().then((left) => {
         if (!left) return;
         resetGameToMenu();
-        setMainView("versus");
+        setMainView(versusMode === "rng" || versusMode === "hardcore_duel" ? "modes" : "versus");
         if (versusMode === "ranked") void loadVersusLeaderboard();
       });
     } else {
@@ -8183,7 +8010,7 @@ function SkywayGame() {
   };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (mainView === "photon" || mainView === "rng") return;
+      if (mainView === "photon" || matchSetup) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, [contenteditable="true"]'))
         return;
@@ -8288,6 +8115,7 @@ function SkywayGame() {
     adminOpen,
     activeCharacter,
     activeMapId,
+    matchSetup,
     cancelEchoKnowingHold,
     consumeCometHeatfeast,
     inventoryOpen,
@@ -8498,7 +8326,7 @@ function SkywayGame() {
       )
         characterSpeedMultiplier *= 1.5;
       const obstacleSpeedMultiplier =
-        currentSpeedMultiplier * characterSpeedMultiplier;
+        currentSpeedMultiplier * characterSpeedMultiplier * (hardcoreDuel ? 1.1 : 1);
       if (activeMapId === "volcano") {
         const previousStationaryMs = volcanoStationaryMsRef.current;
         const nextStationaryMs = previousStationaryMs + dt;
@@ -9026,6 +8854,7 @@ function SkywayGame() {
               blockedDirection: Math.sign(state.current.lane - n.lane),
               until: Date.now() + 500,
             };
+            void audioEngine.playSfx("vortex");
             showAbilityNotice("VORTEX · GRAVITATED", 500);
           }
           const abilityGraze =
@@ -9075,6 +8904,7 @@ function SkywayGame() {
               activeMapId === "terminal" &&
               (n.kind === "rock" || n.kind === "spikes")
             ) {
+              if (terminalSwordRef.current.durability === 1) void audioEngine.playSfx("swordBreak");
               terminalSwordRef.current = {
                 ...terminalSwordRef.current,
                 durability: Math.max(
@@ -9218,6 +9048,7 @@ function SkywayGame() {
                 Date.now(),
               );
               if (katanaCollision.kind !== "inactive") {
+                void audioEngine.playSfx("katanaBlock");
                 pitchKatanaRef.current = katanaCollision.state;
                 setPitchKatanaVersion((value) => value + 1);
                 const reflectionId = `katana:${versusPickupNonceRef.current}:${n.attackToken ?? n.id}`;
@@ -9510,7 +9341,7 @@ function SkywayGame() {
               const melonScore = Math.max(
                 0,
                 Math.floor(
-                  MELON_BASE_SCORE *
+                  melonBaseScore(wave) *
                     currentCoinMultiplierRef.current *
                     (hasCharacterAbility("runner_ranger") ? 2 : 1),
                 ),
@@ -9587,6 +9418,7 @@ function SkywayGame() {
               showAbilityNotice("CURRENT · FORCED LANE PUSH", 850);
               return [];
             } else if (n.kind === "snowflake") {
+              if (hardcoreDuel) { applyDirectMapDamage(1, "SNOWFLAKE HIT"); return []; }
               if (activeCharacter === "trickster_phantom") {
                 if (wave % 5 === 0) {
                   state.current.hearts = Math.min(
@@ -10495,6 +10327,7 @@ function SkywayGame() {
     isVersusRun,
     modeMultiplier,
     modeRules.hazardLaneLimit,
+    hardcoreDuel,
     classScoreMultiplier,
     hasCharacterAbility,
     getActiveGambitEffects,
@@ -11552,7 +11385,6 @@ function SkywayGame() {
           { data: profile },
           { data: admin },
           { data: role },
-          { data: testMode },
           { data: owned },
           { data: loadout },
           { data: progression },
@@ -11569,7 +11401,6 @@ function SkywayGame() {
             .maybeSingle(),
           supabase.rpc("is_admin"),
           supabase.rpc("get_admin_role"),
-          supabase.rpc("get_admin_test_mode"),
           supabase
             .from("player_unlocks")
             .select("item_key,item_type,rarity")
@@ -11607,16 +11438,9 @@ function SkywayGame() {
         } else setUsernameRequired(true);
         setIsAdmin(Boolean(admin));
         setAdminRole(role);
-        const restoredTestMode = Boolean(
-          admin &&
-          testMode &&
-          typeof testMode === "object" &&
-          "enabled" in testMode &&
-          testMode.enabled === true,
-        );
+        const restoredTestMode = false;
         setAdminTestModeEnabled(restoredTestMode);
-        if (restoredTestMode) setVersusMode("casual");
-        setAdminTestModeStatus("");
+
         const ownedItems = (owned ?? []) as Unlock[];
         const safeLoadout = normalizeOwnedLoadout(
           ownedItems,
@@ -11639,7 +11463,6 @@ function SkywayGame() {
         setIsAdmin(false);
         setAdminRole(null);
         setAdminTestModeEnabled(false);
-        setAdminTestModeStatus("");
         runIsTestModeRef.current = false;
         setRunIsTestMode(false);
         setUnlocks([]);
@@ -12363,6 +12186,7 @@ function SkywayGame() {
     const lockedCatalog = availableCatalog.filter(
       (item) =>
         item.extractable !== false &&
+        directUnlockCost(item.rarity, item.item_type) !== null &&
         !ownedItems.some(
           (ownedItem) =>
             ownedItem.item_key === item.item_key &&
@@ -12387,49 +12211,20 @@ function SkywayGame() {
     setObstacleCosmetic(safeLoadout.obstacleCosmetic);
     setEnvironmentCosmetic(safeLoadout.environmentCosmetic);
   };
-  const updateAdminTestMode = async (enabled: boolean) => {
-    if (!isAdmin || guest || adminTestModeBusy) return;
-    setAdminTestModeBusy(true);
-    setAdminTestModeStatus("SAVING TEST MODE…");
-    const { data, error } = await supabase.rpc("set_admin_test_mode", {
-      p_enabled: enabled,
-    });
-    setAdminTestModeBusy(false);
-    if (error) {
-      setAdminTestModeStatus(error.message);
-      return;
-    }
-    const savedEnabled = Boolean(data?.enabled);
-    setAdminTestModeEnabled(savedEnabled);
-    if (savedEnabled) setVersusMode("casual");
-    if (
-      !savedEnabled &&
-      !runIsTestModeRef.current &&
-      !isCharacterOwned(unlocks, selectedCharacter)
-    ) {
-      setSelectedCharacter("runner_ace");
-      setInventoryCharacter({
-        classKey: "runner",
-        characterKey: "runner_ace",
-      });
-    }
-    setAdminTestModeStatus(
-      running
-        ? `TEST MODE ${savedEnabled ? "ON" : "OFF"} · APPLIES TO YOUR NEXT RUN`
-        : `TEST MODE ${savedEnabled ? "ON · ALL CHARACTERS AVAILABLE" : "OFF"}`,
-    );
-  };
+
   const extract = async (option: ExtractionOption) => {
     if (extractBusyRef.current) return;
-    if (guest) {
+    const shopUserId = userIdRef.current;
+    if (guest || !shopUserId) {
       setShopStatus("Sign in to extract permanent items.");
       return;
     }
     const box = EXTRACTION_BOXES[option];
-    const maxQuantity = Math.min(
-      EXTRACTION_MAX_QUANTITY,
-      Math.floor(gemsRef.current / box.cost),
-    );
+    if (!canOpenBox(option, playerProgression.level)) {
+      setShopStatus(`${box.name} requires level ${box.minLevel}.`);
+      return;
+    }
+    const maxQuantity = affordableBoxQuantity(option, gemsRef.current);
     const quantity = Math.floor(extractQuantities[option]);
     if (!Number.isFinite(quantity) || quantity < 1 || quantity > maxQuantity) {
       setShopStatus(
@@ -12448,15 +12243,15 @@ function SkywayGame() {
     setExtractingOption(option);
     setExtractAnimation("shaking");
     setExtractResults([]);
-    const totalBoxes = quantity * box.pullCount;
     setShopStatus(
-      `Opening ${totalBoxes} normal box${totalBoxes === 1 ? "" : "es"}…`,
+      `Opening ${quantity} ${box.name}${quantity === 1 ? "" : "ES"} · ${quantity * box.pullCount} pulls…`,
     );
     try {
       const { data, error } = await supabase.rpc("extract_items", {
         pull_count: quantity,
         box_type: option,
       });
+      if (userIdRef.current !== shopUserId) return;
       if (error) {
         setShopStatus(error.message);
         return;
@@ -12474,6 +12269,7 @@ function SkywayGame() {
         await new Promise<void>((resolve) => window.setTimeout(resolve, 550));
       }
       const results = (data?.results ?? []) as ExtractionResult[];
+      if (userIdRef.current !== shopUserId) return;
       setExtractAnimation("idle");
       setExtractingOption(null);
       setExtractResults(results);
@@ -12481,53 +12277,14 @@ function SkywayGame() {
       gemsRef.current = nextGems;
       setGems(nextGems);
       setExtractQuantities((current) => ({
-        regular: Math.max(
-          1,
-          Math.min(
-            current.regular,
-            Math.max(
-              1,
-              Math.min(
-                EXTRACTION_MAX_QUANTITY,
-                Math.floor(nextGems / EXTRACTION_BOXES.regular.cost),
-              ),
-            ),
-          ),
-        ),
-        ten: Math.max(
-          1,
-          Math.min(
-            current.ten,
-            Math.max(
-              1,
-              Math.min(
-                EXTRACTION_MAX_QUANTITY,
-                Math.floor(nextGems / EXTRACTION_BOXES.ten.cost),
-              ),
-            ),
-          ),
-        ),
+        normal: Math.max(1, Math.min(current.normal, affordableBoxQuantity("normal", nextGems))),
+        rare: Math.max(1, Math.min(current.rare, affordableBoxQuantity("rare", nextGems))),
+        legendary: Math.max(1, Math.min(current.legendary, affordableBoxQuantity("legendary", nextGems))),
       }));
       const newCount = results.filter((item) => item.is_new).length;
       const duplicateCount = results.length - newCount;
-      const duplicateRefund = Math.max(
-        0,
-        Number(
-          data?.refund ??
-            results.reduce(
-              (total, item) =>
-                total +
-                (item.is_new
-                  ? 0
-                  : Number.isFinite(Number(item.duplicate_refund))
-                    ? Number(item.duplicate_refund)
-                    : DUPLICATE_REFUNDS[item.rarity]),
-              0,
-            ),
-        ) || 0,
-      );
       setShopStatus(
-        `${results.length} ITEM${results.length === 1 ? "" : "S"} REVEALED — ${newCount} NEW · ${duplicateCount} DUPLICATE${duplicateCount === 1 ? "" : "S"} · ♦ ${duplicateRefund} REFUNDED`,
+        `${results.length} ITEM${results.length === 1 ? "" : "S"} REVEALED — ${newCount} NEW · ${duplicateCount} DUPLICATE${duplicateCount === 1 ? "" : "S"} · NO DUPLICATE REFUNDS`,
       );
       await loadCollection();
     } catch {
@@ -12636,7 +12393,8 @@ function SkywayGame() {
     );
   };
   const purchaseCatalogItem = async () => {
-    if (guest || !userIdRef.current) {
+    const shopUserId = userIdRef.current;
+    if (guest || !shopUserId) {
       setInventoryStatus("Sign in to unlock a permanent item.");
       return;
     }
@@ -12655,7 +12413,11 @@ function SkywayGame() {
       setInventoryStatus("Choose a locked item first.");
       return;
     }
-    const cost = DIRECT_UNLOCK_COSTS[item.rarity];
+    const cost = directUnlockCost(item.rarity, item.item_type);
+    if (cost === null) {
+      setInventoryStatus("Only Common, Uncommon, and Rare items can be directly unlocked.");
+      return;
+    }
     if (gemsRef.current < cost) {
       setInventoryStatus(`You need ♦ ${cost} to unlock this item.`);
       return;
@@ -12666,6 +12428,7 @@ function SkywayGame() {
       const { data, error } = await supabase.rpc("purchase_catalog_item", {
         p_item_key: item.item_key,
       });
+      if (userIdRef.current !== shopUserId) return;
       if (error) {
         setInventoryStatus(error.message);
         return;
@@ -12676,6 +12439,7 @@ function SkywayGame() {
         setGems(gemsRef.current);
       }
       await loadCollection();
+      if (userIdRef.current !== shopUserId) return;
       const chargedCost = Math.max(0, Number(data?.cost) || 0);
       setInventoryStatus(
         data?.already_owned
@@ -12683,6 +12447,7 @@ function SkywayGame() {
           : `${(item.display_name ?? item.item_key).toUpperCase()} UNLOCKED FOR ♦ ${chargedCost}.`,
       );
     } catch {
+      if (userIdRef.current !== shopUserId) return;
       setInventoryStatus(
         "The direct unlock could not be confirmed. Check your balance before trying again.",
       );
@@ -12733,6 +12498,7 @@ function SkywayGame() {
     .filter(
       (item) =>
         item.extractable !== false &&
+        directUnlockCost(item.rarity, item.item_type) !== null &&
         !unlocks.some(
           (ownedItem) =>
             ownedItem.item_key === item.item_key &&
@@ -12750,6 +12516,7 @@ function SkywayGame() {
     lockedCatalogItems.find((item) => item.item_key === directPurchaseKey) ??
     lockedCatalogItems[0] ??
     null;
+  const directPurchaseCost = directPurchaseItem ? directUnlockCost(directPurchaseItem.rarity, directPurchaseItem.item_type) : null;
   const directPurchaseCharacter =
     directPurchaseItem?.item_type === "character" &&
     Object.prototype.hasOwnProperty.call(
@@ -13782,16 +13549,7 @@ function SkywayGame() {
       <div
         className={`game-layout view-${mainView}${showPlayerLevel ? " has-player-level" : ""}`}
       >
-        {isAdmin && (adminTestModeActive || runIsTestMode) && (
-          <div className="test-mode-run-banner" role="status">
-            <b>ADMIN TEST MODE</b>
-            <span>
-              {runIsTestMode
-                ? "CURRENT RUN · UNRANKED · NO PERMANENT REWARDS"
-                : "ON · ALL CHARACTERS · NEXT RUN UNRANKED"}
-            </span>
-          </div>
-        )}
+
         {showPlayerLevel && (
           <div className="report-utility-bar">
             <div
@@ -13890,15 +13648,15 @@ function SkywayGame() {
             </span>
           </button>
           <button
-            className={mainView === "rng" ? "active" : ""}
-            aria-pressed={mainView === "rng"}
+            className={mainView === "modes" ? "active" : ""}
+            aria-pressed={mainView === "modes"}
             disabled={versusLeaving}
-            onClick={() => void switchMainView("rng")}
+            onClick={() => void switchMainView("modes")}
           >
             <span>⚄</span>
             <span>
-              <b>RNG</b>
-              <small>COMING SOON</small>
+              <b>GAME MODES</b>
+              <small>LEVEL 5 · DAILY ROTATION</small>
             </span>
           </button>
         </section>
@@ -14008,613 +13766,45 @@ function SkywayGame() {
               setGems(value);
             }}
           />
-        ) : mainView === "rng" ? (
-          <section className="photon-panel rng-panel" id="main-game-panel">
-            <h2>RNG</h2>
-            <p>Coming soon.</p>
-          </section>
+
         ) : (
           <section
             id="main-game-panel"
-            className={`game-card${mainView === "versus" && playScope === "single" ? " versus-hub-card" : ""}`}
+            className={`game-card${(mainView === "versus" || mainView === "modes") && playScope === "single" ? " versus-hub-card" : ""}`}
             aria-label={
-              mainView === "versus" && playScope === "single"
+              (mainView === "versus" || mainView === "modes") && playScope === "single"
                 ? "Skyway Sprint 1v1 hub"
                 : "Skyway Sprint runner game"
             }
             aria-labelledby={
-              mainView === "versus" && playScope === "single"
+              (mainView === "versus" || mainView === "modes") && playScope === "single"
                 ? "versus-hub-title"
                 : undefined
             }
           >
-            {characterSelectionEndsAt !== null && playScope !== "single" ? (
-              <section
-                className="match-character-picker"
-                aria-label="Choose a character for this match"
-              >
-                <header>
-                  <small>
-                    {MAP_GUIDES[versusMap].name ?? versusMap.toUpperCase()}
-                  </small>
-                  <h2>CHOOSE YOUR CHARACTER</h2>
-                  <strong>
-                    {Math.max(
-                      0,
-                      Math.ceil(
-                        (characterSelectionEndsAt -
-                          (weaponClock || Date.now())) /
-                          1000,
-                      ),
-                    )}
-                    s
-                  </strong>
-                </header>
-                <p>
-                  Choose an owned character that follows this map’s rules. Your
-                  selected character will be used when the timer ends.
-                </p>
-                <div className="match-character-grid">
-                  {CHARACTER_ROSTER.filter(
-                    (character) =>
-                      isCharacterAvailable(
-                        isCharacterOwned(unlocks, character.key),
-                        testCharacterAccessContext,
-                      ) &&
-                      isCharacterClassAllowed(
-                        versusMap,
-                        getCharacterClassKey(character.key),
-                      ) &&
-                      (!getMapRules(versusMap).forcedCharacterId ||
-                        getMapRules(versusMap).forcedCharacterId ===
-                          character.key) &&
-                      (versusMode !== "ranked" ||
-                        character.rarity !== "mythic"),
-                  ).map((character) => (
-                    <button
-                      key={character.key}
-                      className={
-                        selectedCharacter === character.key ? "selected" : ""
-                      }
-                      disabled={
-                        characterPickBusy ||
-                        (weaponClock || Date.now()) >= characterSelectionEndsAt
-                      }
-                      onClick={async () => {
-                        if (playScope === "practice") {
-                          setSelectedCharacter(character.key);
-                          setVersusResult(
-                            `${character.name.toUpperCase()} SELECTED`,
-                          );
-                          return;
-                        }
-                        const matchId = versusMatchRef.current;
-                        if (!matchId) return;
-                        setCharacterPickBusy(true);
-                        const { error } = await supabase.rpc(
-                          "choose_1v1_character",
-                          {
-                            p_match_id: matchId,
-                            p_character_key: character.key,
-                          },
-                        );
-                        if (error) setVersusResult(error.message);
-                        else await hydrateVersusState(matchId, false);
-                        setCharacterPickBusy(false);
-                      }}
-                    >
-                      <b>{character.name}</b>
-                      <small>
-                        {getCharacterClassKey(character.key).toUpperCase()} ·{" "}
-                        {character.rarity.toUpperCase()}
-                      </small>
-                      <span>
-                        {CHARACTER_ABILITIES[character.key].description}
-                      </span>
-                      {selectedCharacter === character.key && <em>SELECTED</em>}
-                    </button>
-                  ))}
-                </div>
-                <p role="status">{versusResult}</p>
-                <button
-                  onClick={() =>
-                    void leaveVersusSession().then((left) => {
-                      if (left) {
-                        setCharacterSelectionEndsAt(null);
-                        resetGameToMenu();
-                      }
-                    })
-                  }
-                >
-                  LEAVE MATCH
-                </button>
-              </section>
-            ) : mainView === "versus" && playScope === "single" ? (
-              <div className="versus-hub">
-                <header className="versus-hub-heading">
-                  <div>
-                    <p>MULTI-DEVICE REALTIME</p>
-                    <h2 id="versus-hub-title">
-                      {versusMode === "ranked" ? "RANKED 1V1" : "CASUAL 1V1"}
-                    </h2>
-                  </div>
-                  <strong>
-                    {versusMode === "ranked"
-                      ? "ELO ON THE LINE"
-                      : "NO ELO · JUST PLAY"}
-                  </strong>
-                  <button
-                    type="button"
-                    className="versus-update-log"
-                    onClick={() => setUpdateLogOpen(true)}
-                  >
-                    ▤ UPDATE LOG
-                  </button>
-                </header>
-                <div className="versus-hub-scroll">
-                  <section
-                    className="versus-hub-panel versus-matchmaking"
-                    aria-labelledby="versus-matchmaking-title"
-                    aria-busy={versusPhase === "searching" || versusLeaving}
-                  >
-                    <header>
-                      <span>01</span>
-                      <div>
-                        <small>READY UP</small>
-                        <h3 id="versus-matchmaking-title">MATCHMAKING</h3>
-                      </div>
-                    </header>
-                    <div
-                      className="versus-mode-picker"
-                      aria-label="1v1 queue type"
-                    >
-                      <button
-                        className={versusMode === "casual" ? "selected" : ""}
-                        aria-pressed={versusMode === "casual"}
-                        disabled={versusPhase === "searching" || versusLeaving}
-                        onClick={() => {
-                          setVersusMode("casual");
-                          setVersusResult("");
-                        }}
-                      >
-                        <b>CASUAL</b>
-                        <small>NO ELO · OPEN TO EVERY LEVEL</small>
-                      </button>
-                      <button
-                        className={versusMode === "ranked" ? "selected" : ""}
-                        aria-pressed={versusMode === "ranked"}
-                        disabled={
-                          versusPhase === "searching" ||
-                          versusLeaving ||
-                          !isRankedAvailable(
-                            playerProgression.ranked_unlocked,
-                            adminTestModeContext,
-                          ) ||
-                          getCharacterDefinition(equippedCharacter).rarity ===
-                            "mythic"
-                        }
-                        onClick={() => {
-                          if (adminTestModeActive) {
-                            setVersusMode("casual");
-                            setVersusResult(
-                              "TEST MODE USES CASUAL 1V1 · NO ELO OR REWARDS",
-                            );
-                            return;
-                          }
-                          setVersusMode("ranked");
-                          setVersusResult("");
-                          void loadVersusLeaderboard();
-                        }}
-                      >
-                        <b>RANKED</b>
-                        <small>
-                          {adminTestModeActive
-                            ? "TEST MODE ON · CASUAL ONLY"
-                            : playerProgression.ranked_unlocked
-                              ? getCharacterDefinition(equippedCharacter)
-                                  .rarity === "mythic"
-                                ? "MYTHIC EQUIPPED · CHOOSE A NON-MYTHIC"
-                                : "ELO ENABLED · COMPETITIVE"
-                              : playerProgression.ranked_purchased
-                                ? "REACH LEVEL 25"
-                                : "LEVEL 25 + 100 GEMS"}
-                        </small>
-                      </button>
-                    </div>
-                    {versusPhase !== "searching" &&
-                      !guest &&
-                      !playerProgression.ranked_purchased && (
-                        <div className="ranked-unlock-panel">
-                          <p>
-                            Ranked unlocks separately from Photon Fury at level
-                            25 for 100 Gems.
-                          </p>
-                          <button
-                            type="button"
-                            disabled={
-                              rankedUnlockBusy ||
-                              adminTestModeActive ||
-                              versusLeaving ||
-                              playerProgression.level <
-                                MODE_UNLOCKS.ranked.level ||
-                              gems < MODE_UNLOCKS.ranked.gems
-                            }
-                            onClick={() => void unlockRanked()}
-                          >
-                            {rankedUnlockBusy
-                              ? "UNLOCKING…"
-                              : "UNLOCK RANKED · 100 GEMS"}
-                          </button>
-                        </div>
-                      )}
-                    {versusPhase === "searching" ? (
-                      <div
-                        className="versus-searching"
-                        role="status"
-                        aria-live="polite"
-                      >
-                        <div className="matchmaking-spinner" aria-hidden="true">
-                          ⚔
-                        </div>
-                        <b>FINDING AN OPPONENT…</b>
-                        <small>
-                          Keep this screen open while we pair your account.
-                        </small>
-                        <button
-                          className="versus-cancel"
-                          disabled={versusLeaving}
-                          onClick={() => void cancelVersus()}
-                        >
-                          {versusLeaving ? "LEAVING QUEUE…" : "CANCEL SEARCH"}
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="versus-ready">
-                        <div className="rival-card" aria-label="Match preview">
-                          <span>
-                            {guest ? "GUEST" : username || "YOU"}
-                            <b>READY</b>
-                          </span>
-                          <strong>VS</strong>
-                          <span>
-                            RIVAL
-                            <b>SEARCHING</b>
-                          </span>
-                        </div>
-                        <button
-                          className="versus-primary"
-                          onClick={() => void findVersusMatch()}
-                          disabled={guest || versusLeaving}
-                          aria-describedby={
-                            guest ? "versus-signin-note" : undefined
-                          }
-                        >
-                          {versusLeaving
-                            ? "FINISHING PREVIOUS MATCH…"
-                            : `FIND ${versusMode.toUpperCase()} OPPONENT`}
-                        </button>
-                        {guest && (
-                          <small
-                            id="versus-signin-note"
-                            className="versus-signin-note"
-                          >
-                            Sign in to enter account-based 1v1 matchmaking.
-                          </small>
-                        )}
-                        <div
-                          className="versus-practice-divider"
-                          aria-hidden="true"
-                        >
-                          <span>OR</span>
-                        </div>
-                        <label className="practice-map-picker">
-                          <span>PRACTICE MAP</span>
-                          <select
-                            value={practiceMapChoice}
-                            disabled={versusLeaving}
-                            onChange={(event) =>
-                              setPracticeMapChoice(
-                                event.target.value as MapId | "random",
-                              )
-                            }
-                          >
-                            <option value="random">RANDOM ARENA</option>
-                            {MAP_IDS.map((mapId) => (
-                              <option key={mapId} value={mapId}>
-                                {MAP_RULES[mapId].name.toUpperCase()}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <div className="practice-map-guide">
-                          {practiceMapChoice === "random" ? (
-                            <>
-                              <b>RANDOM ARENA</b>
-                              <p>
-                                Uses your two saved map votes when possible,
-                                then picks an Arena at random.
-                              </p>
-                            </>
-                          ) : (
-                            <>
-                              <b>{MAP_GUIDES[practiceMapChoice].name}</b>
-                              <p>{MAP_GUIDES[practiceMapChoice].description}</p>
-                              <ul>
-                                {MAP_GUIDES[practiceMapChoice].rules.map(
-                                  (rule) => (
-                                    <li key={rule}>{rule}</li>
-                                  ),
-                                )}
-                              </ul>
-                            </>
-                          )}
-                        </div>
-                        <button
-                          className="versus-practice"
-                          onClick={startBotPractice}
-                          disabled={versusLeaving}
-                        >
-                          <b>PRACTICE VS BOT</b>
-                          <small>
-                            LOCAL · UNRANKED · NO REWARDS · GUESTS OK
-                          </small>
-                        </button>
-                      </div>
-                    )}
-                    {versusResult && (
-                      <div
-                        className="versus-message"
-                        role="status"
-                        aria-live="polite"
-                      >
-                        {versusResult}
-                      </div>
-                    )}
-                  </section>
-
-                  <section
-                    className="versus-hub-panel versus-map-priority-panel"
-                    aria-labelledby="versus-map-priority-title"
-                  >
-                    <header>
-                      <span>02</span>
-                      <div>
-                        <small>CHOOSE EXACTLY TWO ARENAS</small>
-                        <h3 id="versus-map-priority-title">MAP VOTES</h3>
-                      </div>
-                    </header>
-                    <p className="versus-map-priority-note">
-                      Each player votes for two maps. One shared vote wins. If
-                      both votes match, one of those two is picked at random.
-                      With no shared votes, the match randomly picks from all
-                      four votes.
-                    </p>
-                    {guest ? (
-                      <div className="versus-hub-empty">
-                        Sign in to choose and save your two map votes.
-                      </div>
-                    ) : (
-                      <>
-                        <div
-                          className="versus-map-vote-grid"
-                          aria-label="Choose two maps to vote for"
-                        >
-                          {MAP_IDS.map((mapId) => {
-                            const selected = mapPriority.includes(mapId);
-                            return (
-                              <button
-                                key={mapId}
-                                type="button"
-                                className={selected ? "selected" : ""}
-                                aria-pressed={selected}
-                                disabled={
-                                  mapPriorityBusy ||
-                                  versusPhase === "searching" ||
-                                  (!selected &&
-                                    mapPriority.length >= MAP_VOTE_COUNT)
-                                }
-                                onClick={() => toggleMapVote(mapId)}
-                              >
-                                <strong aria-hidden="true">
-                                  {selected ? "✓" : "○"}
-                                </strong>
-                                <span>
-                                  <b>{MAP_RULES[mapId].name}</b>
-                                  <small>{MAP_GUIDES[mapId].description}</small>
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <button
-                          type="button"
-                          className="versus-save-priority"
-                          disabled={
-                            mapPriorityBusy ||
-                            versusPhase === "searching" ||
-                            mapPriority.length !== MAP_VOTE_COUNT
-                          }
-                          onClick={() => void saveMapPriority()}
-                        >
-                          {mapPriorityBusy
-                            ? "SAVING…"
-                            : `SAVE ${mapPriority.length}/2 MAP VOTES`}
-                        </button>
-                        <small
-                          className={`versus-priority-status${mapPriorityConfigured ? " saved" : ""}`}
-                          role="status"
-                        >
-                          {mapPriorityStatus ||
-                            (mapPriorityConfigured
-                              ? "SAVED TO THIS ACCOUNT"
-                              : "PICK 2 DIFFERENT MAPS TO SAVE YOUR VOTES")}
-                        </small>
-                      </>
-                    )}
-                    <details className="arena-guide-list">
-                      <summary>OPEN FULL ARENA MAP GUIDE</summary>
-                      <div className="gameplay-guide-grid">
-                        {MAP_IDS.map((mapId) => (
-                          <article className="gameplay-guide-item" key={mapId}>
-                            <b>{MAP_GUIDES[mapId].name}</b>
-                            <p>{MAP_GUIDES[mapId].description}</p>
-                            <ul>
-                              {MAP_GUIDES[mapId].rules.map((rule) => (
-                                <li key={rule}>{rule}</li>
-                              ))}
-                            </ul>
-                          </article>
-                        ))}
-                      </div>
-                    </details>
-                  </section>
-
-                  <section
-                    className="versus-hub-panel versus-rules-panel"
-                    aria-labelledby="versus-rules-title"
-                  >
-                    <header>
-                      <span>03</span>
-                      <div>
-                        <small>HOW IT WORKS</small>
-                        <h3 id="versus-rules-title">1V1 RULES</h3>
-                      </div>
-                    </header>
-                    <ol className="versus-rule-list">
-                      <li>Both runners play the same selected Arena map.</li>
-                      <li>
-                        When one runner falls, the other keeps playing until
-                        their run ends too.
-                      </li>
-                      <li>
-                        The second runner to fall receives{" "}
-                        <b>+{ONE_V_ONE_SCORING_RULES.secondDeathBonus} score</b>
-                        , then the higher final score wins. Equal scores are a
-                        draw.
-                      </li>
-                      <li>
-                        Coins and completed waves award map-specific attack
-                        points.
-                      </li>
-                      <li>
-                        Spend attack coins during the 10-second intermission to
-                        send hazards into your rival&apos;s next wave.
-                      </li>
-                      <li>
-                        Bot practice uses the same local rules but never changes
-                        wins, losses, XP, or rating.
-                      </li>
-                      <li>
-                        Casual never shows or changes Elo. Ranked is locked
-                        after the update. The new ranked pool starts at 1500
-                        Elo.
-                      </li>
-                    </ol>
-                  </section>
-
-                  <section
-                    className="versus-hub-panel versus-armory-panel"
-                    aria-labelledby="versus-armory-title"
-                  >
-                    <header>
-                      <span>04</span>
-                      <div>
-                        <small>INTERMISSION SHOP</small>
-                        <h3 id="versus-armory-title">ATTACK COIN ARMORY</h3>
-                      </div>
-                    </header>
-                    <p className="versus-armory-note">
-                      Spend the Attack Coins earned in this match. Purchased
-                      hazards are released one at a time through the next wave
-                      and wait for a clear lane. Map restrictions still apply.
-                    </p>
-                    <div className="versus-attack-catalog">
-                      {VERSUS_ATTACKS.map((attack) => (
-                        <article key={attack.kind}>
-                          <span aria-hidden="true">{attack.icon}</span>
-                          <div>
-                            <b>{attack.label}</b>
-                            <small>{attack.description}</small>
-                          </div>
-                          <strong>◉ {attack.cost} COINS</strong>
-                        </article>
-                      ))}
-                    </div>
-                  </section>
-
-                  {versusMode === "ranked" && (
-                    <section
-                      className="versus-hub-panel versus-leaderboard-panel"
-                      aria-labelledby="versus-leaderboard-title"
-                    >
-                      <header>
-                        <span>05</span>
-                        <div>
-                          <small>RANKED RECORDS</small>
-                          <h3 id="versus-leaderboard-title">1V1 LEADERBOARD</h3>
-                        </div>
-                        <button
-                          className="versus-refresh"
-                          onClick={() => void loadVersusLeaderboard()}
-                          disabled={versusLeadersLoading}
-                        >
-                          {versusLeadersLoading ? "LOADING…" : "REFRESH"}
-                        </button>
-                      </header>
-                      {guest ? (
-                        <div className="versus-hub-empty">
-                          Sign in to view the ranked 1v1 leaderboard.
-                        </div>
-                      ) : versusLeadersError ? (
-                        <div className="versus-hub-empty error" role="status">
-                          {versusLeadersError}
-                        </div>
-                      ) : versusLeadersLoading && versusLeaders.length === 0 ? (
-                        <div className="versus-hub-empty" role="status">
-                          Loading ranked records…
-                        </div>
-                      ) : versusLeaders.length === 0 ? (
-                        <div className="versus-hub-empty">
-                          No ranked matches yet.
-                        </div>
-                      ) : (
-                        <ol className="versus-leader-list">
-                          {versusLeaders.map((entry) => {
-                            const winRate = Number(entry.win_rate);
-                            const rating = Number(entry.rating);
-                            const roundedRating = Number.isFinite(rating)
-                              ? Math.round(rating)
-                              : 1500;
-                            return (
-                              <li
-                                key={`${entry.rank}-${entry.username}`}
-                                className={entry.is_self ? "me" : ""}
-                              >
-                                <b>#{Number(entry.rank)}</b>
-                                <span>
-                                  <strong>{entry.username}</strong>
-                                  <small>
-                                    {entry.provisional
-                                      ? "PROVISIONAL"
-                                      : `${Number.isFinite(winRate) ? winRate.toFixed(1) : "0.0"}% WIN RATE`}
-                                  </small>
-                                </span>
-                                <span>
-                                  <strong>{roundedRating} RATING</strong>
-                                  <small>
-                                    {Number(entry.wins)}W–{Number(entry.losses)}
-                                    L · BEST WAVE {Number(entry.best_wave)}
-                                  </small>
-                                </span>
-                              </li>
-                            );
-                          })}
-                        </ol>
-                      )}
-                    </section>
-                  )}
-                </div>
-              </div>
+            {matchSetup && playScope === "versus" ? (
+              <MatchSetupPanel setup={matchSetup} now={weaponClock || Date.now()}
+                map={{ key: versusMap, ...MAP_GUIDES[versusMap] }}
+                arenas={MAP_IDS.map(key => ({ key, ...MAP_GUIDES[key] }))}
+                characters={CHARACTER_ROSTER.filter(c => isCharacterOwned(unlocks, c.key) && isCharacterClassAllowed(versusMap, getCharacterClassKey(c.key)) && (versusMode !== "ranked" || c.rarity !== "mythic")).map(c => ({ key: c.key, name: c.name, rarity: c.rarity, classKey: getCharacterClassKey(c.key), description: CHARACTER_ABILITIES[c.key].description }))}
+                selfName={username || "YOU"} rivalName={versusOpponent}
+                selfCharacter={getCharacterDefinition(selectedCharacter).name}
+                rivalCharacter={getCharacterDefinition(versusOpponentCharacter ?? "runner_ace").name}
+                selected={selectedCharacter} busy={characterPickBusy} status={versusResult}
+                onBan={key => void submitMatchChoice("ban", key)} onPick={key => void submitMatchChoice("character", key)}
+                onLeave={() => void leaveVersusSession().then(left => { if (left) resetGameToMenu(); })}
+              />
+            ) : (mainView === "versus" || mainView === "modes") && playScope === "single" ? (
+              <DuelHub special={mainView === "modes"} mode={versusMode} activeMode={rotatingMode}
+                nextRotation={rotationAt} level={playerProgression.level} guest={guest}
+                rankedUnlocked={playerProgression.ranked_unlocked} rankedPurchased={playerProgression.ranked_purchased}
+                gems={gems} busy={versusLeaving} searching={versusPhase === "searching"} unlocking={rankedUnlockBusy}
+                status={versusResult} arenas={MAP_IDS.map(key => ({ key, ...MAP_GUIDES[key] }))}
+                attacks={VERSUS_ATTACKS} leaders={versusLeaders} leadersError={versusLeadersError} leadersLoading={versusLeadersLoading}
+                onMode={value => { setVersusMode(value); setVersusResult(""); if (value === "ranked") void loadVersusLeaderboard(); }}
+                onFind={() => void findVersusMatch()} onCancel={() => void cancelVersus()} onUnlock={() => void unlockRanked()}
+                onRefresh={() => void loadVersusLeaderboard()} onUpdates={() => setUpdateLogOpen(true)}
+              />
             ) : (
               <>
                 <header className="topbar">
@@ -15517,7 +14707,7 @@ function SkywayGame() {
                         SPEED ×{getWaveSpeedMultiplier(wave).toFixed(2)}
                       </small>
                       {mode !== "normal" && (
-                        <small>SCORE ×{modeMultiplier.toFixed(2)}</small>
+                        <small>{hardcoreDuel ? "FINAL SCORE ×2" : `SCORE ×${modeMultiplier.toFixed(2)}`}</small>
                       )}
                     </div>
                     {activeCharacter === "runner_flare" &&
@@ -16514,8 +15704,8 @@ function SkywayGame() {
                             </span>
                             <em>
                               {waitingForVersusResult
-                                ? `The second runner to finish receives +${ONE_V_ONE_SCORING_RULES.secondDeathBonus}, then the final scores decide the match.`
-                                : `Final scores include the +${ONE_V_ONE_SCORING_RULES.secondDeathBonus} second-finish bonus. Equal scores finish as a draw.`}
+                                ? "The second runner to finish receives +5% and +500, then the final scores decide the match."
+                                : "Final scores include the +5% and +500 second-finish bonus. Equal scores go to the second finisher."}
                             </em>
                           </div>
                         )}
@@ -16537,7 +15727,7 @@ function SkywayGame() {
                           >
                             <b>HARDCORE</b>
                             <small>
-                              Ace only · 1 HP · no healing · 1.75× score before
+                              Ace only · 1 HP · no healing · 2× score before
                               Ace’s score bonus
                             </small>
                           </button>
@@ -16886,44 +16076,7 @@ function SkywayGame() {
                   A username is required before you can play.
                 </div>
               )}
-              {isAdmin && !usernameRequired && (
-                <section
-                  className={`admin-test-mode-card${adminTestModeActive ? " enabled" : ""}`}
-                  aria-labelledby="settings-test-mode-title"
-                >
-                  <div>
-                    <small>ADMIN ONLY</small>
-                    <h3 id="settings-test-mode-title">TEST MODE</h3>
-                    <p>
-                      Temporarily use every character. Test runs are always
-                      unranked and save no gems, XP, high score, or leaderboard
-                      result. Your choice stays saved for your next visit.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    className="admin-test-mode-switch"
-                    role="switch"
-                    aria-checked={adminTestModeActive}
-                    disabled={adminTestModeBusy}
-                    onClick={() =>
-                      void updateAdminTestMode(!adminTestModeActive)
-                    }
-                  >
-                    <span aria-hidden="true" />
-                    {adminTestModeBusy
-                      ? "SAVING…"
-                      : adminTestModeActive
-                        ? "ON"
-                        : "OFF"}
-                  </button>
-                  {adminTestModeStatus && (
-                    <div className="admin-test-mode-status" role="status">
-                      {adminTestModeStatus}
-                    </div>
-                  )}
-                </section>
-              )}
+
               {usernameRequired || editUsername ? (
                 <form onSubmit={saveUsername}>
                   <label>
@@ -17154,118 +16307,10 @@ function SkywayGame() {
               </button>
               <p>GEM SHOP</p>
               <h2 id="extraction-shop-title">EXTRACTION SHOP</h2>
-              <div className="extract-actions">
-                {(Object.keys(EXTRACTION_BOXES) as ExtractionOption[]).map(
-                  (option) => {
-                    const box = EXTRACTION_BOXES[option];
-                    const batchLimit = EXTRACTION_MAX_QUANTITY;
-                    const maxQuantity = Math.min(
-                      batchLimit,
-                      Math.floor(gems / box.cost),
-                    );
-                    const quantity = Math.max(
-                      1,
-                      Math.min(batchLimit, extractQuantities[option]),
-                    );
-                    const totalCost = quantity * box.cost;
-                    const setQuantity = (next: number) =>
-                      setExtractQuantities((current) => ({
-                        ...current,
-                        [option]: Math.max(
-                          1,
-                          Math.min(
-                            Math.max(1, maxQuantity),
-                            Math.floor(next) || 1,
-                          ),
-                        ),
-                      }));
-                    return (
-                      <article key={option} className={`extract-box ${option}`}>
-                        <b>{box.name}</b>
-                        <small className="box-mix">{box.mix}</small>
-                        <small className="box-odds-label">
-                          {box.oddsLabel}
-                        </small>
-                        <span className="rarity-chances">
-                          {box.odds.map(([rarity, chance]) => (
-                            <small key={rarity} className={rarity}>
-                              <b>{rarity}</b>
-                              {chance}
-                            </small>
-                          ))}
-                        </span>
-                        <small className="box-note">{box.note}</small>
-                        <div className="extract-quantity">
-                          <b>QTY</b>
-                          <button
-                            type="button"
-                            aria-label={`Decrease ${box.name} quantity`}
-                            disabled={extractBusy || quantity <= 1}
-                            onClick={() => setQuantity(quantity - 1)}
-                          >
-                            −
-                          </button>
-                          <input
-                            aria-label={`${box.name} quantity`}
-                            type="number"
-                            inputMode="numeric"
-                            min={1}
-                            max={Math.max(1, maxQuantity)}
-                            value={quantity}
-                            disabled={extractBusy || maxQuantity < 1}
-                            onChange={(event) =>
-                              setQuantity(Number(event.target.value))
-                            }
-                          />
-                          <button
-                            type="button"
-                            aria-label={`Increase ${box.name} quantity`}
-                            disabled={
-                              extractBusy ||
-                              maxQuantity < 1 ||
-                              quantity >= maxQuantity
-                            }
-                            onClick={() => setQuantity(quantity + 1)}
-                          >
-                            +
-                          </button>
-                          <button
-                            type="button"
-                            className="quantity-max"
-                            aria-label={`Set ${box.name} quantity to maximum`}
-                            disabled={extractBusy || maxQuantity < 1}
-                            onClick={() => setQuantity(maxQuantity)}
-                          >
-                            MAX
-                          </button>
-                        </div>
-                        <button
-                          aria-label={`Open ${quantity * box.pullCount} normal box${quantity * box.pullCount === 1 ? "" : "es"} for ${totalCost} gems`}
-                          disabled={
-                            extractBusy ||
-                            maxQuantity < 1 ||
-                            quantity > maxQuantity
-                          }
-                          onClick={() => extract(option)}
-                        >
-                          {extractBusy && extractingOption === option
-                            ? "OPENING…"
-                            : "OPEN"}{" "}
-                          <span>TOTAL ♦ {totalCost}</span>
-                        </button>
-                      </article>
-                    );
-                  },
-                )}
-              </div>
-              <div className="duplicate-refund-chart">
-                <b>DUPLICATE REFUNDS</b>
-                {(Object.keys(DUPLICATE_REFUNDS) as Rarity[]).map((rarity) => (
-                  <span key={rarity} className={rarity}>
-                    {rarity.toUpperCase()} +♦ {DUPLICATE_REFUNDS[rarity]}
-                  </span>
-                ))}
-              </div>
+              <ExtractionBoxCards level={playerProgression.level} gems={gems} busy={extractBusy}
+                quantities={extractQuantities} extracting={extractingOption} setQuantities={setExtractQuantities}
+                onOpen={(option) => void extract(option)} />
+              <p className="box-duplicate-note">Duplicates give no new item and no gem refund.</p>
               <div ref={extractFeedbackRef} className="extract-feedback">
                 {extractAnimation !== "idle" && extractingOption ? (
                   <div
@@ -17311,7 +16356,7 @@ function SkywayGame() {
                             <small>
                               NEW{" "}
                               {item.item_type === "character"
-                                ? "CHARACTER + WEAPON"
+                                ? "CHARACTER"
                                 : `${item.item_type.toUpperCase()} COSMETIC`}
                             </small>
                           </span>
@@ -17370,47 +16415,7 @@ function SkywayGame() {
                 ))}
               </div>
               <div className="inventory-scroll">
-                {isAdmin && !guest && (
-                  <section
-                    className={`admin-test-mode-card inventory-test-mode${adminTestModeActive ? " enabled" : ""}`}
-                    aria-labelledby="inventory-test-mode-title"
-                  >
-                    <div>
-                      <small>ADMIN CHARACTER ACCESS</small>
-                      <h3 id="inventory-test-mode-title">TEST MODE</h3>
-                      <p>
-                        Turn on every character for testing. The setting is
-                        remembered, and every test run stays unranked with no
-                        permanent rewards.
-                        {running
-                          ? " Changing it now applies to your next run."
-                          : " You can equip a test character below immediately."}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      className="admin-test-mode-switch"
-                      role="switch"
-                      aria-checked={adminTestModeActive}
-                      disabled={adminTestModeBusy}
-                      onClick={() =>
-                        void updateAdminTestMode(!adminTestModeActive)
-                      }
-                    >
-                      <span aria-hidden="true" />
-                      {adminTestModeBusy
-                        ? "SAVING…"
-                        : adminTestModeActive
-                          ? "ON"
-                          : "OFF"}
-                    </button>
-                    {adminTestModeStatus && (
-                      <div className="admin-test-mode-status" role="status">
-                        {adminTestModeStatus}
-                      </div>
-                    )}
-                  </section>
-                )}
+
                 {!guest && (
                   <section className="inventory-direct-unlock">
                     <header>
@@ -17424,15 +16429,17 @@ function SkywayGame() {
                       className="direct-unlock-prices"
                       aria-label="Direct unlock prices"
                     >
-                      {(Object.keys(DIRECT_UNLOCK_COSTS) as Rarity[]).map(
+                      {(Object.keys(DIRECT_UNLOCK_COSTS) as (keyof typeof DIRECT_UNLOCK_COSTS)[]).map(
                         (rarity) => (
                           <span key={rarity} className={rarity}>
                             <b>{rarity}</b>
-                            <small>♦ {DIRECT_UNLOCK_COSTS[rarity]}</small>
+                            <small>COSMETIC ♦ {DIRECT_UNLOCK_COSTS[rarity].cosmetic}</small>
+                            <small>CHARACTER ♦ {DIRECT_UNLOCK_COSTS[rarity].character}</small>
                           </span>
                         ),
                       )}
                     </div>
+                    <p className="direct-unlock-note">Common, Uncommon, and Rare only. Epic, Legendary, and Mythic items come from boxes.</p>
                     {directPurchaseItem ? (
                       <div className="direct-unlock-picker">
                         <label>
@@ -17452,7 +16459,7 @@ function SkywayGame() {
                                 ).toUpperCase()}{" "}
                                 · {item.item_type.toUpperCase()} ·{" "}
                                 {item.rarity.toUpperCase()} · ♦{" "}
-                                {DIRECT_UNLOCK_COSTS[item.rarity]}
+                                {directUnlockCost(item.rarity, item.item_type)}
                               </option>
                             ))}
                           </select>
@@ -17464,19 +16471,18 @@ function SkywayGame() {
                           type="button"
                           disabled={
                             directPurchaseBusy ||
-                            gems <
-                              DIRECT_UNLOCK_COSTS[directPurchaseItem.rarity]
+                            directPurchaseCost === null || gems < directPurchaseCost
                           }
                           onClick={() => void purchaseCatalogItem()}
                         >
                           {directPurchaseBusy
                             ? "UNLOCKING…"
-                            : `UNLOCK FOR ♦ ${DIRECT_UNLOCK_COSTS[directPurchaseItem.rarity]}`}
+                            : `UNLOCK FOR ♦ ${directPurchaseCost}`}
                         </button>
                       </div>
                     ) : (
                       <p className="direct-unlock-complete">
-                        EVERY AVAILABLE ITEM IS ALREADY UNLOCKED.
+                        ALL DIRECT-PURCHASE ITEMS ARE ALREADY UNLOCKED. MORE ITEMS MAY STILL BE AVAILABLE IN BOXES.
                       </p>
                     )}
                   </section>
@@ -17779,9 +16785,7 @@ function SkywayGame() {
                                   ? "EQUIPPED"
                                   : !focusedCharacterAvailable
                                     ? "LOCKED · EXTRACT IN SHOP"
-                                    : focusedCharacterOwned
-                                      ? "EQUIP CHARACTER"
-                                      : "EQUIP FOR TEST MODE"}
+                                    : "EQUIP CHARACTER"}
                               </button>
                             </div>
                             <section className="character-ability-explainer">

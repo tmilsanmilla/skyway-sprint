@@ -15,6 +15,8 @@ export type SfxName =
   | "rivalHit"
   | "rivalCritical"
   | "rivalDown"
+  | "katanaBlock" | "swordHit" | "swordMiss" | "swordBreak"
+  | "lightsaber" | "vortex" | "currentWind" | "highwayTraffic"
   | "click";
 
 type AudioContextConstructor = typeof AudioContext;
@@ -26,6 +28,16 @@ const TRACK_TEMPO: Record<GameTrack, number> = {
   muse: 128,
 };
 const MUSIC_PITCH_MULTIPLIER = 1.1;
+export const MUSIC_TEMPO_MULTIPLIER = 1.3;
+const SAMPLES: Partial<Record<SfxName, readonly [string, number]>> = {
+  hit: ["impactGeneric_light_000", 0.65],
+  katanaBlock: ["impactMetal_medium_000", 0.65],
+  swordHit: ["impactGlass_heavy_000", 0.7],
+  swordBreak: ["impactWood_heavy_000", 0.75],
+  lightsaber: ["laserLarge_000", 0.4],
+  vortex: ["forceField_000", 0.5],
+  highwayTraffic: ["engineCircular_000", 0.13],
+};
 
 const clampVolume = (value: number) => Math.max(0, Math.min(1, value));
 const midiFrequency = (note: number) => 440 * 2 ** ((note - 69) / 12);
@@ -40,6 +52,7 @@ export class AudioEngine {
   private sfxBus: GainNode | null = null;
   private limiter: DynamicsCompressorNode | null = null;
   private noiseBuffer: AudioBuffer | null = null;
+  private readonly samples = new Map<string, Promise<AudioBuffer | null>>();
 
   private selectedTrack: GameTrack = "calm";
   private musicVolume = 0.55;
@@ -125,7 +138,26 @@ export class AudioEngine {
     if (context.state === "suspended") await context.resume();
 
     const now = context.currentTime + 0.005;
+    const sample = SAMPLES[name];
+    if (sample) void this.playSample(sample[0], sample[1]);
     switch (name) {
+      case "katanaBlock":
+        this.tone("sfx", 2100, now, 0.12, 0.06, "triangle", 900); break;
+      case "swordHit":
+        this.noise("sfx", now, 0.15, 0.12, 2800); break;
+      case "swordBreak":
+        this.noise("sfx", now, 0.2, 0.16, 2100); break;
+      case "swordMiss":
+        this.noise("sfx", now, 0.25, 0.2, 4500); break;
+      case "lightsaber":
+        this.tone("sfx", 120, now, 0.3, 0.12, "sawtooth", 360); break;
+      case "vortex":
+        this.noise("sfx", now, 0.45, 0.2, 1400);
+        this.tone("sfx", 1500, now, 0.4, 0.1, "sine", 300); break;
+      case "currentWind":
+        this.noise("sfx", now, 0.65, 0.18, 2200); break;
+      case "highwayTraffic":
+        this.noise("sfx", now, 1.1, 0.045, 700); break;
       case "move":
         this.tone("sfx", 330, now, 0.07, 0.13, "square", 430);
         break;
@@ -139,8 +171,8 @@ export class AudioEngine {
         });
         break;
       case "hit":
-        this.noise("sfx", now, 0.18, 0.24, 1500);
-        this.tone("sfx", 150, now, 0.24, 0.24, "sawtooth", 55);
+        this.noise("sfx", now, 0.075, 0.16, 1800);
+        this.tone("sfx", 135, now, 0.09, 0.12, "triangle", 65);
         break;
       case "freeze":
         this.noise("sfx", now, 0.32, 0.11, 5200);
@@ -196,6 +228,27 @@ export class AudioEngine {
         this.tone("sfx", 560, now, 0.035, 0.1, "square", 430);
         break;
     }
+  }
+
+  /** Cache licensed samples once; procedural layers remain a fallback on unsupported codecs. */
+  private async playSample(name: string, volume: number): Promise<void> {
+    const context = this.context;
+    if (!context || !this.sfxBus || this.sfxVolume === 0) return;
+    let request = this.samples.get(name);
+    if (!request) {
+      request = fetch(`/audio/kenney/${name}.ogg`).then(r => r.ok ? r.arrayBuffer() : Promise.reject()).then(b => context.decodeAudioData(b)).catch(() => null);
+      this.samples.set(name, request);
+    }
+    const buffer = await request;
+    if (!buffer || context !== this.context || context.state !== "running" || this.scheduledSfx.size > 32) return;
+    const source = context.createBufferSource();
+    const gain = context.createGain();
+    source.buffer = buffer;
+    gain.gain.value = volume;
+    source.connect(gain); gain.connect(this.sfxBus);
+    this.scheduledSfx.add(source);
+    source.onended = () => { this.scheduledSfx.delete(source); source.disconnect(); gain.disconnect(); };
+    source.start();
   }
 
   private async ensureContext(): Promise<AudioContext | null> {
@@ -262,7 +315,7 @@ export class AudioEngine {
       this.nextStepTime = context.currentTime + 0.04;
     }
 
-    const secondsPerStep = 60 / TRACK_TEMPO[this.selectedTrack] / 4;
+    const secondsPerStep = 60 / (TRACK_TEMPO[this.selectedTrack] * MUSIC_TEMPO_MULTIPLIER) / 4;
     while (this.nextStepTime < context.currentTime + 0.18) {
       const swing =
         this.selectedTrack === "jazz" && this.step % 4 === 2
