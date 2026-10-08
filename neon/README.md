@@ -24,6 +24,21 @@ lookup readers to managed Neon Auth field names. Neither repair resets accounts
 or grants anyone an admin role. The combined repair is saved in the Neon SQL
 Editor as **Sign-in MISC**.
 
+Apply `remove-inventory-flairs.sql` to retire Inventory flairs and their bonuses.
+Character unlocks, character abilities, cosmetics, account data, and map weapons
+are preserved. Former weapon selections are inert compatibility data, not active
+equipment. Supabase is not altered.
+
+Apply `update-17-progression.sql`, then `update-17-photon-points.sql` for the
+new XP curve and points-only Photon rewards. The XP migration resets level and
+XP once, erases old XP receipt amounts and recovery snapshots, and preserves gems, inventory,
+scores, completed-run history, and already-purchased mode access. Rerunning it
+does not reset newly-earned XP. Ranked has its own authenticated level-25,
+100-gem purchase and does not depend on Photon Fury. Existing run receipts,
+Test Mode exclusions, score validation, and account isolation remain in place.
+The reward is zero below four points, otherwise `(points - 4)^2 + 1` Photons.
+Both changes are saved visibly in **XP and Unlocks MISC** and **Photon Fury MISC**.
+
 The generated snapshot is intentionally ignored by Git because it contains
 private account and gameplay data. It excludes the obsolete
 `extraction_transactions` pull-history rows, and the migrated shop functions

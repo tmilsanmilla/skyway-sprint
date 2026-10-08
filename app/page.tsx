@@ -13,6 +13,14 @@ import { AdminPlayerEditor } from "./admin-player-editor";
 import { isMigrationMaintenanceMode } from "./migration-maintenance";
 import { UPDATE_LOG } from "./update-log";
 import { PhotonFury } from "./photon-fury";
+import {
+  cumulativeXpForLevel,
+  endlessCharacter,
+  isOlderProgression,
+  MODE_UNLOCKS,
+  type EndlessMode,
+} from "./progression-rules";
+import { Obstacle } from "./obstacle-sprite";
 import { addTurnDelays } from "./photon-fury-rules";
 import {
   ACTIVE_VERSUS_SESSION_STORAGE_KEY,
@@ -23,10 +31,7 @@ import {
   shouldBlockNonVersusStart,
   shouldNotifyServerBeforeVersusExit,
 } from "./versus-session-rules";
-import {
-  CloudflareVersusRealtime,
-  realtimeMode,
-} from "./cloudflare-realtime";
+import { CloudflareVersusRealtime, realtimeMode } from "./cloudflare-realtime";
 import {
   changeManagedPassword,
   checkGuestDeviceAccess,
@@ -176,17 +181,25 @@ import {
   type PurchasableAttackId,
 } from "./arena-map-rules";
 import { MAP_GUIDES } from "./gameplay-guide";
-import { VORTEX_SPEED_FACTOR, createTerminalCourse, combineTerminalCourse, visibleTerminalCourse, mapContactDamage, mapScoreBonus, vortexBlocksTurn, resolveTerminalSword, type SwordState, type CourseItem } from "./meadow-terminal-rules";
+import {
+  VORTEX_SPEED_FACTOR,
+  createTerminalCourse,
+  combineTerminalCourse,
+  visibleTerminalCourse,
+  mapContactDamage,
+  mapScoreBonus,
+  vortexBlocksTurn,
+  resolveTerminalSword,
+  type SwordState,
+  type CourseItem,
+} from "./meadow-terminal-rules";
 import {
   WAVE_PROGRESS_LENGTH,
   canReleasePurchasedAttack,
   getAttackReleaseProgresses,
   getWaveSpeedMultiplier,
 } from "./attack-delivery-rules";
-import {
-  advanceGemStreak,
-  formatGemStreakNotice,
-} from "./gem-streak-rules";
+import { advanceGemStreak, formatGemStreakNotice } from "./gem-streak-rules";
 import { resolveMobileLaneIntent } from "./mobile-lane-controls";
 type Kind =
   | "gem"
@@ -217,7 +230,7 @@ type Item = {
   attackReleaseProgress?: number;
   sharedCourse?: boolean;
 };
-type GameMode = "normal" | "hardcore" | "impossible";
+type GameMode = EndlessMode;
 type OracleProphecy = "no-hit" | "completion" | "near-death";
 const ORACLE_PROPHECY_COPY: Record<
   OracleProphecy,
@@ -372,13 +385,7 @@ type VersusLeader = {
   obstacle_points_spent: number;
   is_self: boolean;
 };
-type Rarity =
-  | "common"
-  | "uncommon"
-  | "rare"
-  | "epic"
-  | "legendary"
-  | "mythic";
+type Rarity = "common" | "uncommon" | "rare" | "epic" | "legendary" | "mythic";
 const RARITY_ORDER: Readonly<Record<Rarity, number>> = {
   common: 0,
   uncommon: 1,
@@ -389,12 +396,7 @@ const RARITY_ORDER: Readonly<Record<Rarity, number>> = {
 };
 type Unlock = {
   item_key: string;
-  item_type:
-    | "class"
-    | "character"
-    | "player"
-    | "obstacle"
-    | "environment";
+  item_type: "class" | "character" | "player" | "obstacle" | "environment";
   rarity: Rarity;
 };
 type ExtractionResult = Unlock & {
@@ -428,6 +430,8 @@ type PlayerProgression = {
   lifetime_xp: number;
   completed_runs: number;
   ranked_unlocked: boolean;
+  ranked_purchased: boolean;
+  progression_version: number;
   xp_awarded?: number;
 };
 type RunXpBreakdown = {
@@ -461,10 +465,7 @@ type PendingVersusAttack = {
 };
 type CometRemovalReceipt = {
   receiptId: string;
-  kind: Exclude<
-    Kind,
-    "gem" | "coin" | "melon" | "mushroom" | "current"
-  >;
+  kind: Exclude<Kind, "gem" | "coin" | "melon" | "mushroom" | "current">;
   wave: number;
 };
 type HeatfeastPayload = {
@@ -524,8 +525,15 @@ type OnlineGambitPayload = {
   }>;
 };
 const GAMBIT_HANDS = new Set<GambitHand>([
-  "high-card", "pair", "two-pair", "three-of-a-kind", "straight",
-  "flush", "full-house", "four-of-a-kind", "straight-flush",
+  "high-card",
+  "pair",
+  "two-pair",
+  "three-of-a-kind",
+  "straight",
+  "flush",
+  "full-house",
+  "four-of-a-kind",
+  "straight-flush",
   "royal-flush",
 ]);
 const asGambitHand = (value: unknown): GambitHand | null =>
@@ -604,7 +612,12 @@ type VersusStatePayload = {
     sword_durability?: number;
     sword_cooldown_until?: string | null;
   };
-  shared_attacks?: Array<{id: string; obstacle_type: string; lane_index?: number | null; spawn_wave?: number}>;
+  shared_attacks?: Array<{
+    id: string;
+    obstacle_type: string;
+    lane_index?: number | null;
+    spawn_wave?: number;
+  }>;
   pending_attacks?: Array<{
     id?: string;
     obstacle_type?: string;
@@ -694,10 +707,7 @@ const MIN_SAME_LANE_GAP = 24;
 const HORIZON_PREVIEW_SIZE = 12;
 const WAVE_HAZARD_PLAN_SIZE = 128;
 const isHazardKind = (kind: Kind) =>
-  kind !== "gem" &&
-  kind !== "coin" &&
-  kind !== "melon" &&
-  kind !== "mushroom";
+  kind !== "gem" && kind !== "coin" && kind !== "melon" && kind !== "mushroom";
 const getAttackSafeLane = (
   kind: Kind,
   mapId: MapId,
@@ -788,9 +798,9 @@ const appendServerAttackGroups = (
       : fallbackLane;
     const lane = allowedLanes.includes(proposedLane)
       ? proposedLane
-      : allowedLanes.find((candidate) => candidate >= fallbackLane) ??
+      : (allowedLanes.find((candidate) => candidate >= fallbackLane) ??
         allowedLanes[0] ??
-        fallbackLane;
+        fallbackLane);
     const declaredEscapeLane = Number(attack.escapeLane);
     const safeLaneCandidates = getTrackLanes(normalizedLaneCount).filter(
       (candidate) =>
@@ -802,7 +812,8 @@ const appendServerAttackGroups = (
       Number.isInteger(declaredEscapeLane) &&
       safeLaneCandidates.includes(declaredEscapeLane)
         ? declaredEscapeLane
-        : getAttackSafeLane(attack.kind, mapId, lane, playerLane) ?? playerLane;
+        : (getAttackSafeLane(attack.kind, mapId, lane, playerLane) ??
+          playerLane);
     fallbackLane = (lane + 1) % normalizedLaneCount;
     return {
       id: nextId(),
@@ -867,12 +878,13 @@ const buildWaveHazardPlan = (
           ([obstacle, weight]) =>
             Number(weight) > 0 &&
             (obstacle === "spike" ? "spikes" : obstacle) !== streak.kind &&
-            canSelect(
-              (obstacle === "spike" ? "spikes" : obstacle) as Kind,
-            ),
+            canSelect((obstacle === "spike" ? "spikes" : obstacle) as Kind),
         )?.[0];
         if (weightedFallback)
-          selected = weightedFallback === "spike" ? "spikes" : weightedFallback as Kind;
+          selected =
+            weightedFallback === "spike"
+              ? "spikes"
+              : (weightedFallback as Kind);
       }
     } else {
       const choices =
@@ -1060,9 +1072,7 @@ const simulateBotWave = (
   });
   const heartsAfterDamage = Math.max(0, nextHearts);
   const heartsAfterHealing =
-    heartsAfterDamage > 0
-      ? Math.min(maximumHearts, heartsAfterDamage + 1)
-      : 0;
+    heartsAfterDamage > 0 ? Math.min(maximumHearts, heartsAfterDamage + 1) : 0;
   return {
     hearts: heartsAfterDamage,
     heartsAfterDamage,
@@ -1091,10 +1101,7 @@ const readActiveVersusSession = () => {
     return null;
   }
 };
-const rememberActiveVersusSession = (
-  matchId: string,
-  status: unknown,
-) => {
+const rememberActiveVersusSession = (matchId: string, status: unknown) => {
   if (typeof window === "undefined") return;
   const serialized = serializeActiveVersusSession({
     matchId,
@@ -1128,101 +1135,100 @@ type VersusPhase =
   | "finished";
 const CLASS_CHARACTERS = {
   runner: [
-    { key: "runner_ace", name: "Ace", weapon: "Baton", rarity: "common" },
-    { key: "runner_dash", name: "Dash", weapon: "Jet Baton", rarity: "common" },
-    { key: "runner_stride", name: "Stride", weapon: "Pace Blades", rarity: "common" },
-    { key: "tank_glacier", name: "Glacier", weapon: "Frost Shield", rarity: "rare" },
-    { key: "runner_courier", name: "Courier", weapon: "Parcel Staff", rarity: "uncommon" },
-    { key: "runner_tempo", name: "Tempo", weapon: "Rhythm Rod", rarity: "uncommon" },
-    { key: "tank_reactor", name: "Reactor", weapon: "Core Maul", rarity: "rare" },
-    { key: "runner_vector", name: "Vector", weapon: "Arrow Lance", rarity: "rare" },
-    { key: "runner_blitz", name: "Blitz", weapon: "Volt Cleats", rarity: "rare" },
-    { key: "medic_halo", name: "Halo", weapon: "Sun Staff", rarity: "epic" },
-    { key: "runner_orbit", name: "Orbit", weapon: "Ring Blades", rarity: "epic" },
-    { key: "runner_relay", name: "Relay", weapon: "Circuit Baton", rarity: "epic" },
-    { key: "runner_horizon", name: "Horizon", weapon: "Skyline Disc", rarity: "legendary" },
-    { key: "runner_velocity", name: "Velocity", weapon: "Turbo Spear", rarity: "legendary" },
-    { key: "runner_pacer", name: "Pacer", weapon: "Relay Rod", rarity: "mythic" },
-    { key: "runner_zenith", name: "Zenith", weapon: "Apex Relay", rarity: "mythic" },
+    { key: "runner_ace", name: "Ace", rarity: "common" },
+    { key: "runner_dash", name: "Dash", rarity: "common" },
+    { key: "runner_stride", name: "Stride", rarity: "common" },
+    { key: "tank_glacier", name: "Glacier", rarity: "rare" },
+    { key: "runner_courier", name: "Courier", rarity: "uncommon" },
+    { key: "runner_tempo", name: "Tempo", rarity: "uncommon" },
+    { key: "tank_reactor", name: "Reactor", rarity: "rare" },
+    { key: "runner_vector", name: "Vector", rarity: "rare" },
+    { key: "runner_blitz", name: "Blitz", rarity: "rare" },
+    { key: "medic_halo", name: "Halo", rarity: "epic" },
+    { key: "runner_orbit", name: "Orbit", rarity: "epic" },
+    { key: "runner_relay", name: "Relay", rarity: "epic" },
+    { key: "runner_horizon", name: "Horizon", rarity: "legendary" },
+    { key: "runner_velocity", name: "Velocity", rarity: "legendary" },
+    { key: "runner_pacer", name: "Pacer", rarity: "mythic" },
+    { key: "runner_zenith", name: "Zenith", rarity: "mythic" },
   ],
   medic: [
-    { key: "medic_patch", name: "Patch", weapon: "Med Staff", rarity: "common" },
-    { key: "medic_bloom", name: "Bloom", weapon: "Bloom Wand", rarity: "common" },
-    { key: "medic_remedy", name: "Remedy", weapon: "Tonic Bell", rarity: "common" },
-    { key: "medic_salve", name: "Salve", weapon: "Remedy Brush", rarity: "common" },
-    { key: "medic_reserve", name: "Reserve", weapon: "Field Pack", rarity: "uncommon" },
-    { key: "medic_sprout", name: "Sprout", weapon: "Seed Scepter", rarity: "uncommon" },
-    { key: "medic_mender", name: "Mender", weapon: "Clock Needle", rarity: "rare" },
-    { key: "medic_pulse", name: "Pulse", weapon: "Pulse Syringe", rarity: "rare" },
-    { key: "medic_tonic", name: "Tonic", weapon: "Vital Flask", rarity: "rare" },
-    { key: "medic_suture", name: "Suture", weapon: "Pulse Thread", rarity: "epic" },
-    { key: "medic_beacon", name: "Beacon", weapon: "Rescue Lamp", rarity: "epic" },
-    { key: "medic_lifeline", name: "Lifeline", weapon: "Rescue Hook", rarity: "legendary" },
-    { key: "medic_seraph", name: "Seraph", weapon: "Halo Staff", rarity: "legendary" },
-    { key: "tank_atlas", name: "Atlas", weapon: "World Maul", rarity: "legendary" },
-    { key: "medic_revive", name: "Revive", weapon: "Phoenix Feather", rarity: "legendary" },
-    { key: "medic_oracle", name: "Oracle", weapon: "Fate Sensor", rarity: "mythic" },
+    { key: "medic_patch", name: "Patch", rarity: "common" },
+    { key: "medic_bloom", name: "Bloom", rarity: "common" },
+    { key: "medic_remedy", name: "Remedy", rarity: "common" },
+    { key: "medic_salve", name: "Salve", rarity: "common" },
+    { key: "medic_reserve", name: "Reserve", rarity: "uncommon" },
+    { key: "medic_sprout", name: "Sprout", rarity: "uncommon" },
+    { key: "medic_mender", name: "Mender", rarity: "rare" },
+    { key: "medic_pulse", name: "Pulse", rarity: "rare" },
+    { key: "medic_tonic", name: "Tonic", rarity: "rare" },
+    { key: "medic_suture", name: "Suture", rarity: "epic" },
+    { key: "medic_beacon", name: "Beacon", rarity: "epic" },
+    { key: "medic_lifeline", name: "Lifeline", rarity: "legendary" },
+    { key: "medic_seraph", name: "Seraph", rarity: "legendary" },
+    { key: "tank_atlas", name: "Atlas", rarity: "legendary" },
+    { key: "medic_revive", name: "Revive", rarity: "legendary" },
+    { key: "medic_oracle", name: "Oracle", rarity: "mythic" },
   ],
   tank: [
-    { key: "tank_bulwark", name: "Bulwark", weapon: "Tower Shield", rarity: "common" },
-    { key: "runner_vault", name: "Vault", weapon: "Spring Pole", rarity: "common" },
-    { key: "tank_guard", name: "Guard", weapon: "Iron Buckler", rarity: "common" },
-    { key: "tank_brace", name: "Brace", weapon: "Spike Buckler", rarity: "uncommon" },
-    { key: "tank_ironclad", name: "Ironclad", weapon: "Plate Hammer", rarity: "uncommon" },
-    { key: "medic_mercy", name: "Mercy", weapon: "Injector", rarity: "rare" },
-    { key: "tank_hammer", name: "Hammer", weapon: "War Hammer", rarity: "rare" },
-    { key: "tank_anchor", name: "Anchor", weapon: "Ground Hook", rarity: "rare" },
-    { key: "tank_warden", name: "Warden", weapon: "Lock Shield", rarity: "rare" },
-    { key: "tank_bastion", name: "Bastion", weapon: "Fortress Shield", rarity: "epic" },
-    { key: "tank_rampart", name: "Rampart", weapon: "Siege Wall", rarity: "epic" },
-    { key: "trickster_jester", name: "Jester", weapon: "Card Fan", rarity: "epic" },
-    { key: "tank_citadel", name: "Citadel", weapon: "Rampart Axe", rarity: "epic" },
-    { key: "tank_sentinel", name: "Sentinel", weapon: "Steel Spear", rarity: "legendary" },
-    { key: "tank_colossus", name: "Colossus", weapon: "Titan Maul", rarity: "legendary" },
-    { key: "trickster_phantom", name: "Phantom", weapon: "Moon Scythe", rarity: "mythic" },
+    { key: "tank_bulwark", name: "Bulwark", rarity: "common" },
+    { key: "runner_vault", name: "Vault", rarity: "common" },
+    { key: "tank_guard", name: "Guard", rarity: "common" },
+    { key: "tank_brace", name: "Brace", rarity: "uncommon" },
+    { key: "tank_ironclad", name: "Ironclad", rarity: "uncommon" },
+    { key: "medic_mercy", name: "Mercy", rarity: "rare" },
+    { key: "tank_hammer", name: "Hammer", rarity: "rare" },
+    { key: "tank_anchor", name: "Anchor", rarity: "rare" },
+    { key: "tank_warden", name: "Warden", rarity: "rare" },
+    { key: "tank_bastion", name: "Bastion", rarity: "epic" },
+    { key: "tank_rampart", name: "Rampart", rarity: "epic" },
+    { key: "trickster_jester", name: "Jester", rarity: "epic" },
+    { key: "tank_citadel", name: "Citadel", rarity: "epic" },
+    { key: "tank_sentinel", name: "Sentinel", rarity: "legendary" },
+    { key: "tank_colossus", name: "Colossus", rarity: "legendary" },
+    { key: "trickster_phantom", name: "Phantom", rarity: "mythic" },
   ],
   trickster: [
-    { key: "trickster_rogue", name: "Rogue", weapon: "Daggers", rarity: "common" },
-    { key: "trickster_smoke", name: "Smoke", weapon: "Smoke Bombs", rarity: "common" },
-    { key: "runner_drift", name: "Drift", weapon: "Slipstream Shoes", rarity: "uncommon" },
-    { key: "runner_spark", name: "Spark", weapon: "Prism Baton", rarity: "uncommon" },
-    { key: "tank_plow", name: "Plow", weapon: "Ram Shield", rarity: "uncommon" },
-    { key: "trickster_clockwork", name: "Clockwork", weapon: "Time Cards", rarity: "uncommon" },
-    { key: "trickster_flicker", name: "Flicker", weapon: "Blink Knives", rarity: "rare" },
-    { key: "runner_flare", name: "Flare", weapon: "Signal Spear", rarity: "epic" },
-    { key: "trickster_pickpocket", name: "Pickpocket", weapon: "Coin Dagger", rarity: "rare" },
-    { key: "trickster_switch", name: "Switch", weapon: "Twin Coins", rarity: "rare" },
-    { key: "trickster_gambit", name: "Gambit", weapon: "Loaded Cards", rarity: "legendary" },
-    { key: "medic_vial", name: "Vial", weapon: "Tonic Flask", rarity: "epic" },
-    { key: "trickster_mirage", name: "Mirage", weapon: "Prism Fans", rarity: "epic" },
-    { key: "runner_comet", name: "Comet", weapon: "Star Spear", rarity: "legendary" },
-    { key: "trickster_hex", name: "Hex", weapon: "Void Chakram", rarity: "mythic" },
-    { key: "trickster_echo", name: "Echo", weapon: "Repeat Knives", rarity: "mythic" },
+    { key: "trickster_rogue", name: "Rogue", rarity: "common" },
+    { key: "trickster_smoke", name: "Smoke", rarity: "common" },
+    { key: "runner_drift", name: "Drift", rarity: "uncommon" },
+    { key: "runner_spark", name: "Spark", rarity: "uncommon" },
+    { key: "tank_plow", name: "Plow", rarity: "uncommon" },
+    { key: "trickster_clockwork", name: "Clockwork", rarity: "uncommon" },
+    { key: "trickster_flicker", name: "Flicker", rarity: "rare" },
+    { key: "runner_flare", name: "Flare", rarity: "epic" },
+    { key: "trickster_pickpocket", name: "Pickpocket", rarity: "rare" },
+    { key: "trickster_switch", name: "Switch", rarity: "rare" },
+    { key: "trickster_gambit", name: "Gambit", rarity: "legendary" },
+    { key: "medic_vial", name: "Vial", rarity: "epic" },
+    { key: "trickster_mirage", name: "Mirage", rarity: "epic" },
+    { key: "runner_comet", name: "Comet", rarity: "legendary" },
+    { key: "trickster_hex", name: "Hex", rarity: "mythic" },
+    { key: "trickster_echo", name: "Echo", rarity: "mythic" },
   ],
   misc: [
-    { key: "runner_scout", name: "Scout", weapon: "Twin Blades", rarity: "common" },
-    { key: "tank_drag", name: "Drag", weapon: "Chain Hook", rarity: "common" },
-    { key: "misc_nomad", name: "Nomad", weapon: "Trail Hook", rarity: "common" },
-    { key: "misc_tinker", name: "Tinker", weapon: "Gear Wrench", rarity: "common" },
-    { key: "runner_ranger", name: "Ranger", weapon: "Pixel Bow", rarity: "uncommon" },
-    { key: "misc_broker", name: "Broker", weapon: "Coin Cane", rarity: "uncommon" },
-    { key: "misc_prospector", name: "Prospector", weapon: "Gem Pick", rarity: "uncommon" },
-    { key: "misc_lantern", name: "Lantern", weapon: "Glow Rod", rarity: "uncommon" },
-    { key: "runner_fortune", name: "Fortune", weapon: "Lucky Compass", rarity: "rare" },
-    { key: "misc_scribe", name: "Scribe", weapon: "Rune Quill", rarity: "epic" },
-    { key: "misc_weaver", name: "Weaver", weapon: "Thread Blades", rarity: "rare" },
-    { key: "trickster_wildcard", name: "Wildcard", weapon: "Dice Fans", rarity: "epic" },
-    { key: "misc_mimic", name: "Mimic", weapon: "Copy Mask", rarity: "epic" },
-    { key: "misc_catalyst", name: "Catalyst", weapon: "Flux Vial", rarity: "epic" },
-    { key: "misc_harvester", name: "Harvester", weapon: "Crescent Sickle", rarity: "legendary" },
-    { key: "misc_muse", name: "Muse", weapon: "Dream Harp", rarity: "mythic" },
+    { key: "runner_scout", name: "Scout", rarity: "common" },
+    { key: "tank_drag", name: "Drag", rarity: "common" },
+    { key: "misc_nomad", name: "Nomad", rarity: "common" },
+    { key: "misc_tinker", name: "Tinker", rarity: "common" },
+    { key: "runner_ranger", name: "Ranger", rarity: "uncommon" },
+    { key: "misc_broker", name: "Broker", rarity: "uncommon" },
+    { key: "misc_prospector", name: "Prospector", rarity: "uncommon" },
+    { key: "misc_lantern", name: "Lantern", rarity: "uncommon" },
+    { key: "runner_fortune", name: "Fortune", rarity: "rare" },
+    { key: "misc_scribe", name: "Scribe", rarity: "epic" },
+    { key: "misc_weaver", name: "Weaver", rarity: "rare" },
+    { key: "trickster_wildcard", name: "Wildcard", rarity: "epic" },
+    { key: "misc_mimic", name: "Mimic", rarity: "epic" },
+    { key: "misc_catalyst", name: "Catalyst", rarity: "epic" },
+    { key: "misc_harvester", name: "Harvester", rarity: "legendary" },
+    { key: "misc_muse", name: "Muse", rarity: "mythic" },
   ],
 } as const satisfies Record<
   string,
   ReadonlyArray<{
     key: string;
     name: string;
-    weapon: string;
     rarity: Rarity;
   }>
 >;
@@ -1242,7 +1248,8 @@ const CHARACTER_ABILITIES = {
   },
   runner_dash: {
     name: "JET DASH",
-    description: "Moves 6% faster and earns 6% more running score. Press E to burst forward with a brief shield.",
+    description:
+      "Moves 6% faster and earns 6% more running score. Press E to burst forward with a brief shield.",
   },
   runner_stride: {
     name: "FLOW STRIDE",
@@ -1250,31 +1257,38 @@ const CHARACTER_ABILITIES = {
   },
   runner_courier: {
     name: "SPECIAL DELIVERY",
-    description: "Earns 25% more running score for 4 seconds after collecting a gem, Melon, or 1v1 coin.",
+    description:
+      "Earns 25% more running score for 4 seconds after collecting a gem, Melon, or 1v1 coin.",
   },
   runner_tempo: {
     name: "SWING TEMPO",
-    description: "Odd waves are 15% faster with +15% score; even waves are 15% slower with -15% score.",
+    description:
+      "Odd waves are 15% faster with +15% score; even waves are 15% slower with -15% score.",
   },
   runner_vector: {
     name: "EDGE VECTOR",
-    description: "Earns 12% more score in an outside lane and blocks its first hit there each wave.",
+    description:
+      "Earns 12% more score in an outside lane and blocks its first hit there each wave.",
   },
   runner_blitz: {
     name: "VOLT CLEAVE",
-    description: "Press E to dash and destroy the nearest non-rock obstacle in the current lane. Cooldown: 10 seconds.",
+    description:
+      "Press E to dash and destroy the nearest non-rock obstacle in the current lane. Cooldown: 10 seconds.",
   },
   runner_horizon: {
     name: "FAR HORIZON",
-    description: "Previews incoming obstacles before every wave and reveals rival purchases in 1v1.",
+    description:
+      "Previews incoming obstacles before every wave and reveals rival purchases in 1v1.",
   },
   runner_velocity: {
     name: "FULL VELOCITY",
-    description: "Each hitless second adds 1% speed and 2% score, up to +100% speed and +200% score. A hit resets it.",
+    description:
+      "Each hitless second adds 1% speed and 2% score, up to +100% speed and +200% score. A hit resets it.",
   },
   runner_zenith: {
     name: "ZENITH CLIMB",
-    description: "Adds 2% running score per completed wave and inherits Runner abilities as it climbs. Time Stop unlocks on wave 15.",
+    description:
+      "Adds 2% running score per completed wave and inherits Runner abilities as it climbs. Time Stop unlocks on wave 15.",
   },
   runner_scout: {
     name: "QUICKSTEP",
@@ -1288,15 +1302,18 @@ const CHARACTER_ABILITIES = {
   },
   runner_ranger: {
     name: "PICKUP ZIP",
-    description: "Press E every 30 seconds to zip to an on-screen pickup. Melons award double score.",
+    description:
+      "Press E every 30 seconds to zip to an on-screen pickup. Melons award double score.",
   },
   runner_fortune: {
     name: "FORTUNE FINDER",
-    description: "Each gem collected this run adds 1 percentage point to gem spawn chance, up to +100%.",
+    description:
+      "Each gem collected this run adds 1 percentage point to gem spawn chance, up to +100%.",
   },
   runner_relay: {
     name: "OVERCHARGE RELAY",
-    description: "Every two completed waves overcharges a heart. Its discharge clears the closest obstacle in every lane.",
+    description:
+      "Every two completed waves overcharges a heart. Its discharge clears the closest obstacle in every lane.",
   },
   runner_comet: {
     name: "HEATFEAST",
@@ -1337,23 +1354,28 @@ const CHARACTER_ABILITIES = {
   },
   medic_sprout: {
     name: "SEED WARD",
-    description: "Press E once per wave to seed an obstacle for two waves, reducing its damage by 0.5 HP. Barrels resist seeds.",
+    description:
+      "Press E once per wave to seed an obstacle for two waves, reducing its damage by 0.5 HP. Barrels resist seeds.",
   },
   medic_tonic: {
     name: "FIELD ALCHEMY",
-    description: "Gems become ingredients. Brew one 1–3 HP potion and press E to drink it; wave healing is 0.5 HP.",
+    description:
+      "Gems become ingredients. Brew one 1–3 HP potion and press E to drink it; wave healing is 0.5 HP.",
   },
   medic_beacon: {
     name: "BEACON HEART",
-    description: "Can reach 5.5 HP. Reaching 1 HP lights a beacon that disables spikes and slows obstacles by 50%.",
+    description:
+      "Can reach 5.5 HP. Reaching 1 HP lights a beacon that disables spikes and slows obstacles by 50%.",
   },
   medic_revive: {
     name: "PHOENIX REVIVE",
-    description: "Survives one lethal hit at 0.5 HP and takes flight: +50% speed and score, with logs and spikes harmless.",
+    description:
+      "Survives one lethal hit at 0.5 HP and takes flight: +50% speed and score, with logs and spikes harmless.",
   },
   medic_oracle: {
     name: "THREE PROPHECIES",
-    description: "Chooses a wave prophecy. Success grants its reward and +5% permanent score; failure costs 1 HP.",
+    description:
+      "Chooses a wave prophecy. Success grants its reward and +5% permanent score; failure costs 1 HP.",
   },
   medic_bloom: {
     name: "HEALING BLOOM",
@@ -1366,15 +1388,18 @@ const CHARACTER_ABILITIES = {
   },
   medic_pulse: {
     name: "LAST PULSE",
-    description: "On death, complete a 10-second timed-key rescue: 10 hits restores 1 HP, 20 restores 2, and 30 restores full HP.",
+    description:
+      "On death, complete a 10-second timed-key rescue: 10 hits restores 1 HP, 20 restores 2, and 30 restores full HP.",
   },
   medic_suture: {
     name: "TRIAGE CYCLE",
-    description: "Restores HP to 5 after every third completed wave, but otherwise heals 1 HP only every two waves.",
+    description:
+      "Restores HP to 5 after every third completed wave, but otherwise heals 1 HP only every two waves.",
   },
   medic_vial: {
     name: "SWITCH ALLEGIANCE",
-    description: "Gems cost 1 HP and each wave heals to full. Press E to reverse obstacle effects for 30 seconds; once per 1v1 or every 120 seconds in Endless.",
+    description:
+      "Gems cost 1 HP and each wave heals to full. Press E to reverse obstacle effects for 30 seconds; once per 1v1 or every 120 seconds in Endless.",
   },
   medic_lifeline: {
     name: "LIFELINE",
@@ -1383,12 +1408,12 @@ const CHARACTER_ABILITIES = {
   },
   medic_seraph: {
     name: "SERAPHIC SHIFT",
-    description: "Evades a hit by teleporting to an empty lane, starting at 100% chance and losing 5% per activation. Divine Recovery follows when depleted.",
+    description:
+      "Evades a hit by teleporting to an empty lane, starting at 100% chance and losing 5% per activation. Divine Recovery follows when depleted.",
   },
   medic_remedy: {
     name: "COLD REMEDY",
-    description:
-      "Can heal 1 HP from the first snowflake collected each wave.",
+    description: "Can heal 1 HP from the first snowflake collected each wave.",
   },
   medic_reserve: {
     name: "RESERVE DOSE",
@@ -1411,23 +1436,28 @@ const CHARACTER_ABILITIES = {
   },
   tank_guard: {
     name: "GUARDED PACE",
-    description: "Takes 30% less damage from every source and earns 10% less score.",
+    description:
+      "Takes 30% less damage from every source and earns 10% less score.",
   },
   tank_ironclad: {
     name: "IRON SHELL",
-    description: "Takes no log damage and takes 50% more damage from every other source.",
+    description:
+      "Takes no log damage and takes 50% more damage from every other source.",
   },
   tank_warden: {
     name: "SPIKE LOCK",
-    description: "Can reach 4 HP, takes 25% less damage, and can click or tap spikes to deactivate them.",
+    description:
+      "Can reach 4 HP, takes 25% less damage, and can click or tap spikes to deactivate them.",
   },
   tank_citadel: {
     name: "FLAWLESS WALL",
-    description: "Ignores 1–3 opening obstacles based on consecutive flawless waves.",
+    description:
+      "Ignores 1–3 opening obstacles based on consecutive flawless waves.",
   },
   tank_colossus: {
     name: "COLOSSUS FRAME",
-    description: "Can reach 10 HP, heals 2 HP only after flawless waves, and gains score, slowdown, and rock resistance from excess HP.",
+    description:
+      "Can reach 10 HP, heals 2 HP only after flawless waves, and gains score, slowdown, and rock resistance from excess HP.",
   },
   tank_glacier: {
     name: "FROST ARMOR",
@@ -1435,7 +1465,8 @@ const CHARACTER_ABILITIES = {
   },
   tank_brace: {
     name: "SPIKE BRACE",
-    description: "Takes no spike damage and takes 50% more damage from every other source.",
+    description:
+      "Takes no spike damage and takes 50% more damage from every other source.",
   },
   tank_hammer: {
     name: "DEMOLITION",
@@ -1444,7 +1475,8 @@ const CHARACTER_ABILITIES = {
   },
   tank_anchor: {
     name: "GROUND HOOK",
-    description: "Press E to lock lane movement and take 75% less damage for 5 seconds.",
+    description:
+      "Press E to lock lane movement and take 75% less damage for 5 seconds.",
   },
   tank_rampart: {
     name: "LASTING RAMPART",
@@ -1452,15 +1484,18 @@ const CHARACTER_ABILITIES = {
   },
   tank_sentinel: {
     name: "ANALYZE",
-    description: "Analyzes the run's highest-damage hazard each wave, ignores its first hit, then takes 75% less damage from it. E slows barrels for 15 seconds.",
+    description:
+      "Analyzes the run's highest-damage hazard each wave, ignores its first hit, then takes 75% less damage from it. E slows barrels for 15 seconds.",
   },
   tank_atlas: {
     name: "WORLD BEARER",
-    description: "Starts at 4 HP, can reach 7 HP, and heals 1 HP each wave. Every obstacle hit shortens Sky Crush by 0.5 seconds, down to 1 second.",
+    description:
+      "Starts at 4 HP, can reach 7 HP, and heals 1 HP each wave. Every obstacle hit shortens Sky Crush by 0.5 seconds, down to 1 second.",
   },
   tank_drag: {
     name: "CHAIN ANCHOR",
-    description: "Makes barrels and logs 15% slower. Once per wave, press E to set a chain and E again to return to it safely.",
+    description:
+      "Makes barrels and logs 15% slower. Once per wave, press E to set a chain and E again to return to it safely.",
   },
   tank_plow: {
     name: "LANE PLOW",
@@ -1469,7 +1504,8 @@ const CHARACTER_ABILITIES = {
   },
   tank_reactor: {
     name: "DANGER CORE",
-    description: "Missing HP progressively raises speed and score, up to +40% speed and +30% score.",
+    description:
+      "Missing HP progressively raises speed and score, up to +40% speed and +30% score.",
   },
   tank_bastion: {
     name: "HOLD GROUND",
@@ -1483,7 +1519,8 @@ const CHARACTER_ABILITIES = {
   },
   trickster_echo: {
     name: "THE MIRROR",
-    description: "Complete the shown Mirror quests to earn shards and choose borrowed passives. After all quests, hold E for 10 seconds to awaken: Endless grants 8 max HP and 80% less damage. Press E again for a 10-second Mirror Realm where hits heal 0.5 HP and reflect damage.",
+    description:
+      "Complete the shown Mirror quests to earn shards and choose borrowed passives. After all quests, hold E for 10 seconds to awaken: Endless grants 8 max HP and 80% less damage. Press E again for a 10-second Mirror Realm where hits heal 0.5 HP and reflect damage.",
   },
   trickster_flicker: {
     name: "FATE FLICKER",
@@ -1502,7 +1539,8 @@ const CHARACTER_ABILITIES = {
   },
   trickster_jester: {
     name: "WILD ENCORE",
-    description: "Rolls one positive, matched score-and-speed, or negative modifier at the start of every wave.",
+    description:
+      "Rolls one positive, matched score-and-speed, or negative modifier at the start of every wave.",
   },
   trickster_mirage: {
     name: "MIRAGE INVASION",
@@ -1516,7 +1554,8 @@ const CHARACTER_ABILITIES = {
   },
   trickster_phantom: {
     name: "MOON PHASE",
-    description: "Ignores the first hit of each hazard kind. Nights add 50% speed, double score, block two of each kind and snowflakes; Bloodmoons turn two red hazard kinds into +2 HP and snowflakes into +1 HP. LORDSDOWN grants 10 HP and death ascends into a 6-HP LORD with hit negation and Eviscerate.",
+    description:
+      "Ignores the first hit of each hazard kind. Nights add 50% speed, double score, block two of each kind and snowflakes; Bloodmoons turn two red hazard kinds into +2 HP and snowflakes into +1 HP. LORDSDOWN grants 10 HP and death ascends into a 6-HP LORD with hit negation and Eviscerate.",
   },
   trickster_smoke: {
     name: "SMOKE BOMB",
@@ -1530,7 +1569,8 @@ const CHARACTER_ABILITIES = {
   },
   trickster_pickpocket: {
     name: "DOUBLE TAKE",
-    description: "Doubles all score and gem income; in 1v1, E can steal 10% of rival attack coins once per wave.",
+    description:
+      "Doubles all score and gem income; in 1v1, E can steal 10% of rival attack coins once per wave.",
   },
   trickster_wildcard: {
     name: "LUCKY DRAW",
@@ -1539,19 +1579,23 @@ const CHARACTER_ABILITIES = {
   },
   misc_nomad: {
     name: "SURVIVAL INSTINCT",
-    description: "A lethal hit has a 50% one-time chance to leave 0.5 HP and permanently slow hazards by 20%.",
+    description:
+      "A lethal hit has a 50% one-time chance to leave 0.5 HP and permanently slow hazards by 20%.",
   },
   misc_tinker: {
     name: "INSPIRATION",
-    description: "Click each spike once for inspiration; at 3, press E to launch a handmade spike that destroys a projectile.",
+    description:
+      "Click each spike once for inspiration; at 3, press E to launch a handmade spike that destroys a projectile.",
   },
   misc_broker: {
     name: "MARKET FUNDS",
-    description: "Collected Gems, Attack Coins, and Melon score enter separate funds. Each fund changes by 1–50% after every wave with a 60% chance to rise; cash them out with the on-screen controls or collect everything when the run ends.",
+    description:
+      "Collected Gems, Attack Coins, and Melon score enter separate funds. Each fund changes by 1–50% after every wave with a 60% chance to rise; cash them out with the on-screen controls or collect everything when the run ends.",
   },
   misc_prospector: {
     name: "GEM SURVEY",
-    description: "Warns 5 seconds before each gem appears and highlights its future lane.",
+    description:
+      "Warns 5 seconds before each gem appears and highlights its future lane.",
   },
   misc_lantern: {
     name: "FLASH OF LIGHT",
@@ -1559,27 +1603,33 @@ const CHARACTER_ABILITIES = {
   },
   misc_scribe: {
     name: "HAZARD CAP",
-    description: "After every wave, choose one hazard. During the next wave, that hazard can spawn at most 1 time per 10 wave levels, rounded down with a minimum of 1.",
+    description:
+      "After every wave, choose one hazard. During the next wave, that hazard can spawn at most 1 time per 10 wave levels, rounded down with a minimum of 1.",
   },
   misc_weaver: {
     name: "THAWING JACKET",
-    description: "After 5 snowflakes, press E for permanent freeze immunity; every second later snowflake heals 0.5 HP once per wave.",
+    description:
+      "After 5 snowflakes, press E for permanent freeze immunity; every second later snowflake heals 0.5 HP once per wave.",
   },
   misc_mimic: {
     name: "COPYCAT",
-    description: "Copies a non-Mythic rival in 1v1; in Endless, selects two Rare-or-lower passives for the run.",
+    description:
+      "Copies a non-Mythic rival in 1v1; in Endless, selects two Rare-or-lower passives for the run.",
   },
   misc_catalyst: {
     name: "FLUX FIELD",
-    description: "Far pickups move 50% slower and nearby pickups 50% faster. Press E to collect every pickup on screen.",
+    description:
+      "Far pickups move 50% slower and nearby pickups 50% faster. Press E to collect every pickup on screen.",
   },
   misc_harvester: {
     name: "HARVEST",
-    description: "Tracks Gems, Melons, and Attack Coins separately. Collect 10 of one type to unlock its E ability; collect 50 to upgrade that same ability. The live kit panel shows each unlocked action.",
+    description:
+      "Tracks Gems, Melons, and Attack Coins separately. Collect 10 of one type to unlock its E ability; collect 50 to upgrade that same ability. The live kit panel shows each unlocked action.",
   },
   misc_muse: {
     name: "RHYTHM BREAK",
-    description: "Only 5 hazards can be on screen. Press E once per run for a 15-second rhythm challenge capped at 30 hits; higher hit tiers grant stronger lasting score, defense, healing, and revive bonuses shown in the live kit panel.",
+    description:
+      "Only 5 hazards can be on screen. Press E once per run for a 15-second rhythm challenge capped at 30 hits; higher hit tiers grant stronger lasting score, defense, healing, and revive bonuses shown in the live kit panel.",
   },
 } as const satisfies Record<
   RosterCharacterKey,
@@ -1624,27 +1674,24 @@ const getValidatedVersusCharacter = (
       : catalogClass;
   return { characterKey, characterClass };
 };
-const getCharacterMaxHearts = (
-  characterKey: string,
-  characterClass: string,
-) =>
+const getCharacterMaxHearts = (characterKey: string, characterClass: string) =>
   characterKey === "trickster_phantom"
     ? 3
     : characterKey === "medic_patch"
-    ? 4
-    : characterKey === "tank_atlas"
-    ? 7
-    : characterKey === "tank_colossus"
-      ? 10
-    : characterKey === "medic_beacon"
-      ? 5.5
-      : characterKey === "medic_suture" || characterKey === "tank_hammer"
-          ? 5
-          : characterClass === "tank"
-            ? 4
-            : characterClass === "trickster"
-              ? 2
-              : 3;
+      ? 4
+      : characterKey === "tank_atlas"
+        ? 7
+        : characterKey === "tank_colossus"
+          ? 10
+          : characterKey === "medic_beacon"
+            ? 5.5
+            : characterKey === "medic_suture" || characterKey === "tank_hammer"
+              ? 5
+              : characterClass === "tank"
+                ? 4
+                : characterClass === "trickster"
+                  ? 2
+                  : 3;
 const getCharacterStartingHearts = (
   characterKey: string,
   characterClass: string,
@@ -1652,12 +1699,12 @@ const getCharacterStartingHearts = (
   characterKey === "tank_atlas"
     ? ATLAS_STARTING_HEARTS
     : characterKey === "trickster_phantom"
-    ? 3
-    : characterClass === "tank"
-      ? 4
-      : characterClass === "trickster"
-        ? 2
-        : 3;
+      ? 3
+      : characterClass === "tank"
+        ? 4
+        : characterClass === "trickster"
+          ? 2
+          : 3;
 const PHANTOM_BLOODMOON_HAZARDS: readonly Kind[] = [
   "car",
   "log",
@@ -1666,53 +1713,9 @@ const PHANTOM_BLOODMOON_HAZARDS: readonly Kind[] = [
   "spikes",
   "current",
 ];
-const WEAPON_SCORE_BONUS_BY_RARITY: Readonly<Record<Rarity, number>> = {
-  common: 0.03,
-  uncommon: 0.04,
-  rare: 0.05,
-  epic: 0.06,
-  legendary: 0.07,
-  mythic: 0.08,
-};
 const getCharacterDefinition = (characterKey: string) =>
   CHARACTER_ROSTER.find((character) => character.key === characterKey) ??
   CLASS_CHARACTERS.runner[0];
-const getWeaponScoreBonus = (rarity: Rarity) =>
-  WEAPON_SCORE_BONUS_BY_RARITY[rarity];
-const getWeaponScoreLabel = (rarity: Rarity) =>
-  `+${Math.round(getWeaponScoreBonus(rarity) * 100)}% DISTANCE SCORE`;
-const UNIQUE_WEAPON_EFFECTS: Partial<Record<CharacterKey, string>> = {
-  runner_velocity: "+5% BASE SPEED · +10% RUNNING SCORE",
-  runner_pacer: "+10 SCORE ON EVERY LANE CHANGE",
-  medic_lifeline: "RESCUE HOOK · 3 TIME-STOP LANE ZIPS",
-  medic_seraph: "10% GEM CHANCE · HEAL 1 HP",
-  tank_atlas: "HALF DAMAGE FOR 2 SECONDS AFTER A LANE CHANGE",
-  trickster_rogue: "+4% DISTANCE SCORE",
-  trickster_gambit: "DRAWS 5 CARDS EACH WAVE · 10-CARD HAND LIMIT",
-  trickster_echo: "CHANNELS MIRROR QUESTS · OPENS A 10-SECOND MIRROR REALM",
-  trickster_hex: "R ERASES 1 LANE HAZARD · 10s COOLDOWN · SENDS 3 IN 1V1",
-  misc_muse: "POWERS RHYTHM BREAK AND THE UNIQUE MUSE MIX",
-  medic_revive: "AFTER A HIT · DESTROY THE FIRST OBSTACLE EACH WAVE",
-  medic_oracle: "1ST HIT 0 DAMAGE · 2ND HIT HALF · THEN FULL",
-  tank_brace: "+15% DISTANCE SCORE",
-};
-const getCharacterWeaponScoreBonus = (
-  characterKey: CharacterKey,
-  rarity: Rarity,
-) =>
-  characterKey === "runner_velocity"
-    ? 0.1
-    : characterKey === "tank_brace"
-      ? 0.15
-      : characterKey === "trickster_rogue"
-        ? 0.04
-        : UNIQUE_WEAPON_EFFECTS[characterKey]
-          ? 0
-          : getWeaponScoreBonus(rarity);
-const getCharacterWeaponLabel = (
-  characterKey: CharacterKey,
-  rarity: Rarity,
-) => UNIQUE_WEAPON_EFFECTS[characterKey] ?? getWeaponScoreLabel(rarity);
 const STARTER_CHARACTER_KEYS: ReadonlySet<CharacterKey> = new Set([
   "runner_ace",
   "medic_patch",
@@ -1721,8 +1724,7 @@ const STARTER_CHARACTER_KEYS: ReadonlySet<CharacterKey> = new Set([
 ]);
 const isStarterCharacter = (characterKey?: string | null) =>
   Boolean(
-    characterKey &&
-      STARTER_CHARACTER_KEYS.has(characterKey as CharacterKey),
+    characterKey && STARTER_CHARACTER_KEYS.has(characterKey as CharacterKey),
   );
 const orderRosterWithStarterFirst = (
   roster: ReadonlyArray<(typeof CHARACTER_ROSTER)[number]>,
@@ -1732,18 +1734,14 @@ const orderRosterWithStarterFirst = (
       Number(isStarterCharacter(right.key)) -
       Number(isStarterCharacter(left.key)),
   );
-const isCharacterOwned = (
-  owned: Unlock[],
-  characterKey?: string | null,
-) =>
+const isCharacterOwned = (owned: Unlock[], characterKey?: string | null) =>
   Boolean(
     characterKey &&
-      (isStarterCharacter(characterKey) ||
-        owned.some(
-          (item) =>
-            item.item_type === "character" &&
-            item.item_key === characterKey,
-        )),
+    (isStarterCharacter(characterKey) ||
+      owned.some(
+        (item) =>
+          item.item_type === "character" && item.item_key === characterKey,
+      )),
   );
 const normalizeOwnedLoadout = (
   owned: Unlock[],
@@ -1753,10 +1751,9 @@ const normalizeOwnedLoadout = (
   const owns = (itemType: Unlock["item_type"], itemKey?: string | null) =>
     Boolean(
       itemKey &&
-        owned.some(
-          (item) =>
-            item.item_type === itemType && item.item_key === itemKey,
-        ),
+      owned.some(
+        (item) => item.item_type === itemType && item.item_key === itemKey,
+      ),
     );
   const requestedCharacter = loadout?.character_key ?? "runner_ace";
   const characterKey =
@@ -1769,13 +1766,13 @@ const normalizeOwnedLoadout = (
     classKey,
     characterKey,
     playerCosmetic: owns("player", loadout?.player_cosmetic)
-      ? loadout?.player_cosmetic ?? ""
+      ? (loadout?.player_cosmetic ?? "")
       : "",
     obstacleCosmetic: owns("obstacle", loadout?.obstacle_cosmetic)
-      ? loadout?.obstacle_cosmetic ?? ""
+      ? (loadout?.obstacle_cosmetic ?? "")
       : "",
     environmentCosmetic: owns("environment", loadout?.environment_cosmetic)
-      ? loadout?.environment_cosmetic ?? ""
+      ? (loadout?.environment_cosmetic ?? "")
       : "",
   };
 };
@@ -1785,16 +1782,11 @@ const MELON_BASE_SCORE = 200;
 const GAME_MODE_RULES = {
   normal: { scoreMultiplier: 1, hazardLaneLimit: MAX_HAZARD_LANES },
   hardcore: { scoreMultiplier: 1.75, hazardLaneLimit: 3 },
-  impossible: { scoreMultiplier: 3, hazardLaneLimit: MAX_HAZARD_LANES },
 } as const satisfies Record<
   GameMode,
   { scoreMultiplier: number; hazardLaneLimit: number }
 >;
-const LEVEL_XP_BASE = 10_000_000;
-const getCumulativeXpForLevel = (level: number) => {
-  const normalizedLevel = Math.max(0, Math.floor(level));
-  return LEVEL_XP_BASE * normalizedLevel * (normalizedLevel + 1);
-};
+const getCumulativeXpForLevel = cumulativeXpForLevel;
 const createEmptyPlayerProgression = (): PlayerProgression => ({
   level: 0,
   xp: 0,
@@ -1802,6 +1794,8 @@ const createEmptyPlayerProgression = (): PlayerProgression => ({
   lifetime_xp: 0,
   completed_runs: 0,
   ranked_unlocked: false,
+  ranked_purchased: false,
+  progression_version: 0,
 });
 const INVENTORY_CLASSES: ReadonlyArray<{
   key: keyof typeof CLASS_CHARACTERS;
@@ -1821,12 +1815,14 @@ const INVENTORY_CLASSES: ReadonlyArray<{
   {
     key: "tank",
     label: "TANK",
-    description: "Abilities mainly reduce damage or add health without special healing.",
+    description:
+      "Abilities mainly reduce damage or add health without special healing.",
   },
   {
     key: "trickster",
     label: "TRICKSTER",
-    description: "Special actions trigger shields, invincibility, or other rewards.",
+    description:
+      "Special actions trigger shields, invincibility, or other rewards.",
   },
   {
     key: "misc",
@@ -1860,8 +1856,7 @@ const EXTRACTION_BOXES = {
     icon: "◇",
     mix: "5% CHARACTER + WEAPON · 95% COSMETIC",
     oddsLabel: "NORMAL PULL ODDS",
-    note:
-      "DUPLICATES REFUND ⅓ OR ½ OF A PULL · WHOLE-GEM REFUNDS ROUND UP · EVERY 10TH ITEM USES THE 10× BONUS ODDS",
+    note: "DUPLICATES REFUND ⅓ OR ½ OF A PULL · WHOLE-GEM REFUNDS ROUND UP · EVERY 10TH ITEM USES THE 10× BONUS ODDS",
     odds: [
       ["common", "45.75%"],
       ["uncommon", "30.2%"],
@@ -1878,8 +1873,7 @@ const EXTRACTION_BOXES = {
     icon: "◇×10",
     mix: "9 NORMAL PULLS · 1 LEGENDARY-ODDS PULL",
     oddsLabel: "10TH: 20% CHARACTER + WEAPON · 80% COSMETIC",
-    note:
-      "DUPLICATES REFUND ⅓ OR ½ OF A PULL · WHOLE-GEM REFUNDS ROUND UP · THE 10TH PULL IS NOT GUARANTEED NEW",
+    note: "DUPLICATES REFUND ⅓ OR ½ OF A PULL · WHOLE-GEM REFUNDS ROUND UP · THE 10TH PULL IS NOT GUARANTEED NEW",
     odds: [
       ["common", "3%"],
       ["uncommon", "12%"],
@@ -1902,61 +1896,6 @@ const EXTRACTION_BOXES = {
     odds: readonly (readonly [Rarity, string])[];
   }
 >;
-function Obstacle({ kind }: { kind: Kind }) {
-  if (kind === "vortex") return <span className="vortex-shape" aria-hidden="true">◎</span>;
-  if (kind === "gem") return <span>♦</span>;
-  if (kind === "coin") return <span>●</span>;
-  if (kind === "melon") return <span aria-hidden="true">🍉</span>;
-  if (kind === "mushroom") return <span aria-hidden="true">🍄</span>;
-  if (kind === "current") return <span aria-hidden="true">≈</span>;
-
-  if (kind === "barrel")
-    return (
-      <div className="barrel-shape">
-        <i />
-        <b />
-        <em />
-      </div>
-    );
-  if (kind === "car")
-    return (
-      <div className="car-shape">
-        <i className="windshield" />
-        <i className="light left" />
-        <i className="light right" />
-        <i className="wheel left" />
-        <i className="wheel right" />
-        <b />
-      </div>
-    );
-  if (kind === "spikes")
-    return (
-      <div className="ground-spike-shape">
-        <span>!</span>
-        <i />
-        <i />
-        <i />
-        <i />
-      </div>
-    );
-  if (kind === "log")
-    return (
-      <div className="log-shape">
-        <i />
-        <b />
-        <em />
-      </div>
-    );
-  if (kind === "snowflake") return <span>❄</span>;
-  return (
-    <div className="rock-shape">
-      <u />
-      <i />
-      <b />
-      <em />
-    </div>
-  );
-}
 function MigrationMaintenanceScreen() {
   return (
     <main className="migration-maintenance" role="main">
@@ -1984,12 +1923,22 @@ function SkywayGame() {
   const meadowBonusLaneRef = useRef(0);
   const vortexGravityRef = useRef({ blockedDirection: 0, until: 0 });
   const vortexSeenRef = useRef(new Set<number>());
-  const terminalSwordRef = useRef<SwordState>({ durability: 4, cooldownUntil: 0 });
-  const terminalRivalSwordRef = useRef<SwordState>({ durability: 4, cooldownUntil: 0 });
+  const terminalSwordRef = useRef<SwordState>({
+    durability: 4,
+    cooldownUntil: 0,
+  });
+  const terminalRivalSwordRef = useRef<SwordState>({
+    durability: 4,
+    cooldownUntil: 0,
+  });
   const terminalSwordBusyRef = useRef(false);
   const terminalDamageSeenRef = useRef(0);
   const terminalWrapWaveRef = useRef(0);
-  const terminalCourseRef = useRef<{ wave: number; startsAt: number; items: readonly CourseItem[] }>({ wave: 0, startsAt: 0, items: [] });
+  const terminalCourseRef = useRef<{
+    wave: number;
+    startsAt: number;
+    items: readonly CourseItem[];
+  }>({ wave: 0, startsAt: 0, items: [] });
   const terminalConsumedRef = useRef(new Set<number>());
   const terminalSharedAttacksRef = useRef<CourseItem[]>([]);
   const terminalPositionQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -2025,8 +1974,9 @@ function SkywayGame() {
     [extractQuantities, setExtractQuantities] = useState<
       Record<ExtractionOption, number>
     >({ regular: 1, ten: 1 }),
-    [extractingOption, setExtractingOption] =
-      useState<ExtractionOption | null>(null),
+    [extractingOption, setExtractingOption] = useState<ExtractionOption | null>(
+      null,
+    ),
     [extractAnimation, setExtractAnimation] =
       useState<ExtractionAnimation>("idle"),
     [leaderboardOpen, setLeaderboardOpen] = useState(false),
@@ -2035,7 +1985,8 @@ function SkywayGame() {
   const [soundtrack, setSoundtrack] = useState<Soundtrack>("energetic"),
     [musicVolume, setMusicVolume] = useState(0.45),
     [sfxVolume, setSfxVolume] = useState(0.7),
-    [runCharacterOverride, setRunCharacterOverride] = useState<CharacterKey | null>(null),
+    [runCharacterOverride, setRunCharacterOverride] =
+      useState<CharacterKey | null>(null),
     [abilityChoice, setAbilityChoice] = useState<AbilityChoice>(null),
     [abilityStateVersion, setAbilityStateVersion] = useState(0),
     [abilitySidePanelCollapsed, setAbilitySidePanelCollapsed] = useState(false),
@@ -2052,18 +2003,21 @@ function SkywayGame() {
       CharacterKey[]
     >([]),
     [scribeHazard, setScribeHazard] = useState<Kind | null>(null),
-    [prospectorWarnings, setProspectorWarnings] =
-      useState<ProspectorWarning[]>([]),
+    [prospectorWarnings, setProspectorWarnings] = useState<ProspectorWarning[]>(
+      [],
+    ),
     [wildcardCard, setWildcardCard] = useState<WildcardCard | null>(null),
-    [wildcardEffect, setWildcardEffect] =
-      useState<WildcardRoundEffect | null>(null),
+    [wildcardEffect, setWildcardEffect] = useState<WildcardRoundEffect | null>(
+      null,
+    ),
     [gambitState, setGambitState] = useState<GambitState>(() =>
       createGambitState("initial"),
     ),
     [gambitPanelOpen, setGambitPanelOpen] = useState(false),
     [gambitSelectedCards, setGambitSelectedCards] = useState<string[]>([]),
-    [gambitRunReward, setGambitRunReward] =
-      useState<GambitRunReward | null>(null),
+    [gambitRunReward, setGambitRunReward] = useState<GambitRunReward | null>(
+      null,
+    ),
     [gambitMaxHeartsOverride, setGambitMaxHeartsOverride] = useState<
       number | null
     >(null),
@@ -2091,8 +2045,9 @@ function SkywayGame() {
     [heatfeastState, setHeatfeastState] = useState<HeatfeastState>(() =>
       createHeatfeastState(),
     ),
-    [mirageInvasion, setMirageInvasion] =
-      useState<MirageInvasionState | null>(null),
+    [mirageInvasion, setMirageInvasion] = useState<MirageInvasionState | null>(
+      null,
+    ),
     [versusOpponentMirageUntil, setVersusOpponentMirageUntil] = useState(0),
     [versusOpponentLane, setVersusOpponentLane] = useState(0),
     [waveForecast, setWaveForecast] = useState<string[]>([]),
@@ -2181,13 +2136,9 @@ function SkywayGame() {
     seraphTeleportChanceRef = useRef(100),
     atlasLaneElapsedRef = useRef(0),
     atlasLaneLimitRef = useRef(5000),
-    lastLaneChangeAtRef = useRef(0),
     reviveUsedRef = useRef(false),
     reviveFlyingRef = useRef(false),
-    phoenixFeatherActiveRef = useRef(false),
-    phoenixFeatherReadyWaveRef = useRef(0),
     pulseUsedRef = useRef(false),
-    oracleHitCountRef = useRef(0),
     oracleInvincibleWaveRef = useRef(0),
     oracleShieldWaveRef = useRef(0),
     oracleBorrowedAbilitiesRef = useRef<Set<CharacterKey>>(new Set()),
@@ -2217,7 +2168,14 @@ function SkywayGame() {
     anchorGuardUntilRef = useRef(0),
     anchorLaneLockedRef = useRef(false),
     jesterEffectRef = useRef<{
-      kind: "first-zero" | "half" | "barrel-zero" | "neutral" | "first-double" | "more" | "barrel-double";
+      kind:
+        | "first-zero"
+        | "half"
+        | "barrel-zero"
+        | "neutral"
+        | "first-double"
+        | "more"
+        | "barrel-double";
       percent: number;
       firstUsed: boolean;
     }>({ kind: "first-zero", percent: 0, firstUsed: false }),
@@ -2353,12 +2311,13 @@ function SkywayGame() {
       ((matchId: string, preserveRunState?: boolean) => Promise<boolean>) | null
     >(null),
     beginVersusMatchRef = useRef<
-      ((
-        matchId: string,
-        opponent: string,
-        serverStatus?: string,
-        serverMap?: unknown,
-      ) => Promise<void>) | null
+      | ((
+          matchId: string,
+          opponent: string,
+          serverStatus?: string,
+          serverMap?: unknown,
+        ) => Promise<void>)
+      | null
     >(null),
     versusReconnectUserRef = useRef<string | null>(null),
     versusReconnectIntentRef = useRef(0),
@@ -2422,12 +2381,10 @@ function SkywayGame() {
         clearTimeout(waveAnnouncementTimerRef.current);
       if (pitchKatanaTimerRef.current)
         clearTimeout(pitchKatanaTimerRef.current);
-      if (hexThroneTimerRef.current)
-        clearTimeout(hexThroneTimerRef.current);
+      if (hexThroneTimerRef.current) clearTimeout(hexThroneTimerRef.current);
       versusSearchingRef.current = false;
       versusSearchTokenRef.current += 1;
-      if (versusPollTimerRef.current)
-        clearTimeout(versusPollTimerRef.current);
+      if (versusPollTimerRef.current) clearTimeout(versusPollTimerRef.current);
       if (realtimeRef.current) void supabase.removeChannel(realtimeRef.current);
       cloudflareRealtimeRef.current?.close();
       setRealtimeMutationListener(null);
@@ -2579,12 +2536,14 @@ function SkywayGame() {
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, []);
-  const [playerProgression, setPlayerProgression] =
-      useState<PlayerProgression>(createEmptyPlayerProgression),
+  const [playerProgression, setPlayerProgression] = useState<PlayerProgression>(
+      createEmptyPlayerProgression,
+    ),
     [progressionRunVersion, setProgressionRunVersion] = useState(0),
     [lastRunXpBreakdown, setLastRunXpBreakdown] =
       useState<RunXpBreakdown | null>(null);
   const [endlessMode, setEndlessMode] = useState<GameMode>("normal");
+  const [rankedUnlockBusy, setRankedUnlockBusy] = useState(false);
   const [mainView, setMainView] = useState<MainView>("endless"),
     [playScope, setPlayScope] = useState<PlayScope>("single"),
     [versusMode, setVersusMode] = useState<VersusMode>("casual"),
@@ -2592,9 +2551,7 @@ function SkywayGame() {
     [practiceMapChoice, setPracticeMapChoice] = useState<MapId | "random">(
       "random",
     ),
-    [mapPriority, setMapPriority] = useState<MapId[]>([
-      ...DEFAULT_MAP_VOTES,
-    ]),
+    [mapPriority, setMapPriority] = useState<MapId[]>([...DEFAULT_MAP_VOTES]),
     [mapPriorityConfigured, setMapPriorityConfigured] = useState(false),
     [mapPriorityBusy, setMapPriorityBusy] = useState(false),
     [mapPriorityStatus, setMapPriorityStatus] = useState(""),
@@ -2626,11 +2583,20 @@ function SkywayGame() {
       null,
     ),
     [versusSyncRetry, setVersusSyncRetry] = useState(0);
-  const [characterSelectionEndsAt, setCharacterSelectionEndsAt] = useState<number | null>(null);
+  const [characterSelectionEndsAt, setCharacterSelectionEndsAt] = useState<
+    number | null
+  >(null);
   const [characterPickBusy, setCharacterPickBusy] = useState(false);
   const [weaponClock, setWeaponClock] = useState(0);
   useEffect(() => {
-    if (!characterSelectionEndsAt && !(playScope !== "single" && (versusMap === "pitch" || versusMap === "terminal"))) return;
+    if (
+      !characterSelectionEndsAt &&
+      !(
+        playScope !== "single" &&
+        (versusMap === "pitch" || versusMap === "terminal")
+      )
+    )
+      return;
     const timer = window.setInterval(() => setWeaponClock(Date.now()), 100);
     return () => window.clearInterval(timer);
   }, [characterSelectionEndsAt, playScope, versusMap]);
@@ -2645,8 +2611,7 @@ function SkywayGame() {
       const level = Math.max(0, Math.floor(Number(payload.level) || 0));
       const xp = Math.max(0, Math.floor(Number(payload.xp) || 0));
       const levelXpRequired =
-        getCumulativeXpForLevel(level + 1) -
-        getCumulativeXpForLevel(level);
+        getCumulativeXpForLevel(level + 1) - getCumulativeXpForLevel(level);
       const xpRequired = Math.max(
         1,
         Math.floor(Number(payload.xp_required) || levelXpRequired),
@@ -2655,16 +2620,17 @@ function SkywayGame() {
         level,
         xp: Math.min(xp, xpRequired - 1),
         xp_required: xpRequired,
-        lifetime_xp: Math.max(
-          0,
-          Math.floor(Number(payload.lifetime_xp) || 0),
-        ),
+        lifetime_xp: Math.max(0, Math.floor(Number(payload.lifetime_xp) || 0)),
         completed_runs: Math.max(
           0,
           Math.floor(Number(payload.completed_runs) || 0),
         ),
-        ranked_unlocked:
-          payload.ranked_unlocked === true,
+        ranked_unlocked: payload.ranked_unlocked === true,
+        ranked_purchased: payload.ranked_purchased === true,
+        progression_version: Math.max(
+          0,
+          Math.floor(Number(payload.progression_version) || 0),
+        ),
         xp_awarded:
           payload.xp_awarded === undefined
             ? undefined
@@ -2678,7 +2644,7 @@ function SkywayGame() {
           progressionOwnerUserIdRef.current === requestUserId;
         if (
           belongsToCurrentAccount &&
-          nextProgression.lifetime_xp < current.lifetime_xp
+          isOlderProgression(current, nextProgression)
         )
           return current;
         progressionOwnerUserIdRef.current = requestUserId;
@@ -2687,61 +2653,65 @@ function SkywayGame() {
     },
     [],
   );
-  const refreshProgression = useCallback(async (expectedUserId?: string) => {
-    const requestUserId = expectedUserId ?? userIdRef.current;
-    if (!requestUserId || userIdRef.current !== requestUserId) return;
-    const { data, error } = await supabase.rpc("get_player_progression");
-    if (userIdRef.current !== requestUserId) return;
-    if (error) {
-      console.error("Could not load player progression:", error.message);
-      return;
-    }
-    applyProgressionPayload(data, requestUserId);
-  }, [applyProgressionPayload]);
-  const startProgressionRun = useCallback(async function requestRunStart(): Promise<
-    string | null
-  > {
-    const inFlight = progressionStartPromiseRef.current;
-    if (inFlight) {
-      if (inFlight.intent === progressionStartIntentRef.current)
-        return inFlight.promise;
-      await inFlight.promise;
-      if (progressionStartPromiseRef.current === inFlight)
-        progressionStartPromiseRef.current = null;
-      return requestRunStart();
-    }
-    const intent = progressionStartIntentRef.current + 1;
-    progressionStartIntentRef.current = intent;
-    const pending = (async () => {
-      progressionRunIdRef.current = null;
-      progressionAwardedRunIdRef.current = null;
-      const requestUserId = userIdRef.current;
-      if (!requestUserId) return null;
-      const { data, error } = await supabase.rpc("start_progression_run");
-      if (
-        intent !== progressionStartIntentRef.current ||
-        userIdRef.current !== requestUserId
-      )
-        return null;
-      if (error || typeof data !== "string") {
-        console.error(
-          "Could not start account XP run:",
-          error?.message ?? "invalid run receipt",
-        );
-        return null;
+  const refreshProgression = useCallback(
+    async (expectedUserId?: string) => {
+      const requestUserId = expectedUserId ?? userIdRef.current;
+      if (!requestUserId || userIdRef.current !== requestUserId) return;
+      const { data, error } = await supabase.rpc("get_player_progression");
+      if (userIdRef.current !== requestUserId) return;
+      if (error) {
+        console.error("Could not load player progression:", error.message);
+        return;
       }
-      progressionRunIdRef.current = data;
-      setProgressionRunVersion((value) => value + 1);
-      return data;
-    })();
-    const attempt = { intent, promise: pending };
-    progressionStartPromiseRef.current = attempt;
-    void pending.finally(() => {
-      if (progressionStartPromiseRef.current === attempt)
-        progressionStartPromiseRef.current = null;
-    });
-    return pending;
-  }, []);
+      applyProgressionPayload(data, requestUserId);
+    },
+    [applyProgressionPayload],
+  );
+  const startProgressionRun = useCallback(
+    async function requestRunStart(): Promise<string | null> {
+      const inFlight = progressionStartPromiseRef.current;
+      if (inFlight) {
+        if (inFlight.intent === progressionStartIntentRef.current)
+          return inFlight.promise;
+        await inFlight.promise;
+        if (progressionStartPromiseRef.current === inFlight)
+          progressionStartPromiseRef.current = null;
+        return requestRunStart();
+      }
+      const intent = progressionStartIntentRef.current + 1;
+      progressionStartIntentRef.current = intent;
+      const pending = (async () => {
+        progressionRunIdRef.current = null;
+        progressionAwardedRunIdRef.current = null;
+        const requestUserId = userIdRef.current;
+        if (!requestUserId) return null;
+        const { data, error } = await supabase.rpc("start_progression_run");
+        if (
+          intent !== progressionStartIntentRef.current ||
+          userIdRef.current !== requestUserId
+        )
+          return null;
+        if (error || typeof data !== "string") {
+          console.error(
+            "Could not start account XP run:",
+            error?.message ?? "invalid run receipt",
+          );
+          return null;
+        }
+        progressionRunIdRef.current = data;
+        setProgressionRunVersion((value) => value + 1);
+        return data;
+      })();
+      const attempt = { intent, promise: pending };
+      progressionStartPromiseRef.current = attempt;
+      void pending.finally(() => {
+        if (progressionStartPromiseRef.current === attempt)
+          progressionStartPromiseRef.current = null;
+      });
+      return pending;
+    },
+    [],
+  );
   const cancelPendingProgressionStart = useCallback(() => {
     progressionResetIntentRef.current += 1;
     if (!progressionStartPromiseRef.current) return;
@@ -2768,9 +2738,7 @@ function SkywayGame() {
             ? "sync_1v1_progression"
             : "sync_progression_run";
         const identifiers =
-          playScope === "versus"
-            ? { p_match_id: runId }
-            : { p_run_id: runId };
+          playScope === "versus" ? { p_match_id: runId } : { p_run_id: runId };
         return supabase.rpc(rpcName, {
           ...identifiers,
           p_wave: waveRef.current,
@@ -2811,14 +2779,7 @@ function SkywayGame() {
       document.removeEventListener("visibilitychange", syncVisibility);
       void syncHeartbeat(false);
     };
-  }, [
-    guest,
-    paused,
-    playScope,
-    progressionRunVersion,
-    running,
-    wavePause,
-  ]);
+  }, [guest, paused, playScope, progressionRunVersion, running, wavePause]);
   const applyAuthoritativeVersusPoints = useCallback((value: unknown) => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return;
@@ -2908,17 +2869,13 @@ function SkywayGame() {
     setMapPriorityStatus("UNSAVED CHANGES");
   }, []);
   useEffect(() => {
-    if (mainView === "versus" && userEmail && !guest)
-      void loadMapPriority();
+    if (mainView === "versus" && userEmail && !guest) void loadMapPriority();
   }, [guest, loadMapPriority, mainView, userEmail]);
-  const enqueueVersusStateSync = useCallback(
-    (task: () => Promise<void>) => {
-      const queued = versusStateSyncQueueRef.current.then(task, task);
-      versusStateSyncQueueRef.current = queued.catch(() => undefined);
-      return queued;
-    },
-    [],
-  );
+  const enqueueVersusStateSync = useCallback((task: () => Promise<void>) => {
+    const queued = versusStateSyncQueueRef.current.then(task, task);
+    versusStateSyncQueueRef.current = queued.catch(() => undefined);
+    return queued;
+  }, []);
   const resetVersusClientSync = useCallback(() => {
     processedPickupIdsRef.current.clear();
     pendingVersusCoinPickupIdsRef.current.clear();
@@ -3010,11 +2967,7 @@ function SkywayGame() {
     if (activeMapId === "terminal") return;
     if (!group) return;
     const releaseProgress = group[0]?.attackReleaseProgress;
-    if (
-      releaseProgress !== undefined &&
-      waveProgress < releaseProgress
-    )
-      return;
+    if (releaseProgress !== undefined && waveProgress < releaseProgress) return;
     const groupIds = new Set(group.map((item) => item.id));
     const inserted = group.every((candidate) =>
       items.some((item) => item.id === candidate.id),
@@ -3034,8 +2987,7 @@ function SkywayGame() {
     const canReleaseAgainst = (current: readonly Item[]) => {
       const liveItems = current.filter(
         (item) =>
-          item.y < 108 &&
-          (!item.scheduledAt || item.scheduledAt <= Date.now()),
+          item.y < 108 && (!item.scheduledAt || item.scheduledAt <= Date.now()),
       );
       const blockedLanesFor = (item: Item) =>
         item.kind === "current"
@@ -3115,13 +3067,10 @@ function SkywayGame() {
   };
   const canUseCharacter = useCallback(
     (characterKey?: string | null) =>
-      isCharacterAvailable(
-        isCharacterOwned(unlocks, characterKey),
-        {
-          isAdmin,
-          testModeEnabled: effectiveCharacterTestMode,
-        },
-      ),
+      isCharacterAvailable(isCharacterOwned(unlocks, characterKey), {
+        isAdmin,
+        testModeEnabled: effectiveCharacterTestMode,
+      }),
     [effectiveCharacterTestMode, isAdmin, unlocks],
   );
   const selectedCharacterAvailable = canUseCharacter(selectedCharacter);
@@ -3130,22 +3079,21 @@ function SkywayGame() {
     : "runner_ace";
   const availableClass = getCharacterClassKey(availableCharacter);
   const classBlockedByGameMode =
-    !effectiveCharacterTestMode &&
-    (mode === "impossible" ||
-      (mode === "hardcore" &&
-        (availableClass === "medic" || availableClass === "tank")));
+    endlessCharacter(mode, availableCharacter) !== availableCharacter;
   const classBlockedByMap =
     !effectiveCharacterTestMode &&
     isVersusRun &&
     !isCharacterClassAllowed(activeMapId, availableClass);
-  const forcedMapCharacter = isVersusRun && (!effectiveCharacterTestMode || activeMapId === "terminal")
-    ? activeMapRules.forcedCharacterId
-    : null;
+  const forcedMapCharacter =
+    isVersusRun && (!effectiveCharacterTestMode || activeMapId === "terminal")
+      ? activeMapRules.forcedCharacterId
+      : null;
   const equippedCharacter =
     classBlockedByGameMode || classBlockedByMap
       ? "runner_ace"
-      : forcedMapCharacter ?? availableCharacter;
-  const activeCharacter = (runCharacterOverride ?? equippedCharacter) as CharacterKey;
+      : (forcedMapCharacter ?? availableCharacter);
+  const activeCharacter = (runCharacterOverride ??
+    equippedCharacter) as CharacterKey;
   const activeClass = getCharacterClassKey(activeCharacter);
   const previousVersusOpponentHeartsRef = useRef(versusOpponentHearts);
   const previousPlayerHeartsRef = useRef(hearts);
@@ -3153,8 +3101,7 @@ function SkywayGame() {
   useEffect(() => {
     const previousHearts = previousVersusOpponentHeartsRef.current;
     if (isVersusRun && running && versusOpponentHearts < previousHearts) {
-      if (versusOpponentHearts <= 0)
-        void audioEngine.playSfx("rivalDown");
+      if (versusOpponentHearts <= 0) void audioEngine.playSfx("rivalDown");
       else if (versusOpponentHearts <= 1)
         void audioEngine.playSfx("rivalCritical");
       else void audioEngine.playSfx("rivalHit");
@@ -3163,8 +3110,7 @@ function SkywayGame() {
   }, [isVersusRun, running, versusOpponentHearts]);
   useEffect(() => {
     const previousHearts = previousPlayerHeartsRef.current;
-    if (running && hearts > previousHearts)
-      void audioEngine.playSfx("heal");
+    if (running && hearts > previousHearts) void audioEngine.playSfx("heal");
     previousPlayerHeartsRef.current = hearts;
   }, [hearts, running]);
   useEffect(() => {
@@ -3175,42 +3121,40 @@ function SkywayGame() {
       void audioEngine.playSfx("intermission");
     previousVersusPhaseRef.current = versusPhase;
   }, [versusPhase]);
-  const hasCharacterAbility = useCallback((characterKey: CharacterKey) => {
-    if (activeCharacter === characterKey) return true;
-    if (
-      activeCharacter === "misc_mimic" &&
-      mimicSelectedAbilities.includes(characterKey)
-    )
-      return true;
-    if (
-      activeCharacter === "trickster_echo" &&
-      echoSelectedAbilities.includes(characterKey)
-    )
-      return true;
-    if (
-      activeCharacter === "medic_oracle" &&
-      oracleBorrowedAbilitiesRef.current.has(characterKey)
-    )
-      return true;
-    if (activeCharacter !== "runner_zenith") return false;
-    const unlockWave: Partial<Record<CharacterKey, number>> = {
-      runner_orbit: 5,
-      medic_halo: 7,
-      runner_horizon: 9,
-      runner_relay: 10,
-      tank_glacier: 12,
-      runner_ace: 12,
-      runner_dash: 12,
-      runner_stride: 12,
-    };
-    const requiredWave = unlockWave[characterKey];
-    return requiredWave !== undefined && wave >= requiredWave;
-  }, [
-    activeCharacter,
-    echoSelectedAbilities,
-    mimicSelectedAbilities,
-    wave,
-  ]);
+  const hasCharacterAbility = useCallback(
+    (characterKey: CharacterKey) => {
+      if (activeCharacter === characterKey) return true;
+      if (
+        activeCharacter === "misc_mimic" &&
+        mimicSelectedAbilities.includes(characterKey)
+      )
+        return true;
+      if (
+        activeCharacter === "trickster_echo" &&
+        echoSelectedAbilities.includes(characterKey)
+      )
+        return true;
+      if (
+        activeCharacter === "medic_oracle" &&
+        oracleBorrowedAbilitiesRef.current.has(characterKey)
+      )
+        return true;
+      if (activeCharacter !== "runner_zenith") return false;
+      const unlockWave: Partial<Record<CharacterKey, number>> = {
+        runner_orbit: 5,
+        medic_halo: 7,
+        runner_horizon: 9,
+        runner_relay: 10,
+        tank_glacier: 12,
+        runner_ace: 12,
+        runner_dash: 12,
+        runner_stride: 12,
+      };
+      const requiredWave = unlockWave[characterKey];
+      return requiredWave !== undefined && wave >= requiredWave;
+    },
+    [activeCharacter, echoSelectedAbilities, mimicSelectedAbilities, wave],
+  );
   const baseStartingHearts = getCharacterStartingHearts(
     activeCharacter,
     activeClass,
@@ -3226,14 +3170,8 @@ function SkywayGame() {
         baseCharacterMaxHearts,
       )
     : { startingHp: baseStartingHearts, maxHp: baseCharacterMaxHearts };
-  const startingHearts =
-    mode === "impossible" || mode === "hardcore"
-      ? 1
-      : mapHealth.startingHp;
-  const localMaxHearts =
-    mode === "impossible" || mode === "hardcore"
-      ? 1
-      : mapHealth.maxHp;
+  const startingHearts = mode === "hardcore" ? 1 : mapHealth.startingHp;
+  const localMaxHearts = mode === "hardcore" ? 1 : mapHealth.maxHp;
   const echoKnowingBenefits = getEchoKnowingBenefits(
     echoKnowingState,
     echoQuestState.mirrorShards,
@@ -3244,15 +3182,15 @@ function SkywayGame() {
       : activeCharacter === "trickster_gambit" &&
           gambitMaxHeartsOverride !== null
         ? gambitMaxHeartsOverride
-      : activeCharacter === "trickster_echo" &&
-          !isOnlineVersus &&
-          echoKnowingBenefits.maxHearts !== null
-        ? echoKnowingBenefits.maxHearts
-      : activeCharacter === "trickster_hex" && hexState.godMode
-        ? hexState.godMaxHearts
-      : isOnlineVersus && versusServerMaxHearts !== null
-      ? versusServerMaxHearts
-      : localMaxHearts;
+        : activeCharacter === "trickster_echo" &&
+            !isOnlineVersus &&
+            echoKnowingBenefits.maxHearts !== null
+          ? echoKnowingBenefits.maxHearts
+          : activeCharacter === "trickster_hex" && hexState.godMode
+            ? hexState.godMaxHearts
+            : isOnlineVersus && versusServerMaxHearts !== null
+              ? versusServerMaxHearts
+              : localMaxHearts;
   useEffect(() => {
     if (!running || activeCharacter !== "trickster_echo") {
       echoTrackedHeartsRef.current = hearts;
@@ -3269,8 +3207,7 @@ function SkywayGame() {
     if (healed <= 0) return;
     const progress = {
       ...echoProgressRef.current,
-      totalHeartsHealed:
-        echoProgressRef.current.totalHeartsHealed + healed,
+      totalHeartsHealed: echoProgressRef.current.totalHeartsHealed + healed,
     };
     echoProgressRef.current = progress;
     setEchoProgress(progress);
@@ -3312,7 +3249,10 @@ function SkywayGame() {
     if (echoKnowingState.realmUntilMs <= 0) return;
     const delay = Math.max(0, echoKnowingState.realmUntilMs - Date.now());
     const timer = window.setTimeout(() => {
-      if (echoKnowingStateRef.current.realmUntilMs !== echoKnowingState.realmUntilMs)
+      if (
+        echoKnowingStateRef.current.realmUntilMs !==
+        echoKnowingState.realmUntilMs
+      )
         return;
       const settled = {
         ...echoKnowingStateRef.current,
@@ -3342,15 +3282,11 @@ function SkywayGame() {
     setAbilityNotice("THE KNOWING · HOLD CANCELLED");
   }, [isVersusRun, versusPhase]);
   const phantomNightActive =
-    activeCharacter === "trickster_phantom" &&
-    !phantomLord &&
-    wave % 2 === 0;
+    activeCharacter === "trickster_phantom" && !phantomLord && wave % 2 === 0;
   const phantomBloodmoonActive =
     activeCharacter === "trickster_phantom" && wave % 5 === 0;
   const phantomLordsdownActive =
-    activeCharacter === "trickster_phantom" &&
-    !phantomLord &&
-    wave % 10 === 0;
+    activeCharacter === "trickster_phantom" && !phantomLord && wave % 10 === 0;
   const modeMultiplier = modeRules.scoreMultiplier;
   const classScoreMultiplier =
     activeClass === "trickster" && mode === "normal" ? 1.15 : 1;
@@ -3358,43 +3294,33 @@ function SkywayGame() {
     CHARACTER_ABILITIES[activeCharacter as CharacterKey] ??
     CHARACTER_ABILITIES.runner_ace;
   const activeCharacterDefinition = getCharacterDefinition(activeCharacter);
-  const activeWeaponScoreBonus = getCharacterWeaponScoreBonus(
-    activeCharacter as CharacterKey,
-    activeCharacterDefinition.rarity,
+  const getActiveGambitEffects = useCallback(
+    (targetWave: number, currentHearts: number) =>
+      gambitRewardSchedulesRef.current.reduce(
+        (combined, schedule) => {
+          const effect = getGambitWaveEffects(
+            schedule,
+            targetWave,
+            currentHearts,
+          );
+          return {
+            scoreMultiplier: combined.scoreMultiplier * effect.scoreMultiplier,
+            damageMultiplier:
+              combined.damageMultiplier * effect.damageMultiplier,
+            invincible: combined.invincible || effect.invincible,
+            sentObstacleMultiplier:
+              combined.sentObstacleMultiplier * effect.sentObstacleMultiplier,
+          };
+        },
+        {
+          scoreMultiplier: 1,
+          damageMultiplier: 1,
+          invincible: false,
+          sentObstacleMultiplier: 1,
+        },
+      ),
+    [],
   );
-  const activeWeaponLabel = getCharacterWeaponLabel(
-    activeCharacter as CharacterKey,
-    activeCharacterDefinition.rarity,
-  );
-  const activeWeaponScoreMultiplier = activeMapId === "terminal" ? 1 : 1 + activeWeaponScoreBonus;
-  const getActiveGambitEffects = useCallback((
-    targetWave: number,
-    currentHearts: number,
-  ) =>
-    gambitRewardSchedulesRef.current.reduce(
-      (combined, schedule) => {
-        const effect = getGambitWaveEffects(
-          schedule,
-          targetWave,
-          currentHearts,
-        );
-        return {
-          scoreMultiplier:
-            combined.scoreMultiplier * effect.scoreMultiplier,
-          damageMultiplier:
-            combined.damageMultiplier * effect.damageMultiplier,
-          invincible: combined.invincible || effect.invincible,
-          sentObstacleMultiplier:
-            combined.sentObstacleMultiplier * effect.sentObstacleMultiplier,
-        };
-      },
-      {
-        scoreMultiplier: 1,
-        damageMultiplier: 1,
-        invincible: false,
-        sentObstacleMultiplier: 1,
-      },
-    ), []);
   useEffect(() => {
     const awardUserId = userIdRef.current;
     if (
@@ -3469,7 +3395,9 @@ function SkywayGame() {
             progressionAwardedRunIdRef.current = null;
           return;
         }
-        await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+        await new Promise((resolve) =>
+          setTimeout(resolve, 350 * (attempt + 1)),
+        );
       }
     };
     const pendingAward = awardRun();
@@ -3478,16 +3406,9 @@ function SkywayGame() {
       if (progressionAwardPromiseRef.current === pendingAward)
         progressionAwardPromiseRef.current = null;
     });
-  }, [
-    applyProgressionPayload,
-    guest,
-    over,
-    playScope,
-    progressionRunVersion,
-  ]);
+  }, [applyProgressionPayload, guest, over, playScope, progressionRunVersion]);
   useEffect(() => {
-    if (mainView === "endless" && !running && !over)
-      setHearts(startingHearts);
+    if (mainView === "endless" && !running && !over) setHearts(startingHearts);
   }, [mainView, over, running, startingHearts]);
   const saveAudioPreferences = (
     nextTrack: Soundtrack,
@@ -3525,55 +3446,57 @@ function SkywayGame() {
     audioEngine.setSfxVolume(volume);
     saveAudioPreferences(soundtrack, musicVolume, volume);
   };
-  const refreshPlayerAccess = useCallback(async (
-    blocking = false,
-    expectedUserId?: string,
-  ) => {
-    const requestUserId = expectedUserId ?? userIdRef.current;
-    if (
-      !requestUserId ||
-      userIdRef.current !== requestUserId ||
-      authSessionUserIdRef.current !== requestUserId
-    )
-      return null;
-    if (blocking) setPlayerAccessChecking(true);
-    const { data, error } = await supabase.rpc("register_player_device", {
-      p_device_token: getOrCreateDeviceToken(),
-      p_label: "Web browser",
-    });
-    if (
-      userIdRef.current !== requestUserId ||
-      authSessionUserIdRef.current !== requestUserId
-    )
-      return null;
-    if (error) {
-      console.error("Could not verify player access:", error.message);
-      setPlayerAccessError(error.message);
-      setRunning(false);
-      audioEngine.stop();
+  const refreshPlayerAccess = useCallback(
+    async (blocking = false, expectedUserId?: string) => {
+      const requestUserId = expectedUserId ?? userIdRef.current;
+      if (
+        !requestUserId ||
+        userIdRef.current !== requestUserId ||
+        authSessionUserIdRef.current !== requestUserId
+      )
+        return null;
+      if (blocking) setPlayerAccessChecking(true);
+      const { data, error } = await supabase.rpc("register_player_device", {
+        p_device_token: getOrCreateDeviceToken(),
+        p_label: "Web browser",
+      });
+      if (
+        userIdRef.current !== requestUserId ||
+        authSessionUserIdRef.current !== requestUserId
+      )
+        return null;
+      if (error) {
+        console.error("Could not verify player access:", error.message);
+        setPlayerAccessError(error.message);
+        setRunning(false);
+        audioEngine.stop();
+        setPlayerAccessChecking(false);
+        return null;
+      }
+      if (!data || typeof data !== "object") {
+        setPlayerAccessError(
+          "The access service returned an invalid response.",
+        );
+        setRunning(false);
+        setPlayerAccessChecking(false);
+        audioEngine.stop();
+        return null;
+      }
+      const access = data as PlayerAccess;
+      setPlayerAccessError("");
+      setPlayerAccess(access);
+      if (access.account_banned || access.device_banned) {
+        setRunning(false);
+        setPaused(false);
+        setPauseMenuOpen(false);
+        setWavePause(false);
+        audioEngine.stop();
+      }
       setPlayerAccessChecking(false);
-      return null;
-    }
-    if (!data || typeof data !== "object") {
-      setPlayerAccessError("The access service returned an invalid response.");
-      setRunning(false);
-      setPlayerAccessChecking(false);
-      audioEngine.stop();
-      return null;
-    }
-    const access = data as PlayerAccess;
-    setPlayerAccessError("");
-    setPlayerAccess(access);
-    if (access.account_banned || access.device_banned) {
-      setRunning(false);
-      setPaused(false);
-      setPauseMenuOpen(false);
-      setWavePause(false);
-      audioEngine.stop();
-    }
-    setPlayerAccessChecking(false);
-    return access;
-  }, []);
+      return access;
+    },
+    [],
+  );
   const refreshGuestDeviceAccess = useCallback(async () => {
     const { data, error } = await checkGuestDeviceAccess(
       getOrCreateDeviceToken(),
@@ -3601,18 +3524,15 @@ function SkywayGame() {
     }
     return true;
   }, []);
-  const showAbilityNotice = useCallback(
-    (message: string, durationMs = 950) => {
-      setAbilityNotice(message);
-      if (abilityNoticeTimerRef.current)
-        clearTimeout(abilityNoticeTimerRef.current);
-      abilityNoticeTimerRef.current = setTimeout(() => {
-        setAbilityNotice("");
-        abilityNoticeTimerRef.current = null;
-      }, durationMs);
-    },
-    [],
-  );
+  const showAbilityNotice = useCallback((message: string, durationMs = 950) => {
+    setAbilityNotice(message);
+    if (abilityNoticeTimerRef.current)
+      clearTimeout(abilityNoticeTimerRef.current);
+    abilityNoticeTimerRef.current = setTimeout(() => {
+      setAbilityNotice("");
+      abilityNoticeTimerRef.current = null;
+    }, durationMs);
+  }, []);
   useEffect(() => {
     if (
       !isVersusRun ||
@@ -3721,11 +3641,7 @@ function SkywayGame() {
             gemStreakRef.current,
             Math.max(0, Math.floor(authoritativeStreak)),
           );
-        if (
-          Number.isFinite(awarded) &&
-          awarded > 1 &&
-          streakResponseIsCurrent
-        )
+        if (Number.isFinite(awarded) && awarded > 1 && streakResponseIsCurrent)
           showAbilityNotice(formatGemStreakNotice(awarded), 950);
         applyProgressionPayload(data?.progression, requestUserId);
       };
@@ -3734,57 +3650,51 @@ function SkywayGame() {
     },
     [applyProgressionPayload, showAbilityNotice],
   );
-  const queueEndlessGemStreakReset = useCallback(
-    () => {
-      gemStreakRef.current = 0;
-      gemStreakGenerationRef.current += 1;
-      const runId = progressionRunIdRef.current;
-      const requestUserId = userIdRef.current;
-      if (!runId || !requestUserId) return;
-      gemStreakResetPendingRef.current = true;
-      const resetStreak = async () => {
-        if (
-          userIdRef.current !== requestUserId ||
-          progressionRunIdRef.current !== runId
-        ) {
+  const queueEndlessGemStreakReset = useCallback(() => {
+    gemStreakRef.current = 0;
+    gemStreakGenerationRef.current += 1;
+    const runId = progressionRunIdRef.current;
+    const requestUserId = userIdRef.current;
+    if (!runId || !requestUserId) return;
+    gemStreakResetPendingRef.current = true;
+    const resetStreak = async () => {
+      if (
+        userIdRef.current !== requestUserId ||
+        progressionRunIdRef.current !== runId
+      ) {
+        gemStreakResetPendingRef.current = false;
+        return;
+      }
+      let lastError = "";
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const { error: syncError } = await supabase.rpc(
+          "sync_progression_run",
+          {
+            p_run_id: runId,
+            p_wave: waveRef.current,
+            p_active: true,
+          },
+        );
+        const { error } = await supabase.rpc("reset_endless_gem_streak", {
+          p_run_id: runId,
+        });
+        if (!error) {
           gemStreakResetPendingRef.current = false;
           return;
         }
-        let lastError = "";
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          const { error: syncError } = await supabase.rpc(
-            "sync_progression_run",
-            {
-              p_run_id: runId,
-              p_wave: waveRef.current,
-              p_active: true,
-            },
+        lastError = error.message;
+        if (syncError)
+          console.error("Could not sync gem streak wave:", syncError.message);
+        if (attempt < 2)
+          await new Promise<void>((resolve) =>
+            window.setTimeout(resolve, 200 * (attempt + 1)),
           );
-          const { error } = await supabase.rpc("reset_endless_gem_streak", {
-            p_run_id: runId,
-          });
-          if (!error) {
-            gemStreakResetPendingRef.current = false;
-            return;
-          }
-          lastError = error.message;
-          if (syncError)
-            console.error(
-              "Could not sync gem streak wave:",
-              syncError.message,
-            );
-          if (attempt < 2)
-            await new Promise<void>((resolve) =>
-              window.setTimeout(resolve, 200 * (attempt + 1)),
-            );
-        }
-        console.error("Could not reset gem streak:", lastError);
-      };
-      const queued = gemClaimQueueRef.current.then(resetStreak, resetStreak);
-      gemClaimQueueRef.current = queued.catch(() => undefined);
-    },
-    [],
-  );
+      }
+      console.error("Could not reset gem streak:", lastError);
+    };
+    const queued = gemClaimQueueRef.current.then(resetStreak, resetStreak);
+    gemClaimQueueRef.current = queued.catch(() => undefined);
+  }, []);
   const applyVersusTimeStopState = useCallback(
     (
       payload: {
@@ -3848,12 +3758,15 @@ function SkywayGame() {
     setInvincible(true);
     if (invincibilityTimerRef.current)
       clearTimeout(invincibilityTimerRef.current);
-    invincibilityTimerRef.current = setTimeout(() => {
-      if (invincibleUntilRef.current <= Date.now()) {
-        setInvincible(false);
-        invincibilityTimerRef.current = null;
-      }
-    }, until - now + 25);
+    invincibilityTimerRef.current = setTimeout(
+      () => {
+        if (invincibleUntilRef.current <= Date.now()) {
+          setInvincible(false);
+          invincibilityTimerRef.current = null;
+        }
+      },
+      until - now + 25,
+    );
   }, []);
   const clearFreezeEffect = useCallback(() => {
     frozenUntilRef.current = 0;
@@ -3877,241 +3790,238 @@ function SkywayGame() {
       }
     }, durationMs + 25);
   }, []);
-  const preserveFreezeThroughHit = useCallback((recoveryMs = 500) => {
-    const remaining = frozenUntilRef.current - Date.now();
-    if (remaining > 0) applyFreezeEffect(remaining + recoveryMs);
-  }, [applyFreezeEffect]);
-  const resetCharacterAbilityState = useCallback(
-    (restoredWave?: number) => {
-      const restoring = restoredWave !== undefined;
-      const now = Date.now();
-      firstGuardWaveRef.current = restoring ? restoredWave : 0;
-      hammerCooldownUntilRef.current = restoring
-        ? now + HAMMER_COOLDOWN_MS
-        : 0;
-      sentinelLastStandUsedRef.current = restoring;
-      phantomPhaseWaveRef.current = restoring ? restoredWave : 0;
-      scoreCarryRef.current = 0;
-      currentCoinMultiplierRef.current = 1;
-      pacerRushRemainingRef.current = 0;
-      pacerRevivalUsedRef.current = restoring;
-      courierBoostRemainingRef.current = 0;
-      dashBoostRemainingRef.current = 0;
-      dashCooldownRemainingRef.current = restoring ? 5000 : 0;
-      blitzBoostRemainingRef.current = 0;
-      blitzCooldownRemainingRef.current = restoring ? BLITZ_COOLDOWN_MS : 0;
-      strideMoveCountRef.current = 0;
-      vectorBlockWaveRef.current = restoring ? restoredWave : 0;
-      haloPartsRef.current = 0;
-      relayChargesRef.current = 0;
-      velocityChargeMsRef.current = 0;
-      velocityMilestoneRef.current = 0;
-      velocityDisplayPercentRef.current = 0;
-      setVelocityDisplayPercent(0);
-      waveSpawnPlanRef.current = null;
-      timeStopUsedRef.current = restoring;
-      timeStopRemainingRef.current = 0;
-      timeStopDeadlineRef.current = 0;
-      permanentObstacleSlowRef.current = 1;
-      pitchKatanaArmingRef.current = false;
-      collisionWaveRef.current = restoring ? restoredWave : 0;
-      damageTakenWaveRef.current = restoring ? restoredWave : 0;
-      driftBoostRemainingRef.current = 0;
-      driftLastMoveAtRef.current = 0;
-      driftStackPercentRef.current = 0;
-      sparkBoostRemainingRef.current = 0;
-      sparkGemCountRef.current = 0;
-      fortuneGemCountRef.current = 0;
-      flareDamageWaveRef.current = restoring ? restoredWave : 0;
-      flareBoostWaveRef.current = 0;
-      gemStreakRef.current = 0;
-      gemStreakGenerationRef.current += 1;
-      gemStreakResetPendingRef.current = false;
-      orbitCooldownRemainingRef.current = restoring ? 3000 : 0;
-      rogueGrazeCooldownUntilRef.current = restoring ? now + 2500 : 0;
-      rogueGrazeMeterRef.current = 0;
-      rogueGrazedItemIdsRef.current.clear();
-      bloomGemWaveRef.current = restoring ? restoredWave : 0;
-      sproutSeedWaveRef.current = restoring ? restoredWave : 0;
-      remedySnowflakeWaveRef.current = restoring ? restoredWave : 0;
-      reserveHealStoredRef.current = false;
-      beaconActiveRef.current = false;
-      menderChargeRemainingRef.current = 20000;
-      menderHealedWaveRef.current = restoring ? restoredWave : 0;
-      lifelineUsedRef.current = restoring;
-      lifelineHookUsesRef.current = restoring ? 3 : 0;
-      lifelineImmuneKindsRef.current.clear();
-      seraphTeleportChanceRef.current = restoring ? 0 : 100;
-      atlasLaneElapsedRef.current = 0;
-      atlasLaneLimitRef.current = 5000;
-      lastLaneChangeAtRef.current = now;
-      reviveUsedRef.current = restoring;
-      reviveFlyingRef.current = false;
-      phoenixFeatherActiveRef.current = false;
-      phoenixFeatherReadyWaveRef.current = 0;
-      pulseUsedRef.current = restoring;
-      oracleHitCountRef.current = 0;
-      oracleInvincibleWaveRef.current = 0;
-      oracleShieldWaveRef.current = 0;
-      oracleBorrowedAbilitiesRef.current.clear();
-      rampartCollisionCountRef.current = 0;
-      mercyChainActiveRef.current = true;
-      flickerShieldWaveRef.current = restoring ? restoredWave : 0;
-      switchLastDirectionRef.current = 0;
-      switchShieldCooldownUntilRef.current = restoring ? now + 2000 : 0;
-      wardenBlockWaveRef.current = restoring ? restoredWave : 0;
-      citadelBlockWaveRef.current = restoring ? restoredWave : 0;
-      bastionChargeRemainingRef.current = 20000;
-      bastionArmorChargedRef.current = false;
-      citadelFlawlessStreakRef.current = 0;
-      citadelBlocksRemainingRef.current = restoring ? 0 : 1;
-      sentinelDamageByKindRef.current = {};
-      sentinelAnalyzedKindRef.current = null;
-      sentinelAnalyzedBlockWaveRef.current = 0;
-      sentinelBarrelSlowUntilRef.current = 0;
-      sentinelActionWaveRef.current = restoring ? restoredWave : 0;
-      anchorGuardUntilRef.current = 0;
-      anchorLaneLockedRef.current = false;
-      jesterEffectRef.current = {
-        kind: "first-zero",
-        percent: 0,
-        firstUsed: false,
-      };
-      phantomKindHitsRef.current = {};
-      phantomBloodmoonKindsRef.current.clear();
-      phantomHealthCapRef.current = 3;
-      phantomLordRef.current = false;
-      phantomLordNegationStreakRef.current = 0;
-      setPhantomHealthCap(3);
-      setPhantomLord(false);
-      smokeSlowRemainingRef.current = 0;
-      smokeCooldownUntilRef.current = restoring ? now + 20000 : 0;
-      clockworkMoveCountRef.current = 0;
-      clockworkSlowRemainingRef.current = 0;
-      clockworkCooldownRemainingRef.current = restoring ? 5000 : 0;
-      clockworkElapsedMsRef.current = 0;
-      pickpocketPassedCountRef.current = 0;
-      pickpocketUsedWaveRef.current = restoring ? restoredWave : 0;
-      switchLaneChangesRef.current = 0;
-      flickerUsedWaveRef.current = restoring ? restoredWave : 0;
-      flareLaneRef.current = null;
-      flareActiveUntilRef.current = 0;
-      flareCooldownUntilRef.current = restoring ? now + 30000 : 0;
-      flareBurnCountRef.current = 0;
-      vialAllegianceUntilRef.current = 0;
-      vialUsedRef.current = restoring;
-      vialCooldownUntilRef.current = restoring
-        ? now + VIAL_ENDLESS_COOLDOWN_MS
-        : 0;
-      mirageUsedWaveRef.current = restoring ? restoredWave : 0;
-      obstacleFreezeUntilRef.current = 0;
-      lanternCooldownUntilRef.current = restoring ? now + 10000 : 0;
-      scoutInputWindowUntilRef.current = 0;
-      scoutSnowflakeHealReadyRef.current = false;
-      scoutCooldownUntilRef.current = restoring ? now + 50000 : 0;
-      dragChainRef.current = null;
-      dragUsedWaveRef.current = restoring ? restoredWave : 0;
-      nomadSurvivalUsedRef.current = restoring;
-      tinkerInspirationRef.current = 0;
-      tinkerClickedSpikeIdsRef.current.clear();
-      rangerCooldownUntilRef.current = restoring ? now + 30000 : 0;
-      brokerFundsRef.current = { gems: 0, coins: 0, melons: 0 };
-      prospectorWarningRef.current = [];
-      scribeSpawnCountsRef.current = {};
-      weaverSnowflakeCountRef.current = 0;
-      weaverJacketRef.current = false;
-      weaverHealWaveRef.current = 0;
-      weaverHealedAmountRef.current = 0;
-      harvesterCountsRef.current = { gems: 0, coins: 0, melons: 0 };
-      harvesterCooldownUntilRef.current = 0;
-      // Muse's challenge result is not persisted yet, so a restored run must
-      // offer the challenge again instead of leaving E permanently unusable.
-      museChallengeUsedRef.current = false;
-      museMixStartedAtRef.current = 0;
-      museMixUntilRef.current = 0;
-      museMixCooldownUntilRef.current = 0;
-      museMixHealPulsesRef.current = 0;
-      const abilitySeed = `${userIdRef.current ?? "guest"}:${now}`;
-      wildcardStateRef.current = createWildcardState(abilitySeed);
-      wildcardIgnoredHitsRef.current = 0;
-      wildcardPermanentEffectRef.current = null;
-      gambitPermanentDamageMultiplierRef.current = 1;
-      gambitPermanentScoreMultiplierRef.current = 1;
-      gambitMaxHeartsRef.current = null;
-      gambitRevivesRef.current = 0;
-      gambitStateRef.current = createGambitState(abilitySeed);
-      onlineGambitBusyRef.current = false;
-      gambitRewardSchedulesRef.current = [];
-      gambitPendingDrawWaveRef.current = 0;
-      gambitDiscardRequiredRef.current = 0;
-      gambitInvincibleThroughWaveRef.current = 0;
-      const freshEchoProgress: EchoQuestProgress = {
-        highestWaveReached: 0,
-        totalHeartsHealed: 0,
-        totalDamageTaken: 0,
-        allTrickstersUnlocked: false,
-        wavesCompletedAfterUnlockingAllTricksters: 0,
-        ideaCompletedByGameRule: false,
-        allCharactersUnlocked: false,
-      };
-      echoProgressRef.current = freshEchoProgress;
-      echoQuestStateRef.current = createEchoQuestState();
-      const freshEchoKnowing = createEchoKnowingState();
-      echoKnowingStateRef.current = freshEchoKnowing;
-      echoTrackedHeartsRef.current = state.current.hearts;
-      echoHeartTrackingActiveRef.current = false;
-      const freshHexState = createHexState();
-      hexStateRef.current = freshHexState;
-      hexVoidCutStateRef.current = createHexVoidCutState();
-      hexVoidCollectedRef.current = 0;
-      hexChakramCooldownUntilRef.current = 0;
-      if (hexThroneTimerRef.current) {
-        clearTimeout(hexThroneTimerRef.current);
-        hexThroneTimerRef.current = null;
-      }
-      const freshHeatfeast = createHeatfeastState();
-      heatfeastStateRef.current = freshHeatfeast;
-      heatfeastConsumeBusyRef.current = false;
-      cometRemovalQueueRef.current = { wave: 0, counts: {} };
-      cometRemovalReceiptsRef.current = [];
-      cometRemovalBusyRef.current = false;
-      mirageInvasionRef.current = null;
-      mirageDamageBusyRef.current = false;
-      mirageActionBusyRef.current = false;
-      setAbilityChoice(null);
-      setTonicIngredients(0);
-      setTonicPotion(0);
-      setOracleProphecies([]);
-      setOracleCompleted(0);
-      setPulseGame(null);
-      setMuseGame(null);
-      setMuseReward(null);
-      setMimicSelectedAbilities([]);
-      setScribeHazard(null);
-      setProspectorWarnings([]);
-      setWildcardCard(null);
-      setWildcardEffect(null);
-      setGambitState(gambitStateRef.current);
-      setGambitPanelOpen(false);
-      setGambitSelectedCards([]);
-      setGambitRunReward(null);
-      setGambitMaxHeartsOverride(null);
-      setEchoQuestState(echoQuestStateRef.current);
-      setEchoSelectedAbilities([]);
-      setEchoProgress(freshEchoProgress);
-      setEchoKnowingState(freshEchoKnowing);
-      setEchoChargePercent(0);
-      setHexState(freshHexState);
-      setHexVoid(null);
-      setHeatfeastState(freshHeatfeast);
-      setMirageInvasion(null);
-      setVersusOpponentMirageUntil(0);
-      setWaveForecast([]);
-      setWaveForecastCollapsed(false);
-      setAbilityStateVersion((value) => value + 1);
+  const preserveFreezeThroughHit = useCallback(
+    (recoveryMs = 500) => {
+      const remaining = frozenUntilRef.current - Date.now();
+      if (remaining > 0) applyFreezeEffect(remaining + recoveryMs);
     },
-    [],
+    [applyFreezeEffect],
   );
+  const resetCharacterAbilityState = useCallback((restoredWave?: number) => {
+    const restoring = restoredWave !== undefined;
+    const now = Date.now();
+    firstGuardWaveRef.current = restoring ? restoredWave : 0;
+    hammerCooldownUntilRef.current = restoring ? now + HAMMER_COOLDOWN_MS : 0;
+    sentinelLastStandUsedRef.current = restoring;
+    phantomPhaseWaveRef.current = restoring ? restoredWave : 0;
+    scoreCarryRef.current = 0;
+    currentCoinMultiplierRef.current = 1;
+    pacerRushRemainingRef.current = 0;
+    pacerRevivalUsedRef.current = restoring;
+    courierBoostRemainingRef.current = 0;
+    dashBoostRemainingRef.current = 0;
+    dashCooldownRemainingRef.current = restoring ? 5000 : 0;
+    blitzBoostRemainingRef.current = 0;
+    blitzCooldownRemainingRef.current = restoring ? BLITZ_COOLDOWN_MS : 0;
+    strideMoveCountRef.current = 0;
+    vectorBlockWaveRef.current = restoring ? restoredWave : 0;
+    haloPartsRef.current = 0;
+    relayChargesRef.current = 0;
+    velocityChargeMsRef.current = 0;
+    velocityMilestoneRef.current = 0;
+    velocityDisplayPercentRef.current = 0;
+    setVelocityDisplayPercent(0);
+    waveSpawnPlanRef.current = null;
+    timeStopUsedRef.current = restoring;
+    timeStopRemainingRef.current = 0;
+    timeStopDeadlineRef.current = 0;
+    permanentObstacleSlowRef.current = 1;
+    pitchKatanaArmingRef.current = false;
+    collisionWaveRef.current = restoring ? restoredWave : 0;
+    damageTakenWaveRef.current = restoring ? restoredWave : 0;
+    driftBoostRemainingRef.current = 0;
+    driftLastMoveAtRef.current = 0;
+    driftStackPercentRef.current = 0;
+    sparkBoostRemainingRef.current = 0;
+    sparkGemCountRef.current = 0;
+    fortuneGemCountRef.current = 0;
+    flareDamageWaveRef.current = restoring ? restoredWave : 0;
+    flareBoostWaveRef.current = 0;
+    gemStreakRef.current = 0;
+    gemStreakGenerationRef.current += 1;
+    gemStreakResetPendingRef.current = false;
+    orbitCooldownRemainingRef.current = restoring ? 3000 : 0;
+    rogueGrazeCooldownUntilRef.current = restoring ? now + 2500 : 0;
+    rogueGrazeMeterRef.current = 0;
+    rogueGrazedItemIdsRef.current.clear();
+    bloomGemWaveRef.current = restoring ? restoredWave : 0;
+    sproutSeedWaveRef.current = restoring ? restoredWave : 0;
+    remedySnowflakeWaveRef.current = restoring ? restoredWave : 0;
+    reserveHealStoredRef.current = false;
+    beaconActiveRef.current = false;
+    menderChargeRemainingRef.current = 20000;
+    menderHealedWaveRef.current = restoring ? restoredWave : 0;
+    lifelineUsedRef.current = restoring;
+    lifelineHookUsesRef.current = restoring ? 3 : 0;
+    lifelineImmuneKindsRef.current.clear();
+    seraphTeleportChanceRef.current = restoring ? 0 : 100;
+    atlasLaneElapsedRef.current = 0;
+    atlasLaneLimitRef.current = 5000;
+
+    reviveUsedRef.current = restoring;
+    reviveFlyingRef.current = false;
+
+    pulseUsedRef.current = restoring;
+
+    oracleInvincibleWaveRef.current = 0;
+    oracleShieldWaveRef.current = 0;
+    oracleBorrowedAbilitiesRef.current.clear();
+    rampartCollisionCountRef.current = 0;
+    mercyChainActiveRef.current = true;
+    flickerShieldWaveRef.current = restoring ? restoredWave : 0;
+    switchLastDirectionRef.current = 0;
+    switchShieldCooldownUntilRef.current = restoring ? now + 2000 : 0;
+    wardenBlockWaveRef.current = restoring ? restoredWave : 0;
+    citadelBlockWaveRef.current = restoring ? restoredWave : 0;
+    bastionChargeRemainingRef.current = 20000;
+    bastionArmorChargedRef.current = false;
+    citadelFlawlessStreakRef.current = 0;
+    citadelBlocksRemainingRef.current = restoring ? 0 : 1;
+    sentinelDamageByKindRef.current = {};
+    sentinelAnalyzedKindRef.current = null;
+    sentinelAnalyzedBlockWaveRef.current = 0;
+    sentinelBarrelSlowUntilRef.current = 0;
+    sentinelActionWaveRef.current = restoring ? restoredWave : 0;
+    anchorGuardUntilRef.current = 0;
+    anchorLaneLockedRef.current = false;
+    jesterEffectRef.current = {
+      kind: "first-zero",
+      percent: 0,
+      firstUsed: false,
+    };
+    phantomKindHitsRef.current = {};
+    phantomBloodmoonKindsRef.current.clear();
+    phantomHealthCapRef.current = 3;
+    phantomLordRef.current = false;
+    phantomLordNegationStreakRef.current = 0;
+    setPhantomHealthCap(3);
+    setPhantomLord(false);
+    smokeSlowRemainingRef.current = 0;
+    smokeCooldownUntilRef.current = restoring ? now + 20000 : 0;
+    clockworkMoveCountRef.current = 0;
+    clockworkSlowRemainingRef.current = 0;
+    clockworkCooldownRemainingRef.current = restoring ? 5000 : 0;
+    clockworkElapsedMsRef.current = 0;
+    pickpocketPassedCountRef.current = 0;
+    pickpocketUsedWaveRef.current = restoring ? restoredWave : 0;
+    switchLaneChangesRef.current = 0;
+    flickerUsedWaveRef.current = restoring ? restoredWave : 0;
+    flareLaneRef.current = null;
+    flareActiveUntilRef.current = 0;
+    flareCooldownUntilRef.current = restoring ? now + 30000 : 0;
+    flareBurnCountRef.current = 0;
+    vialAllegianceUntilRef.current = 0;
+    vialUsedRef.current = restoring;
+    vialCooldownUntilRef.current = restoring
+      ? now + VIAL_ENDLESS_COOLDOWN_MS
+      : 0;
+    mirageUsedWaveRef.current = restoring ? restoredWave : 0;
+    obstacleFreezeUntilRef.current = 0;
+    lanternCooldownUntilRef.current = restoring ? now + 10000 : 0;
+    scoutInputWindowUntilRef.current = 0;
+    scoutSnowflakeHealReadyRef.current = false;
+    scoutCooldownUntilRef.current = restoring ? now + 50000 : 0;
+    dragChainRef.current = null;
+    dragUsedWaveRef.current = restoring ? restoredWave : 0;
+    nomadSurvivalUsedRef.current = restoring;
+    tinkerInspirationRef.current = 0;
+    tinkerClickedSpikeIdsRef.current.clear();
+    rangerCooldownUntilRef.current = restoring ? now + 30000 : 0;
+    brokerFundsRef.current = { gems: 0, coins: 0, melons: 0 };
+    prospectorWarningRef.current = [];
+    scribeSpawnCountsRef.current = {};
+    weaverSnowflakeCountRef.current = 0;
+    weaverJacketRef.current = false;
+    weaverHealWaveRef.current = 0;
+    weaverHealedAmountRef.current = 0;
+    harvesterCountsRef.current = { gems: 0, coins: 0, melons: 0 };
+    harvesterCooldownUntilRef.current = 0;
+    // Muse's challenge result is not persisted yet, so a restored run must
+    // offer the challenge again instead of leaving E permanently unusable.
+    museChallengeUsedRef.current = false;
+    museMixStartedAtRef.current = 0;
+    museMixUntilRef.current = 0;
+    museMixCooldownUntilRef.current = 0;
+    museMixHealPulsesRef.current = 0;
+    const abilitySeed = `${userIdRef.current ?? "guest"}:${now}`;
+    wildcardStateRef.current = createWildcardState(abilitySeed);
+    wildcardIgnoredHitsRef.current = 0;
+    wildcardPermanentEffectRef.current = null;
+    gambitPermanentDamageMultiplierRef.current = 1;
+    gambitPermanentScoreMultiplierRef.current = 1;
+    gambitMaxHeartsRef.current = null;
+    gambitRevivesRef.current = 0;
+    gambitStateRef.current = createGambitState(abilitySeed);
+    onlineGambitBusyRef.current = false;
+    gambitRewardSchedulesRef.current = [];
+    gambitPendingDrawWaveRef.current = 0;
+    gambitDiscardRequiredRef.current = 0;
+    gambitInvincibleThroughWaveRef.current = 0;
+    const freshEchoProgress: EchoQuestProgress = {
+      highestWaveReached: 0,
+      totalHeartsHealed: 0,
+      totalDamageTaken: 0,
+      allTrickstersUnlocked: false,
+      wavesCompletedAfterUnlockingAllTricksters: 0,
+      ideaCompletedByGameRule: false,
+      allCharactersUnlocked: false,
+    };
+    echoProgressRef.current = freshEchoProgress;
+    echoQuestStateRef.current = createEchoQuestState();
+    const freshEchoKnowing = createEchoKnowingState();
+    echoKnowingStateRef.current = freshEchoKnowing;
+    echoTrackedHeartsRef.current = state.current.hearts;
+    echoHeartTrackingActiveRef.current = false;
+    const freshHexState = createHexState();
+    hexStateRef.current = freshHexState;
+    hexVoidCutStateRef.current = createHexVoidCutState();
+    hexVoidCollectedRef.current = 0;
+    hexChakramCooldownUntilRef.current = 0;
+    if (hexThroneTimerRef.current) {
+      clearTimeout(hexThroneTimerRef.current);
+      hexThroneTimerRef.current = null;
+    }
+    const freshHeatfeast = createHeatfeastState();
+    heatfeastStateRef.current = freshHeatfeast;
+    heatfeastConsumeBusyRef.current = false;
+    cometRemovalQueueRef.current = { wave: 0, counts: {} };
+    cometRemovalReceiptsRef.current = [];
+    cometRemovalBusyRef.current = false;
+    mirageInvasionRef.current = null;
+    mirageDamageBusyRef.current = false;
+    mirageActionBusyRef.current = false;
+    setAbilityChoice(null);
+    setTonicIngredients(0);
+    setTonicPotion(0);
+    setOracleProphecies([]);
+    setOracleCompleted(0);
+    setPulseGame(null);
+    setMuseGame(null);
+    setMuseReward(null);
+    setMimicSelectedAbilities([]);
+    setScribeHazard(null);
+    setProspectorWarnings([]);
+    setWildcardCard(null);
+    setWildcardEffect(null);
+    setGambitState(gambitStateRef.current);
+    setGambitPanelOpen(false);
+    setGambitSelectedCards([]);
+    setGambitRunReward(null);
+    setGambitMaxHeartsOverride(null);
+    setEchoQuestState(echoQuestStateRef.current);
+    setEchoSelectedAbilities([]);
+    setEchoProgress(freshEchoProgress);
+    setEchoKnowingState(freshEchoKnowing);
+    setEchoChargePercent(0);
+    setHexState(freshHexState);
+    setHexVoid(null);
+    setHeatfeastState(freshHeatfeast);
+    setMirageInvasion(null);
+    setVersusOpponentMirageUntil(0);
+    setWaveForecast([]);
+    setWaveForecastCollapsed(false);
+    setAbilityStateVersion((value) => value + 1);
+  }, []);
   const applyGambitHandReward = useCallback(
     (
       hand: NonNullable<ReturnType<typeof evaluateGambitHand>>,
@@ -4136,15 +4046,12 @@ function SkywayGame() {
               versusServerMaxHearts ?? maxHearts,
               gambitMaxHeartsRef.current ?? maxHearts,
             )
-          : gambitMaxHeartsRef.current ?? maxHearts;
+          : (gambitMaxHeartsRef.current ?? maxHearts);
         state.current.hearts = target;
         setHearts(target);
       } else if (immediate?.setHearts !== undefined) {
         const target = isOnlineVersus
-          ? Math.min(
-              immediate.setHearts,
-              versusServerMaxHearts ?? maxHearts,
-            )
+          ? Math.min(immediate.setHearts, versusServerMaxHearts ?? maxHearts)
           : immediate.setHearts;
         state.current.hearts = target;
         setHearts(target);
@@ -4208,7 +4115,21 @@ function SkywayGame() {
               Boolean(card) &&
               typeof card.id === "string" &&
               ["clubs", "diamonds", "hearts", "spades"].includes(card.suit) &&
-              ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"].includes(card.rank),
+              [
+                "2",
+                "3",
+                "4",
+                "5",
+                "6",
+                "7",
+                "8",
+                "9",
+                "10",
+                "J",
+                "Q",
+                "K",
+                "A",
+              ].includes(card.rank),
           )
         : [];
       const nextState: GambitState = {
@@ -4233,7 +4154,10 @@ function SkywayGame() {
       if (Number.isFinite(selfCoins))
         applyAuthoritativeVersusPoints(Math.max(0, selfCoins));
       const rewardHand = asGambitHand(payload.reward_hand);
-      const rewardWave = Math.max(1, Math.floor(Number(payload.reward_wave) || 0));
+      const rewardWave = Math.max(
+        1,
+        Math.floor(Number(payload.reward_wave) || 0),
+      );
       if (applyFreshReward && payload.reward_applied && rewardHand)
         applyGambitHandReward(rewardHand, rewardWave, false);
       setAbilityStateVersion((value) => value + 1);
@@ -4285,7 +4209,8 @@ function SkywayGame() {
       } finally {
         onlineGambitBusyRef.current = false;
       }
-    }, [applyOnlineGambitPayload, showAbilityNotice],
+    },
+    [applyOnlineGambitPayload, showAbilityNotice],
   );
   const announceWave = useCallback(
     (
@@ -4300,7 +4225,7 @@ function SkywayGame() {
       const announcedAbility =
         CHARACTER_ABILITIES[announcedCharacter as CharacterKey] ??
         CHARACTER_ABILITIES.runner_ace;
-      oracleHitCountRef.current = 0;
+
       scribeSpawnCountsRef.current = {};
       const forecastMapId = mapOverride ?? activeMapId;
       const forecastVersusRun = versusRunOverride ?? isVersusRun;
@@ -4323,10 +4248,7 @@ function SkywayGame() {
         kinds: plannedKinds,
         cursor: 0,
       };
-      if (
-        applyCharacterEffects &&
-        announcedCharacter === "trickster_phantom"
-      ) {
+      if (applyCharacterEffects && announcedCharacter === "trickster_phantom") {
         const isLord = phantomLordRef.current;
         const isBloodmoon = number % 5 === 0;
         const isLordsdown = !isLord && number % 10 === 0;
@@ -4368,12 +4290,14 @@ function SkywayGame() {
           (item) => isHazardKind(item.kind) && Boolean(item.attackToken),
         );
         const queuedPurchased = new Map<string, Kind>();
-        deferredAttackGroupsRef.current.flat().forEach((item) =>
-          queuedPurchased.set(
-            item.attackToken ?? `local:${item.id}`,
-            item.kind,
-          ),
-        );
+        deferredAttackGroupsRef.current
+          .flat()
+          .forEach((item) =>
+            queuedPurchased.set(
+              item.attackToken ?? `local:${item.id}`,
+              item.kind,
+            ),
+          );
         incomingAttacksRef.current.forEach((attack) =>
           queuedPurchased.set(attack.id, attack.kind),
         );
@@ -4425,8 +4349,7 @@ function SkywayGame() {
                       : rolled.kind === "fifty-percent-more-damage"
                         ? "more"
                         : "barrel-double",
-          percent:
-            rolled.kind === "score-and-speed" ? rolled.percent / 100 : 0,
+          percent: rolled.kind === "score-and-speed" ? rolled.percent / 100 : 0,
           firstUsed: false,
         };
         showAbilityNotice(
@@ -4434,10 +4357,7 @@ function SkywayGame() {
           1500,
         );
       }
-      if (
-        applyCharacterEffects &&
-        announcedCharacter === "trickster_gambit"
-      ) {
+      if (applyCharacterEffects && announcedCharacter === "trickster_gambit") {
         if (isOnlineVersus && versusMatchRef.current) {
           void drawOnlineGambitWave(number);
         } else {
@@ -4527,9 +4447,7 @@ function SkywayGame() {
             );
           else if (isBloodmoon)
             showAbilityNotice(
-              `BLOODMOON · ${Array.from(
-                phantomBloodmoonKindsRef.current,
-              )
+              `BLOODMOON · ${Array.from(phantomBloodmoonKindsRef.current)
                 .map((kind) => kind.toUpperCase())
                 .join(" + ")} HEAL 2 HP · SNOWFLAKES HEAL 1 HP`,
               2200,
@@ -4561,197 +4479,201 @@ function SkywayGame() {
       showAbilityNotice,
     ],
   );
-  const reset = useCallback(async (
-    trackProgression = true,
-    mapOverride?: MapId,
-  ) => {
-    if (
-      trackProgression &&
-      shouldBlockNonVersusStart({
-        storedSession: readActiveVersusSession(),
-        reconnecting: versusReconnectPendingRef.current,
-      })
-    ) {
-      setSettingsOpen(false);
-      setAdminOpen(false);
-      setShopOpen(false);
-      setInventoryOpen(false);
-      setLeaderboardOpen(false);
-      setMainView("versus");
-      setPlayScope("single");
-      setVersusPhase("ready");
-      setVersusResult("RESTORING YOUR ACTIVE 1V1");
-      return;
-    }
-    const resetIntent = progressionResetIntentRef.current + 1;
-    progressionResetIntentRef.current = resetIntent;
-    setRunCharacterOverride(null);
-    if (trackProgression && progressionAwardPromiseRef.current)
-      await progressionAwardPromiseRef.current;
-    if (resetIntent !== progressionResetIntentRef.current) return;
-    if (trackProgression && userIdRef.current) {
-      const startingUserId = userIdRef.current;
-      const pendingStart = startProgressionRun();
-      const runId = await pendingStart;
+  const reset = useCallback(
+    async (trackProgression = true, mapOverride?: MapId) => {
       if (
-        resetIntent !== progressionResetIntentRef.current ||
-        startingUserId !== userIdRef.current ||
-        (runId !== null && progressionRunIdRef.current !== runId)
-      )
-        return;
-      if (!runId) {
-        showAbilityNotice("ACCOUNT XP CONNECTION ERROR · TRY AGAIN", 1800);
+        trackProgression &&
+        shouldBlockNonVersusStart({
+          storedSession: readActiveVersusSession(),
+          reconnecting: versusReconnectPendingRef.current,
+        })
+      ) {
+        setSettingsOpen(false);
+        setAdminOpen(false);
+        setShopOpen(false);
+        setInventoryOpen(false);
+        setLeaderboardOpen(false);
+        setMainView("versus");
+        setPlayScope("single");
+        setVersusPhase("ready");
+        setVersusResult("RESTORING YOUR ACTIVE 1V1");
         return;
       }
-    } else {
-      progressionStartIntentRef.current += 1;
-      progressionRunIdRef.current = null;
-      progressionAwardedRunIdRef.current = null;
-    }
-    const runMapId = mapOverride ?? activeMapId;
-    const nextRunIsTestMode = trackProgression && adminTestModeActive;
-    runIsTestModeRef.current = nextRunIsTestMode;
-    setRunIsTestMode(nextRunIsTestMode);
-    const runMapRules = getMapRules(runMapId);
-    const candidateCharacter = availableCharacter;
-    const candidateClass = getCharacterClassKey(candidateCharacter);
-    const candidateBlockedByMode =
-      !nextRunIsTestMode &&
-      (mode === "impossible" ||
-        (mode === "hardcore" &&
-          (candidateClass === "medic" || candidateClass === "tank")));
-    const runCharacter =
-      candidateBlockedByMode
+      const resetIntent = progressionResetIntentRef.current + 1;
+      progressionResetIntentRef.current = resetIntent;
+      setRunCharacterOverride(null);
+      if (trackProgression && progressionAwardPromiseRef.current)
+        await progressionAwardPromiseRef.current;
+      if (resetIntent !== progressionResetIntentRef.current) return;
+      if (trackProgression && userIdRef.current) {
+        const startingUserId = userIdRef.current;
+        const pendingStart = startProgressionRun();
+        const runId = await pendingStart;
+        if (
+          resetIntent !== progressionResetIntentRef.current ||
+          startingUserId !== userIdRef.current ||
+          (runId !== null && progressionRunIdRef.current !== runId)
+        )
+          return;
+        if (!runId) {
+          showAbilityNotice("ACCOUNT XP CONNECTION ERROR · TRY AGAIN", 1800);
+          return;
+        }
+      } else {
+        progressionStartIntentRef.current += 1;
+        progressionRunIdRef.current = null;
+        progressionAwardedRunIdRef.current = null;
+      }
+      const runMapId = mapOverride ?? activeMapId;
+      const nextRunIsTestMode = trackProgression && adminTestModeActive;
+      runIsTestModeRef.current = nextRunIsTestMode;
+      setRunIsTestMode(nextRunIsTestMode);
+      const runMapRules = getMapRules(runMapId);
+      const candidateCharacter = availableCharacter;
+      const candidateClass = getCharacterClassKey(candidateCharacter);
+      const candidateBlockedByMode =
+        endlessCharacter(mode, candidateCharacter) !== candidateCharacter;
+      const runCharacter = candidateBlockedByMode
         ? "runner_ace"
-        : (!nextRunIsTestMode || runMapId === "terminal" ? runMapRules.forcedCharacterId : null) ??
-          (nextRunIsTestMode || isCharacterClassAllowed(runMapId, candidateClass)
+        : ((!nextRunIsTestMode || runMapId === "terminal"
+            ? runMapRules.forcedCharacterId
+            : null) ??
+          (nextRunIsTestMode ||
+          isCharacterClassAllowed(runMapId, candidateClass)
             ? candidateCharacter
-            : "runner_ace");
-    const runClass = getCharacterClassKey(runCharacter);
-    const runBaseStartingHearts = getCharacterStartingHearts(
-      runCharacter,
-      runClass,
-    );
-    const runMapHealth = applyMapHealthModifiers(
-      runMapId,
-      runBaseStartingHearts,
-      getCharacterMaxHearts(runCharacter, runClass),
-    );
-    const runStartingHearts =
-      mode === "normal" ? runMapHealth.startingHp : 1;
-    const runCenterLane = Math.floor(runMapRules.laneCount / 2);
-    resetVersusClientSync();
-    incomingAttacksRef.current = [];
-    spawnedAttackIdsRef.current.clear();
-    queuedAttackTokenIdsRef.current.clear();
-    deferredAttackGroupsRef.current = [];
-    setDeferredAttackGroups([]);
-    ambientHazardStreakRef.current = { kind: null, count: 0 };
-    setLastRunXpBreakdown(null);
-    setLane(runCenterLane);
-    state.current.lane = runCenterLane;
-    itemsSnapshotRef.current = [];
-    setItems([]);
-    setScore(0);
-    waveProgressRef.current = 0;
-    setWaveProgress(0);
-    setHearts(runStartingHearts);
-    setWave(1);
-    terminalSwordRef.current = { durability: 4, cooldownUntil: 0 };
-    terminalRivalSwordRef.current = { durability: 4, cooldownUntil: 0 };
-    terminalDamageSeenRef.current = 0;
-    terminalWrapWaveRef.current = 0;
-    terminalConsumedRef.current.clear();
-    terminalSharedAttacksRef.current = [];
-    terminalCourseRef.current = { wave: 1, startsAt: Date.now(), items: createTerminalCourse(versusMatchRef.current ?? "practice", 1) };
-    setTerminalSwordVersion((value) => value + 1);
-    vortexSeenRef.current.clear();
-    vortexGravityRef.current = { blockedDirection: 0, until: 0 };
-    meadowBonusLaneRef.current = Math.floor(Math.random() * runMapRules.laneCount);
-    setMeadowBonusLane(meadowBonusLaneRef.current);
-    setOver(false);
-    setVersusSelfEliminated(false);
-    versusSelfEliminatedRef.current = false;
-    setVersusSelfMushrooms(0);
-    setVersusOpponentMushrooms(0);
-    pitchKatanaRef.current = createPitchKatanaState();
-    setPitchKatanaVersion((value) => value + 1);
-    volcanoStationaryMsRef.current = 0;
-    const nextConveyor = createFactoryConveyorState();
-    factoryConveyorRef.current = nextConveyor;
-    setFactoryConveyor(nextConveyor);
-    setPaused(false);
-    setPauseMenuOpen(false);
-    setInvincible(false);
-    clearFreezeEffect();
-    setAbilityNotice("");
-    invincibleUntilRef.current = 0;
-    if (invincibilityTimerRef.current) {
-      clearTimeout(invincibilityTimerRef.current);
-      invincibilityTimerRef.current = null;
-    }
-    if (abilityNoticeTimerRef.current) {
-      clearTimeout(abilityNoticeTimerRef.current);
-      abilityNoticeTimerRef.current = null;
-    }
-    if (waveAnnouncementTimerRef.current) {
-      clearTimeout(waveAnnouncementTimerRef.current);
-      waveAnnouncementTimerRef.current = null;
-    }
-    resetCharacterAbilityState();
-    if (runCharacter === "trickster_echo") {
-      const progress = {
-        ...echoProgressRef.current,
-        allTrickstersUnlocked: CLASS_CHARACTERS.trickster.every((character) =>
-          canUseCharacter(character.key),
-        ),
-        allCharactersUnlocked: CHARACTER_ROSTER.every((character) =>
-          canUseCharacter(character.key),
-        ),
+            : "runner_ace"));
+      const runClass = getCharacterClassKey(runCharacter);
+      const runBaseStartingHearts = getCharacterStartingHearts(
+        runCharacter,
+        runClass,
+      );
+      const runMapHealth = applyMapHealthModifiers(
+        runMapId,
+        runBaseStartingHearts,
+        getCharacterMaxHearts(runCharacter, runClass),
+      );
+      const runStartingHearts = mode === "normal" ? runMapHealth.startingHp : 1;
+      const runCenterLane = Math.floor(runMapRules.laneCount / 2);
+      resetVersusClientSync();
+      incomingAttacksRef.current = [];
+      spawnedAttackIdsRef.current.clear();
+      queuedAttackTokenIdsRef.current.clear();
+      deferredAttackGroupsRef.current = [];
+      setDeferredAttackGroups([]);
+      ambientHazardStreakRef.current = { kind: null, count: 0 };
+      setLastRunXpBreakdown(null);
+      setLane(runCenterLane);
+      state.current.lane = runCenterLane;
+      itemsSnapshotRef.current = [];
+      setItems([]);
+      setScore(0);
+      waveProgressRef.current = 0;
+      setWaveProgress(0);
+      setHearts(runStartingHearts);
+      setWave(1);
+      terminalSwordRef.current = { durability: 4, cooldownUntil: 0 };
+      terminalRivalSwordRef.current = { durability: 4, cooldownUntil: 0 };
+      terminalDamageSeenRef.current = 0;
+      terminalWrapWaveRef.current = 0;
+      terminalConsumedRef.current.clear();
+      terminalSharedAttacksRef.current = [];
+      terminalCourseRef.current = {
+        wave: 1,
+        startsAt: Date.now(),
+        items: createTerminalCourse(versusMatchRef.current ?? "practice", 1),
       };
-      echoProgressRef.current = progress;
-      setEchoProgress(progress);
-    }
-    botAttackPointsRef.current = 0;
-    botScoreRef.current = 0;
-    botScoreCarryRef.current = 0;
-    practiceBotNextWaveHeartsRef.current = null;
-    playerAttacksAgainstBotRef.current = [];
-    turnLockedRef.current = false;
-    if (delayedMoveTimerRef.current) {
-      clearTimeout(delayedMoveTimerRef.current);
-      delayedMoveTimerRef.current = null;
-    }
-    damageLockedRef.current = false;
-    setRunning(true);
-    last.current = 0;
-    void audioEngine.start(soundtrack);
-    announceWave(1, true, runCharacter, runMapId, mapOverride !== undefined);
-    if (runCharacter === "medic_oracle") {
-      setPaused(true);
-      setAbilityChoice({ kind: "oracle-prophecy" });
-    } else if (runCharacter === "misc_mimic" && mapOverride === undefined) {
-      setPaused(true);
-      setAbilityChoice({
-        kind: "mimic-passives",
-        options: [...MIMIC_PASSIVE_KEYS],
-        selected: [],
-      });
-    }
-  }, [
-    activeMapId,
-    adminTestModeActive,
-    announceWave,
-    availableCharacter,
-    canUseCharacter,
-    clearFreezeEffect,
-    mode,
-    resetCharacterAbilityState,
-    resetVersusClientSync,
-    showAbilityNotice,
-    soundtrack,
-    startProgressionRun,
-  ]);
+      setTerminalSwordVersion((value) => value + 1);
+      vortexSeenRef.current.clear();
+      vortexGravityRef.current = { blockedDirection: 0, until: 0 };
+      meadowBonusLaneRef.current = Math.floor(
+        Math.random() * runMapRules.laneCount,
+      );
+      setMeadowBonusLane(meadowBonusLaneRef.current);
+      setOver(false);
+      setVersusSelfEliminated(false);
+      versusSelfEliminatedRef.current = false;
+      setVersusSelfMushrooms(0);
+      setVersusOpponentMushrooms(0);
+      pitchKatanaRef.current = createPitchKatanaState();
+      setPitchKatanaVersion((value) => value + 1);
+      volcanoStationaryMsRef.current = 0;
+      const nextConveyor = createFactoryConveyorState();
+      factoryConveyorRef.current = nextConveyor;
+      setFactoryConveyor(nextConveyor);
+      setPaused(false);
+      setPauseMenuOpen(false);
+      setInvincible(false);
+      clearFreezeEffect();
+      setAbilityNotice("");
+      invincibleUntilRef.current = 0;
+      if (invincibilityTimerRef.current) {
+        clearTimeout(invincibilityTimerRef.current);
+        invincibilityTimerRef.current = null;
+      }
+      if (abilityNoticeTimerRef.current) {
+        clearTimeout(abilityNoticeTimerRef.current);
+        abilityNoticeTimerRef.current = null;
+      }
+      if (waveAnnouncementTimerRef.current) {
+        clearTimeout(waveAnnouncementTimerRef.current);
+        waveAnnouncementTimerRef.current = null;
+      }
+      resetCharacterAbilityState();
+      if (runCharacter === "trickster_echo") {
+        const progress = {
+          ...echoProgressRef.current,
+          allTrickstersUnlocked: CLASS_CHARACTERS.trickster.every((character) =>
+            canUseCharacter(character.key),
+          ),
+          allCharactersUnlocked: CHARACTER_ROSTER.every((character) =>
+            canUseCharacter(character.key),
+          ),
+        };
+        echoProgressRef.current = progress;
+        setEchoProgress(progress);
+      }
+      botAttackPointsRef.current = 0;
+      botScoreRef.current = 0;
+      botScoreCarryRef.current = 0;
+      practiceBotNextWaveHeartsRef.current = null;
+      playerAttacksAgainstBotRef.current = [];
+      turnLockedRef.current = false;
+      if (delayedMoveTimerRef.current) {
+        clearTimeout(delayedMoveTimerRef.current);
+        delayedMoveTimerRef.current = null;
+      }
+      damageLockedRef.current = false;
+      setRunning(true);
+      last.current = 0;
+      void audioEngine.start(soundtrack);
+      announceWave(1, true, runCharacter, runMapId, mapOverride !== undefined);
+      if (runCharacter === "medic_oracle") {
+        setPaused(true);
+        setAbilityChoice({ kind: "oracle-prophecy" });
+      } else if (runCharacter === "misc_mimic" && mapOverride === undefined) {
+        setPaused(true);
+        setAbilityChoice({
+          kind: "mimic-passives",
+          options: [...MIMIC_PASSIVE_KEYS],
+          selected: [],
+        });
+      }
+    },
+    [
+      activeMapId,
+      adminTestModeActive,
+      announceWave,
+      availableCharacter,
+      canUseCharacter,
+      clearFreezeEffect,
+      mode,
+      resetCharacterAbilityState,
+      resetVersusClientSync,
+      showAbilityNotice,
+      soundtrack,
+      startProgressionRun,
+    ],
+  );
   const resetGameToMenu = () => {
     cancelPendingProgressionStart();
     progressionStartIntentRef.current += 1;
@@ -4767,6 +4689,7 @@ function SkywayGame() {
     runIsTestModeRef.current = false;
     setRunIsTestMode(false);
     setRunning(false);
+
     setPaused(false);
     setPauseMenuOpen(false);
     setOver(false);
@@ -4871,7 +4794,13 @@ function SkywayGame() {
       state.current.hearts = nextHearts;
       setHearts(nextHearts);
       void audioEngine.playSfx("hit");
-      setFlash(safeDamage <= 0.5 ? "life-half" : safeDamage >= 2 ? "life-two" : "life-lost");
+      setFlash(
+        safeDamage <= 0.5
+          ? "life-half"
+          : safeDamage >= 2
+            ? "life-two"
+            : "life-lost",
+      );
       showAbilityNotice(notice, 1100);
       setTimeout(() => {
         setFlash((current) =>
@@ -4976,64 +4905,153 @@ function SkywayGame() {
       showAbilityNotice,
     ],
   );
-  const applyTerminalSnapshot = useCallback((snapshot: VersusStatePayload, applyHealth = true) => {
-    if (snapshot.match?.map_key !== "terminal") return;
-    const total = Number(snapshot.self?.sword_damage_total) || 0;
-    if (total < terminalDamageSeenRef.current) return;
-    const unseenDamage = total - terminalDamageSeenRef.current;
-    if (applyHealth && unseenDamage > 0) applyDirectMapDamage(unseenDamage, "", true);
-    terminalDamageSeenRef.current = total;
-    terminalSwordRef.current = {
-      durability: Math.min(terminalSwordRef.current.durability, Math.max(0, Number(snapshot.self?.sword_durability) || 0)),
-      cooldownUntil: Math.max(terminalSwordRef.current.cooldownUntil, parseServerTime(snapshot.self?.sword_cooldown_until, 0)),
-    };
-    terminalRivalSwordRef.current = {
-      durability: Math.max(0, Number(snapshot.opponent?.sword_durability) || 0),
-      cooldownUntil: parseServerTime(snapshot.opponent?.sword_cooldown_until, 0),
-    };
-    terminalWrapWaveRef.current = Math.max(terminalWrapWaveRef.current,Number(snapshot.self?.terminal_wrap_wave) || 0);
-    if (Number.isFinite(snapshot.opponent?.hearts)) setVersusOpponentHearts(Number(snapshot.opponent?.hearts));
-    if (Number.isInteger(snapshot.opponent?.lane_index)) setVersusOpponentLane(Number(snapshot.opponent?.lane_index));
-    const rules = snapshot.wave_rules;
-    const courseWave = Number(rules?.wave) || 1;
-    const startsAt = parseServerTime(rules?.course_starts_at, 0);
-    if (startsAt && (terminalCourseRef.current.wave !== courseWave || terminalCourseRef.current.startsAt !== startsAt)) {
-      terminalCourseRef.current = { wave: courseWave, startsAt, items: createTerminalCourse(rules?.course_seed ?? versusMatchRef.current ?? "practice", courseWave) };
-      terminalConsumedRef.current.clear();
-    }
-    terminalSharedAttacksRef.current = (snapshot.shared_attacks ?? []).flatMap((attack, index): CourseItem[] => {
-      const kind = normalizeVersusObstacle(attack.obstacle_type);
-      if (!kind || !["log", "spikes", "barrel", "rock", "snowflake", "current"].includes(kind)) return [];
-      const lane = Number.isInteger(attack.lane_index) ? Number(attack.lane_index) : index % 5;
-      return [{ id: -(courseWave * 100000 + 50000 + index), lane: Math.max(0,Math.min(4,lane)), kind: kind as CourseItem["kind"], at: 3000 + index * 950, speed: .0452 * getWaveSpeedMultiplier(courseWave) }];
-    });
-    setTerminalSwordVersion((value) => value + 1);
-  }, [applyDirectMapDamage]);
+  const applyTerminalSnapshot = useCallback(
+    (snapshot: VersusStatePayload, applyHealth = true) => {
+      if (snapshot.match?.map_key !== "terminal") return;
+      const total = Number(snapshot.self?.sword_damage_total) || 0;
+      if (total < terminalDamageSeenRef.current) return;
+      const unseenDamage = total - terminalDamageSeenRef.current;
+      if (applyHealth && unseenDamage > 0)
+        applyDirectMapDamage(unseenDamage, "", true);
+      terminalDamageSeenRef.current = total;
+      terminalSwordRef.current = {
+        durability: Math.min(
+          terminalSwordRef.current.durability,
+          Math.max(0, Number(snapshot.self?.sword_durability) || 0),
+        ),
+        cooldownUntil: Math.max(
+          terminalSwordRef.current.cooldownUntil,
+          parseServerTime(snapshot.self?.sword_cooldown_until, 0),
+        ),
+      };
+      terminalRivalSwordRef.current = {
+        durability: Math.max(
+          0,
+          Number(snapshot.opponent?.sword_durability) || 0,
+        ),
+        cooldownUntil: parseServerTime(
+          snapshot.opponent?.sword_cooldown_until,
+          0,
+        ),
+      };
+      terminalWrapWaveRef.current = Math.max(
+        terminalWrapWaveRef.current,
+        Number(snapshot.self?.terminal_wrap_wave) || 0,
+      );
+      if (Number.isFinite(snapshot.opponent?.hearts))
+        setVersusOpponentHearts(Number(snapshot.opponent?.hearts));
+      if (Number.isInteger(snapshot.opponent?.lane_index))
+        setVersusOpponentLane(Number(snapshot.opponent?.lane_index));
+      const rules = snapshot.wave_rules;
+      const courseWave = Number(rules?.wave) || 1;
+      const startsAt = parseServerTime(rules?.course_starts_at, 0);
+      if (
+        startsAt &&
+        (terminalCourseRef.current.wave !== courseWave ||
+          terminalCourseRef.current.startsAt !== startsAt)
+      ) {
+        terminalCourseRef.current = {
+          wave: courseWave,
+          startsAt,
+          items: createTerminalCourse(
+            rules?.course_seed ?? versusMatchRef.current ?? "practice",
+            courseWave,
+          ),
+        };
+        terminalConsumedRef.current.clear();
+      }
+      terminalSharedAttacksRef.current = (
+        snapshot.shared_attacks ?? []
+      ).flatMap((attack, index): CourseItem[] => {
+        const kind = normalizeVersusObstacle(attack.obstacle_type);
+        if (
+          !kind ||
+          !["log", "spikes", "barrel", "rock", "snowflake", "current"].includes(
+            kind,
+          )
+        )
+          return [];
+        const lane = Number.isInteger(attack.lane_index)
+          ? Number(attack.lane_index)
+          : index % 5;
+        return [
+          {
+            id: -(courseWave * 100000 + 50000 + index),
+            lane: Math.max(0, Math.min(4, lane)),
+            kind: kind as CourseItem["kind"],
+            at: 3000 + index * 950,
+            speed: 0.0452 * getWaveSpeedMultiplier(courseWave),
+          },
+        ];
+      });
+      setTerminalSwordVersion((value) => value + 1);
+    },
+    [applyDirectMapDamage],
+  );
   const triggerTerminalSword = useCallback(async () => {
-    if (activeMapId !== "terminal" || !state.current.running || state.current.paused || state.current.wavePause || terminalSwordBusyRef.current) return;
+    if (
+      activeMapId !== "terminal" ||
+      !state.current.running ||
+      state.current.paused ||
+      state.current.wavePause ||
+      terminalSwordBusyRef.current
+    )
+      return;
     const now = Date.now();
-    if (terminalSwordRef.current.durability <= 0 || terminalSwordRef.current.cooldownUntil > now) return;
+    if (
+      terminalSwordRef.current.durability <= 0 ||
+      terminalSwordRef.current.cooldownUntil > now
+    )
+      return;
     terminalSwordBusyRef.current = true;
     try {
       await terminalPositionQueueRef.current;
       if (isOnlineVersus && versusMatchRef.current) {
-        const { data, error } = await supabase.rpc("use_1v1_terminal_sword", { p_match_id: versusMatchRef.current });
-        if (error) { showAbilityNotice(error.message.toUpperCase(), 1400); return; }
+        const { data, error } = await supabase.rpc("use_1v1_terminal_sword", {
+          p_match_id: versusMatchRef.current,
+        });
+        if (error) {
+          showAbilityNotice(error.message.toUpperCase(), 1400);
+          return;
+        }
         applyTerminalSnapshot(data as VersusStatePayload);
-        showAbilityNotice(data?.sword_hit ? "SWORD HIT · RIVAL −1 HP" : "SWORD MISSED · −0.5 HP · −1 DURABILITY", 1100);
+        showAbilityNotice(
+          data?.sword_hit
+            ? "SWORD HIT · RIVAL −1 HP"
+            : "SWORD MISSED · −0.5 HP · −1 DURABILITY",
+          1100,
+        );
       } else {
-        const swing = resolveTerminalSword(terminalSwordRef.current, terminalRivalSwordRef.current, state.current.lane, versusOpponentLane, now);
+        const swing = resolveTerminalSword(
+          terminalSwordRef.current,
+          terminalRivalSwordRef.current,
+          state.current.lane,
+          versusOpponentLane,
+          now,
+        );
         if (!swing.used) return;
         terminalSwordRef.current = swing.self;
         terminalRivalSwordRef.current = swing.rival;
-        if (swing.selfDamage) applyDirectMapDamage(swing.selfDamage, "SWORD MISSED");
-        if (swing.rivalDamage) setVersusOpponentHearts((hp) => Math.max(0, hp - swing.rivalDamage));
+        if (swing.selfDamage)
+          applyDirectMapDamage(swing.selfDamage, "SWORD MISSED");
+        if (swing.rivalDamage)
+          setVersusOpponentHearts((hp) => Math.max(0, hp - swing.rivalDamage));
         setTerminalSwordVersion((value) => value + 1);
       }
       void audioEngine.playSfx("hit");
-    } catch { showAbilityNotice("SWORD COULD NOT SYNC · TRY AGAIN", 1200); }
-    finally { terminalSwordBusyRef.current = false; }
-  }, [activeMapId, applyDirectMapDamage, applyTerminalSnapshot, isOnlineVersus, showAbilityNotice, versusOpponentLane]);
+    } catch {
+      showAbilityNotice("SWORD COULD NOT SYNC · TRY AGAIN", 1200);
+    } finally {
+      terminalSwordBusyRef.current = false;
+    }
+  }, [
+    activeMapId,
+    applyDirectMapDamage,
+    applyTerminalSnapshot,
+    isOnlineVersus,
+    showAbilityNotice,
+    versusOpponentLane,
+  ]);
   const triggerPitchKatana = useCallback(() => {
     if (
       activeMapId !== "pitch" ||
@@ -5084,20 +5102,23 @@ function SkywayGame() {
       showAbilityNotice("KATANA ACTIVE · 0.4 SECOND GUARD", 650);
       if (pitchKatanaTimerRef.current)
         clearTimeout(pitchKatanaTimerRef.current);
-      pitchKatanaTimerRef.current = setTimeout(() => {
-        const settled = settlePitchKatanaWindow(
-          pitchKatanaRef.current,
-          Date.now(),
-        );
-        pitchKatanaRef.current = settled.state;
-        setPitchKatanaVersion((value) => value + 1);
-        if (settled.selfDamage > 0)
-          applyDirectMapDamage(
-            settled.selfDamage,
-            "KATANA MISSED · 0.5 HP LOST",
+      pitchKatanaTimerRef.current = setTimeout(
+        () => {
+          const settled = settlePitchKatanaWindow(
+            pitchKatanaRef.current,
+            Date.now(),
           );
-        pitchKatanaTimerRef.current = null;
-      }, (PITCH_KATANA_RULES.activeSeconds + 0.02) * 1000);
+          pitchKatanaRef.current = settled.state;
+          setPitchKatanaVersion((value) => value + 1);
+          if (settled.selfDamage > 0)
+            applyDirectMapDamage(
+              settled.selfDamage,
+              "KATANA MISSED · 0.5 HP LOST",
+            );
+          pitchKatanaTimerRef.current = null;
+        },
+        (PITCH_KATANA_RULES.activeSeconds + 0.02) * 1000,
+      );
     };
     if (isOnlineVersus && versusMatchRef.current) {
       if (pitchKatanaArmingRef.current) return;
@@ -5122,12 +5143,7 @@ function SkywayGame() {
       return;
     }
     beginGuard();
-  }, [
-    activeMapId,
-    applyDirectMapDamage,
-    isOnlineVersus,
-    showAbilityNotice,
-  ]);
+  }, [activeMapId, applyDirectMapDamage, isOnlineVersus, showAbilityNotice]);
   const completeMove = useCallback(
     (destination: number, direction: number) => {
       state.current.lane = destination;
@@ -5135,24 +5151,24 @@ function SkywayGame() {
       volcanoStationaryMsRef.current = 0;
       if (isOnlineVersus && versusMatchRef.current) {
         const matchId = versusMatchRef.current;
-        terminalPositionQueueRef.current = terminalPositionQueueRef.current.then(async () => {
-          if (versusMatchRef.current !== matchId) return;
-          const { error } = await supabase.rpc("update_1v1_position", { p_match_id: matchId, p_lane_index: destination });
-          if (error && activeMapId === "terminal") {
-            showAbilityNotice(error.message.toUpperCase(), 1200);
-            void hydrateVersusStateRef.current?.(matchId, true);
-          }
-        }).catch(() => {});
+        terminalPositionQueueRef.current = terminalPositionQueueRef.current
+          .then(async () => {
+            if (versusMatchRef.current !== matchId) return;
+            const { error } = await supabase.rpc("update_1v1_position", {
+              p_match_id: matchId,
+              p_lane_index: destination,
+            });
+            if (error && activeMapId === "terminal") {
+              showAbilityNotice(error.message.toUpperCase(), 1200);
+              void hydrateVersusStateRef.current?.(matchId, true);
+            }
+          })
+          .catch(() => {});
       }
       void audioEngine.playSfx("move");
       const now = Date.now();
-      lastLaneChangeAtRef.current = now;
+
       if (hasCharacterAbility("tank_atlas")) atlasLaneElapsedRef.current = 0;
-      if (activeCharacter === "runner_pacer") {
-        scoreRef.current += 10;
-        setScore(scoreRef.current);
-        showAbilityNotice("RELAY ROD · +10 SCORE", 600);
-      }
       if (hasCharacterAbility("runner_stride")) {
         strideMoveCountRef.current += 1;
         if (strideMoveCountRef.current % 3 === 0) {
@@ -5194,7 +5210,10 @@ function SkywayGame() {
         if (voidCut.activated) {
           const effect = getHexVoidCutEffect();
           grantInvincibility(effect.shieldDurationMs);
-          showAbilityNotice("VOID CUT · 0.5 SECOND PHASE · HAZARDS STAY IN PLAY", 1000);
+          showAbilityNotice(
+            "VOID CUT · 0.5 SECOND PHASE · HAZARDS STAY IN PLAY",
+            1000,
+          );
         }
       }
     },
@@ -5215,31 +5234,50 @@ function SkywayGame() {
         state.current.wavePause ||
         (activeMapId === "terminal" && terminalSwordBusyRef.current) ||
         turnLockedRef.current ||
-        (anchorLaneLockedRef.current && anchorGuardUntilRef.current > Date.now()) ||
+        (anchorLaneLockedRef.current &&
+          anchorGuardUntilRef.current > Date.now()) ||
         (activeCharacter === "trickster_rogue" &&
           invincibleUntilRef.current > Date.now()) ||
         (activeMapId === "pitch" &&
           isPitchKatanaMovementLocked(pitchKatanaRef.current, Date.now()))
       )
         return;
-      if (vortexBlocksTurn(d, vortexGravityRef.current.blockedDirection, vortexGravityRef.current.until, Date.now())) return;
-      const terminalWrap = activeMapId === "terminal" && terminalWrapWaveRef.current !== waveRef.current && ((state.current.lane === 0 && d < 0) || (state.current.lane === activeLaneCount - 1 && d > 0));
+      if (
+        vortexBlocksTurn(
+          d,
+          vortexGravityRef.current.blockedDirection,
+          vortexGravityRef.current.until,
+          Date.now(),
+        )
+      )
+        return;
+      const terminalWrap =
+        activeMapId === "terminal" &&
+        terminalWrapWaveRef.current !== waveRef.current &&
+        ((state.current.lane === 0 && d < 0) ||
+          (state.current.lane === activeLaneCount - 1 && d > 0));
       const orbitWrap =
         hasCharacterAbility("runner_orbit") &&
         orbitCooldownRemainingRef.current <= 0 &&
         ((state.current.lane === 0 && d < 0) ||
           (state.current.lane === activeLaneCount - 1 && d > 0));
-      const destination = orbitWrap || terminalWrap
-        ? state.current.lane === 0
-          ? activeLaneCount - 1
-          : 0
-        : Math.max(
-            0,
-            Math.min(activeLaneCount - 1, state.current.lane + d),
-          );
+      const destination =
+        orbitWrap || terminalWrap
+          ? state.current.lane === 0
+            ? activeLaneCount - 1
+            : 0
+          : Math.max(0, Math.min(activeLaneCount - 1, state.current.lane + d));
       if (destination === state.current.lane) return;
       const finishMove = () => {
-        if (vortexBlocksTurn(d, vortexGravityRef.current.blockedDirection, vortexGravityRef.current.until, Date.now())) return;
+        if (
+          vortexBlocksTurn(
+            d,
+            vortexGravityRef.current.blockedDirection,
+            vortexGravityRef.current.until,
+            Date.now(),
+          )
+        )
+          return;
         completeMove(destination, d);
         if (terminalWrap) {
           terminalWrapWaveRef.current = waveRef.current;
@@ -5252,28 +5290,29 @@ function SkywayGame() {
         }
       };
       const combinedTurnDelay = addTurnDelays(
-        frozenUntilRef.current > Date.now() ? (activeMapId === "meadow" ? .4 : .25) : 0,
+        frozenUntilRef.current > Date.now()
+          ? activeMapId === "meadow"
+            ? 0.4
+            : 0.25
+          : 0,
         activeMapId === "volcano" ? VOLCANO_RULES.turnDelaySeconds : 0,
       );
       if (combinedTurnDelay > 0) {
         turnLockedRef.current = true;
-        delayedMoveTimerRef.current = setTimeout(
-          () => {
-            if (
-              state.current.running &&
-              !state.current.paused &&
-              !state.current.wavePause &&
-              !(
-                activeCharacter === "trickster_rogue" &&
-                invincibleUntilRef.current > Date.now()
-              )
+        delayedMoveTimerRef.current = setTimeout(() => {
+          if (
+            state.current.running &&
+            !state.current.paused &&
+            !state.current.wavePause &&
+            !(
+              activeCharacter === "trickster_rogue" &&
+              invincibleUntilRef.current > Date.now()
             )
-              finishMove();
-            turnLockedRef.current = false;
-            delayedMoveTimerRef.current = null;
-          },
-          combinedTurnDelay * 1000,
-        );
+          )
+            finishMove();
+          turnLockedRef.current = false;
+          delayedMoveTimerRef.current = null;
+        }, combinedTurnDelay * 1000);
         return;
       }
       finishMove();
@@ -5590,7 +5629,10 @@ function SkywayGame() {
         hexStateRef.current = souls.state;
         setHexState(souls.state);
         setAbilityStateVersion((value) => value + 1);
-        showAbilityNotice("SOULS OF THE DEAD · 3 HITS BLOCKED · -15 DAMNATION", 1400);
+        showAbilityNotice(
+          "SOULS OF THE DEAD · 3 HITS BLOCKED · -15 DAMNATION",
+          1400,
+        );
         return;
       }
       showAbilityNotice(
@@ -5667,11 +5709,14 @@ function SkywayGame() {
                 item.kind !== "rock",
             )
             .sort((left, right) => right.y - left.y);
-        const targets = [eligible(currentLane)[0], ...neighboring.map((lane) => eligible(lane)[0])]
-          .filter(Boolean) as Item[];
-        if (neighboring.length === 1)
-          targets.push(eligible(neighboring[0])[1]);
-        const targetIds = new Set(targets.filter(Boolean).map((item) => item.id));
+        const targets = [
+          eligible(currentLane)[0],
+          ...neighboring.map((lane) => eligible(lane)[0]),
+        ].filter(Boolean) as Item[];
+        if (neighboring.length === 1) targets.push(eligible(neighboring[0])[1]);
+        const targetIds = new Set(
+          targets.filter(Boolean).map((item) => item.id),
+        );
         destroyed = targetIds.size;
         return current.filter((item) => !targetIds.has(item.id));
       });
@@ -5687,7 +5732,10 @@ function SkywayGame() {
     if (activeCharacter === "tank_anchor") {
       anchorGuardUntilRef.current = Date.now() + 5000;
       anchorLaneLockedRef.current = true;
-      showAbilityNotice("GROUND HOOK · LANE LOCKED · DAMAGE -75% · 5 SECONDS", 1300);
+      showAbilityNotice(
+        "GROUND HOOK · LANE LOCKED · DAMAGE -75% · 5 SECONDS",
+        1300,
+      );
       return;
     }
     if (
@@ -5707,8 +5755,7 @@ function SkywayGame() {
       const occupied = new Set(
         itemsSnapshotRef.current
           .filter(
-            (item) =>
-              isHazardKind(item.kind) && item.y >= 42 && item.y <= 104,
+            (item) => isHazardKind(item.kind) && item.y >= 42 && item.y <= 104,
           )
           .map((item) => item.lane),
       );
@@ -5722,7 +5769,10 @@ function SkywayGame() {
       setLane(destination);
       grantInvincibility(350);
       smokeCooldownUntilRef.current = Date.now() + 20000;
-      showAbilityNotice(`SMOKE BOMB · TELEPORTED TO LANE ${destination + 1}`, 1000);
+      showAbilityNotice(
+        `SMOKE BOMB · TELEPORTED TO LANE ${destination + 1}`,
+        1000,
+      );
       return;
     }
     if (activeCharacter === "trickster_rogue") {
@@ -5730,10 +5780,15 @@ function SkywayGame() {
       if (meter >= 10) {
         rogueGrazeMeterRef.current -= 10;
         grantInvincibility(5000);
-        showAbilityNotice("SHADOW METER ×10 · 5 SECOND SHIELD · LANES LOCKED", 1300);
+        showAbilityNotice(
+          "SHADOW METER ×10 · 5 SECOND SHIELD · LANES LOCKED",
+          1300,
+        );
       } else if (meter >= 5) {
         rogueGrazeMeterRef.current -= 5;
-        setItems((current) => current.filter((item) => !isHazardKind(item.kind)));
+        setItems((current) =>
+          current.filter((item) => !isHazardKind(item.kind)),
+        );
         showAbilityNotice("SHADOW METER ×5 · ALL OBSTACLES CLEARED", 1200);
       } else if (meter >= 2) {
         rogueGrazeMeterRef.current -= 2;
@@ -5755,17 +5810,25 @@ function SkywayGame() {
           const previous = closest.get(item.lane);
           if (!previous || item.y > previous.y) closest.set(item.lane, item);
         });
-        const targets = new Set(Array.from(closest.values()).map((item) => item.id));
+        const targets = new Set(
+          Array.from(closest.values()).map((item) => item.id),
+        );
         const pickups: Kind[] = isVersusRun
           ? ["gem", "coin"]
           : ["gem", "melon"];
         return current.map((item) =>
           targets.has(item.id)
-            ? { ...item, kind: pickups[Math.floor(Math.random() * pickups.length)] }
+            ? {
+                ...item,
+                kind: pickups[Math.floor(Math.random() * pickups.length)],
+              }
             : item,
         );
       });
-      showAbilityNotice("FLICKER · CLOSEST HAZARD IN EVERY LANE TRANSFORMED", 1200);
+      showAbilityNotice(
+        "FLICKER · CLOSEST HAZARD IN EVERY LANE TRANSFORMED",
+        1200,
+      );
       return;
     }
     if (activeCharacter === "runner_flare") {
@@ -5776,8 +5839,15 @@ function SkywayGame() {
       flareLaneRef.current = state.current.lane;
       flareActiveUntilRef.current = Date.now() + 15000;
       flareCooldownUntilRef.current =
-        Date.now() + Math.max(15000, 30000 - Math.floor(flareBurnCountRef.current / 10) * 5000);
-      showAbilityNotice(`SIGNAL FLARE · LANE ${state.current.lane + 1} BURNS FOR 15 SECONDS`, 1200);
+        Date.now() +
+        Math.max(
+          15000,
+          30000 - Math.floor(flareBurnCountRef.current / 10) * 5000,
+        );
+      showAbilityNotice(
+        `SIGNAL FLARE · LANE ${state.current.lane + 1} BURNS FOR 15 SECONDS`,
+        1200,
+      );
       return;
     }
     if (activeCharacter === "trickster_phantom" && phantomLordRef.current) {
@@ -5813,7 +5883,10 @@ function SkywayGame() {
       if (isVersusRun) vialUsedRef.current = true;
       else vialCooldownUntilRef.current = now + VIAL_ENDLESS_COOLDOWN_MS;
       vialAllegianceUntilRef.current = Date.now() + 30000;
-      showAbilityNotice("SWITCH ALLEGIANCE · OBSTACLE EFFECTS REVERSED · 30 SECONDS", 1400);
+      showAbilityNotice(
+        "SWITCH ALLEGIANCE · OBSTACLE EFFECTS REVERSED · 30 SECONDS",
+        1400,
+      );
       setAbilityStateVersion((value) => value + 1);
       return;
     }
@@ -5824,9 +5897,9 @@ function SkywayGame() {
       }
       const startingLane =
         state.current.lane === versusOpponentLane
-          ? getTrackLanes(activeLaneCount).find(
+          ? (getTrackLanes(activeLaneCount).find(
               (candidate) => candidate !== versusOpponentLane,
-            ) ?? state.current.lane
+            ) ?? state.current.lane)
           : state.current.lane;
       const invasion = startMirageInvasion({
         isVersus: isVersusRun,
@@ -5835,9 +5908,7 @@ function SkywayGame() {
         mirageLane: startingLane,
         opponentLane: versusOpponentLane,
         lastUsedWave:
-          mirageUsedWaveRef.current > 0
-            ? mirageUsedWaveRef.current
-            : null,
+          mirageUsedWaveRef.current > 0 ? mirageUsedWaveRef.current : null,
       });
       if (!invasion.ok) {
         showAbilityNotice(
@@ -5930,10 +6001,16 @@ function SkywayGame() {
         scoutInputWindowUntilRef.current = 0;
         scoutSnowflakeHealReadyRef.current = true;
         scoutCooldownUntilRef.current = now + 50000;
-        showAbilityNotice("TIMED INPUT PERFECT · NEXT SNOWFLAKE HEALS 0.5 HP", 1200);
+        showAbilityNotice(
+          "TIMED INPUT PERFECT · NEXT SNOWFLAKE HEALS 0.5 HP",
+          1200,
+        );
       } else if (scoutCooldownUntilRef.current <= now) {
         scoutInputWindowUntilRef.current = now + 1500;
-        showAbilityNotice("QUICKSTEP INPUT · PRESS E AGAIN WITHIN 1.5 SECONDS", 1500);
+        showAbilityNotice(
+          "QUICKSTEP INPUT · PRESS E AGAIN WITHIN 1.5 SECONDS",
+          1500,
+        );
       } else showAbilityNotice("QUICKSTEP INPUT · RECHARGING", 700);
       return;
     }
@@ -5992,7 +6069,10 @@ function SkywayGame() {
     }
     if (activeCharacter === "misc_tinker") {
       if (tinkerInspirationRef.current < 3) {
-        showAbilityNotice(`INSPIRATION · ${tinkerInspirationRef.current}/3`, 750);
+        showAbilityNotice(
+          `INSPIRATION · ${tinkerInspirationRef.current}/3`,
+          750,
+        );
         return;
       }
       tinkerInspirationRef.current -= 3;
@@ -6006,7 +6086,9 @@ function SkywayGame() {
               item.y < 91,
           )
           .sort((left, right) => right.y - left.y)[0];
-        return target ? current.filter((item) => item.id !== target.id) : current;
+        return target
+          ? current.filter((item) => item.id !== target.id)
+          : current;
       });
       showAbilityNotice("HANDMADE SPIKE · FIRST PROJECTILE DESTROYED", 1000);
       return;
@@ -6041,12 +6123,18 @@ function SkywayGame() {
       }
       obstacleFreezeUntilRef.current = Date.now() + 2000;
       lanternCooldownUntilRef.current = Date.now() + 10000;
-      showAbilityNotice("FLASH OF LIGHT · ALL HAZARDS FROZEN FOR 2 SECONDS", 1100);
+      showAbilityNotice(
+        "FLASH OF LIGHT · ALL HAZARDS FROZEN FOR 2 SECONDS",
+        1100,
+      );
       return;
     }
     if (activeCharacter === "misc_weaver") {
       if (weaverSnowflakeCountRef.current < 5) {
-        showAbilityNotice(`THREAD · ${weaverSnowflakeCountRef.current}/5 SNOWFLAKES`, 750);
+        showAbilityNotice(
+          `THREAD · ${weaverSnowflakeCountRef.current}/5 SNOWFLAKES`,
+          750,
+        );
         return;
       }
       weaverJacketRef.current = true;
@@ -6072,37 +6160,49 @@ function SkywayGame() {
       const entries = Object.entries(harvesterCountsRef.current) as Array<
         [keyof typeof harvesterCountsRef.current, number]
       >;
-      const [source, amount] = entries.sort((left, right) => right[1] - left[1])[0];
+      const [source, amount] = entries.sort(
+        (left, right) => right[1] - left[1],
+      )[0];
       if (amount < 10 || harvesterCooldownUntilRef.current > Date.now()) {
         showAbilityNotice("HARVEST · NEED 10 OF ONE PICKUP TYPE", 800);
         return;
       }
-      harvesterCooldownUntilRef.current = Date.now() + (amount >= 50 && source === "melons" ? 45000 : 30000);
+      harvesterCooldownUntilRef.current =
+        Date.now() + (amount >= 50 && source === "melons" ? 45000 : 30000);
       if (source === "gems") {
         grantInvincibility(amount >= 50 ? 20000 : 10000);
-        showAbilityNotice(`GEM HARVEST · DEFLECTION ${amount >= 50 ? 20 : 10} SECONDS`, 1100);
+        showAbilityNotice(
+          `GEM HARVEST · DEFLECTION ${amount >= 50 ? 20 : 10} SECONDS`,
+          1100,
+        );
       } else if (source === "melons") {
         setItems((current) => {
-          if (amount >= 50) return current.filter((item) => !isHazardKind(item.kind));
+          if (amount >= 50)
+            return current.filter((item) => !isHazardKind(item.kind));
           const closest = new Map<number, Item>();
           current.forEach((item) => {
             if (!isHazardKind(item.kind)) return;
             const old = closest.get(item.lane);
             if (!old || item.y > old.y) closest.set(item.lane, item);
           });
-          const ids = new Set(Array.from(closest.values()).map((item) => item.id));
+          const ids = new Set(
+            Array.from(closest.values()).map((item) => item.id),
+          );
           return current.filter((item) => !ids.has(item.id));
         });
         showAbilityNotice("MELON HARVEST · LANE FRONTS CLEARED", 1100);
       } else {
         versusPointsRef.current += amount >= 50 ? 20 : 10;
         setVersusPoints(versusPointsRef.current);
-        showAbilityNotice(`COIN HARVEST · +${amount >= 50 ? 20 : 10} ATTACK COINS`, 1000);
+        showAbilityNotice(
+          `COIN HARVEST · +${amount >= 50 ? 20 : 10} ATTACK COINS`,
+          1000,
+        );
       }
       return;
     }
     if (
-      activeCharacter === "medic_lifeline" &&
+      hasCharacterAbility("medic_lifeline") &&
       lifelineHookUsesRef.current < 3
     ) {
       setPaused(true);
@@ -6110,10 +6210,7 @@ function SkywayGame() {
       showAbilityNotice("RESCUE HOOK · CHOOSE ANOTHER LANE", 1000);
       return;
     }
-    if (
-      hasCharacterAbility("medic_reserve") &&
-      reserveHealStoredRef.current
-    ) {
+    if (hasCharacterAbility("medic_reserve") && reserveHealStoredRef.current) {
       reserveHealStoredRef.current = false;
       const healed = Math.min(maxHearts, state.current.hearts + 0.5);
       state.current.hearts = healed;
@@ -6162,14 +6259,14 @@ function SkywayGame() {
         if (!target) return current;
         planted = true;
         return current.map((item) =>
-          item.id === target.id
-            ? { ...item, seededUntilWave: wave + 2 }
-            : item,
+          item.id === target.id ? { ...item, seededUntilWave: wave + 2 } : item,
         );
       });
       if (planted) sproutSeedWaveRef.current = wave;
       showAbilityNotice(
-        planted ? "SEED WARD · DAMAGE -0.5 HP" : "SEED WARD · NO VALID OBSTACLE",
+        planted
+          ? "SEED WARD · DAMAGE -0.5 HP"
+          : "SEED WARD · NO VALID OBSTACLE",
         950,
       );
       return;
@@ -6201,32 +6298,28 @@ function SkywayGame() {
     versusOpponentLane,
     wave,
   ]);
-  const submitMuseInput = useCallback(
-    (pressed: string) => {
-      const normalized = pressed.toUpperCase();
-      if (!["A", "S", "D", "F"].includes(normalized)) return;
-      setMuseGame((current) => {
-        if (!current || current.hits >= MUSE_RHYTHM_MAX_HITS) return current;
-        const keys = ["A", "S", "D", "F"] as const;
-        let nextPrompt = keys[Math.floor(Math.random() * keys.length)];
-        if (nextPrompt === current.prompt)
-          nextPrompt = keys[(keys.indexOf(nextPrompt) + 1) % keys.length];
-        const hits = clampMuseRhythmHits(
-          current.hits + Number(normalized === current.prompt),
-        );
-        return {
-          ...current,
-          attempts: current.attempts + 1,
-          hits,
-          prompt: nextPrompt,
-          endsAt:
-            hits >= MUSE_RHYTHM_MAX_HITS ? Date.now() : current.endsAt,
-        };
-      });
-      void audioEngine.playSfx("click");
-    },
-    [],
-  );
+  const submitMuseInput = useCallback((pressed: string) => {
+    const normalized = pressed.toUpperCase();
+    if (!["A", "S", "D", "F"].includes(normalized)) return;
+    setMuseGame((current) => {
+      if (!current || current.hits >= MUSE_RHYTHM_MAX_HITS) return current;
+      const keys = ["A", "S", "D", "F"] as const;
+      let nextPrompt = keys[Math.floor(Math.random() * keys.length)];
+      if (nextPrompt === current.prompt)
+        nextPrompt = keys[(keys.indexOf(nextPrompt) + 1) % keys.length];
+      const hits = clampMuseRhythmHits(
+        current.hits + Number(normalized === current.prompt),
+      );
+      return {
+        ...current,
+        attempts: current.attempts + 1,
+        hits,
+        prompt: nextPrompt,
+        endsAt: hits >= MUSE_RHYTHM_MAX_HITS ? Date.now() : current.endsAt,
+      };
+    });
+    void audioEngine.playSfx("click");
+  }, []);
   const consumeCometHeatfeast = useCallback(() => {
     if (activeCharacter !== "runner_comet" || !state.current.running) return;
     if (isOnlineVersus && versusMatchRef.current) {
@@ -6355,10 +6448,7 @@ function SkywayGame() {
         wave: abilityChoice.targetWave,
         counts: { ...queued, [kind]: (queued[kind] ?? 0) + 1 },
       };
-      const nextHeat = addHeatfeastSpending(
-        heatfeastStateRef.current,
-        cost,
-      );
+      const nextHeat = addHeatfeastSpending(heatfeastStateRef.current, cost);
       heatfeastStateRef.current = nextHeat;
       setHeatfeastState(nextHeat);
       setAbilityStateVersion((value) => value + 1);
@@ -6415,9 +6505,7 @@ function SkywayGame() {
     hexStateRef.current = result.state;
     setHexState(result.state);
     setHexVoid((current) =>
-      current
-        ? { ...current, collected: result.collectedThisVoid }
-        : current,
+      current ? { ...current, collected: result.collectedThisVoid } : current,
     );
     setAbilityStateVersion((value) => value + 1);
     showAbilityNotice(
@@ -6472,9 +6560,7 @@ function SkywayGame() {
             : `HADES HIT · ${result.challenge.misses}/${HEX_HADES_MAX_MISSES} MISSES`,
         result.outcome === "won" ? 1200 : 500,
       );
-      void audioEngine.playSfx(
-        result.outcome === "missed" ? "hit" : "move",
-      );
+      void audioEngine.playSfx(result.outcome === "missed" ? "hit" : "move");
     },
     [hexVoid, showAbilityNotice],
   );
@@ -6498,7 +6584,7 @@ function SkywayGame() {
   }, [hexVoid, showAbilityNotice]);
   const throwHexChakram = useCallback(() => {
     if (
-      activeCharacter !== "trickster_hex" ||
+      !hasCharacterAbility("trickster_hex") ||
       !state.current.running ||
       state.current.paused ||
       state.current.wavePause
@@ -6513,10 +6599,7 @@ function SkywayGame() {
       return;
     }
     const candidates = itemsSnapshotRef.current
-      .filter(
-        (item) =>
-          isHazardKind(item.kind) && item.y >= -10 && item.y < 91,
-      )
+      .filter((item) => isHazardKind(item.kind) && item.y >= -10 && item.y < 91)
       .map((item) => ({
         id: item.id,
         lane: item.lane,
@@ -6572,7 +6655,7 @@ function SkywayGame() {
     );
     void audioEngine.playSfx("shield");
   }, [
-    activeCharacter,
+    hasCharacterAbility,
     isBotPractice,
     isOnlineVersus,
     isVersusRun,
@@ -6585,104 +6668,104 @@ function SkywayGame() {
       !state.current.running
     )
       return;
-    const timer = window.setInterval(() => {
-      const current = mirageInvasionRef.current;
-      if (!current) return;
-      if (isOnlineVersus && versusMatchRef.current) {
-        if (mirageDamageBusyRef.current) return;
-        const matchId = versusMatchRef.current;
-        mirageDamageBusyRef.current = true;
-        void supabase
-          .rpc("apply_1v1_mirage_damage", {
-            p_match_id: matchId,
-            // This is only a poll hint. Supabase derives every due 500ms tick
-            // from server-owned lane positions and timestamps.
-            p_damage: 1,
-          })
-          .then(({ data, error }) => {
-            mirageDamageBusyRef.current = false;
-            if (versusMatchRef.current !== matchId) return;
-            if (error) {
-              setVersusResult("MIRAGE ABILITY DATABASE SETUP IS MISSING");
-              mirageInvasionRef.current = null;
-              setMirageInvasion(null);
-              return;
-            }
-            const selfHearts = Number(data?.self_hearts);
-            if (Number.isFinite(selfHearts)) {
-              state.current.hearts = Math.max(0, selfHearts);
-              setHearts(state.current.hearts);
-            }
-            const opponentHearts = Number(data?.opponent_hearts);
-            if (Number.isFinite(opponentHearts))
-              setVersusOpponentHearts(Math.max(0, opponentHearts));
-            const damageApplied = Math.max(
-              0,
-              Number(data?.damage_applied) || 0,
-            );
-            if (damageApplied > 0)
-              showAbilityNotice(
-                `MIRAGE HIT · RIVAL -${damageApplied} HP`,
-                550,
+    const timer = window.setInterval(
+      () => {
+        const current = mirageInvasionRef.current;
+        if (!current) return;
+        if (isOnlineVersus && versusMatchRef.current) {
+          if (mirageDamageBusyRef.current) return;
+          const matchId = versusMatchRef.current;
+          mirageDamageBusyRef.current = true;
+          void supabase
+            .rpc("apply_1v1_mirage_damage", {
+              p_match_id: matchId,
+              // This is only a poll hint. Supabase derives every due 500ms tick
+              // from server-owned lane positions and timestamps.
+              p_damage: 1,
+            })
+            .then(({ data, error }) => {
+              mirageDamageBusyRef.current = false;
+              if (versusMatchRef.current !== matchId) return;
+              if (error) {
+                setVersusResult("MIRAGE ABILITY DATABASE SETUP IS MISSING");
+                mirageInvasionRef.current = null;
+                setMirageInvasion(null);
+                return;
+              }
+              const selfHearts = Number(data?.self_hearts);
+              if (Number.isFinite(selfHearts)) {
+                state.current.hearts = Math.max(0, selfHearts);
+                setHearts(state.current.hearts);
+              }
+              const opponentHearts = Number(data?.opponent_hearts);
+              if (Number.isFinite(opponentHearts))
+                setVersusOpponentHearts(Math.max(0, opponentHearts));
+              const damageApplied = Math.max(
+                0,
+                Number(data?.damage_applied) || 0,
               );
-            if (data?.active === false) {
-              mirageInvasionRef.current = null;
-              setMirageInvasion(null);
-              showAbilityNotice("MIRAGE RETURN · -1 HP", 1100);
+              if (damageApplied > 0)
+                showAbilityNotice(
+                  `MIRAGE HIT · RIVAL -${damageApplied} HP`,
+                  550,
+                );
+              if (data?.active === false) {
+                mirageInvasionRef.current = null;
+                setMirageInvasion(null);
+                showAbilityNotice("MIRAGE RETURN · -1 HP", 1100);
+                setAbilityStateVersion((version) => version + 1);
+                return;
+              }
+              const nextInvasion: MirageInvasionState = {
+                ...current,
+                endsAtMs: parseServerTime(data?.ends_at, current.endsAtMs),
+                mirageLane: state.current.lane,
+                opponentLane: versusOpponentLane,
+                damageDealt: current.damageDealt + damageApplied,
+              };
+              mirageInvasionRef.current = nextInvasion;
+              setMirageInvasion(nextInvasion);
               setAbilityStateVersion((version) => version + 1);
-              return;
+            });
+          return;
+        }
+        const step = advanceMirageInvasion(current, {
+          nowMs: Date.now(),
+          mirageLane: state.current.lane,
+          opponentLane: versusOpponentLane,
+        });
+        mirageInvasionRef.current = step.state;
+        setMirageInvasion(step.state);
+        if (step.opponentDamage > 0) {
+          if (isBotPractice) {
+            const nextOpponentHearts = Math.max(
+              0,
+              versusOpponentHearts - step.opponentDamage,
+            );
+            setVersusOpponentHearts(nextOpponentHearts);
+            showAbilityNotice(
+              `MIRAGE HIT · RIVAL -${step.opponentDamage} HP`,
+              550,
+            );
+            if (nextOpponentHearts <= 0) {
+              setVersusResult("PRACTICE VICTORY · MIRAGE INVASION");
+              setVersusPhase("finished");
+              setVersusIntermissionReady(false);
+              setRunning(false);
+              setOver(true);
             }
-            const nextInvasion: MirageInvasionState = {
-              ...current,
-              endsAtMs: parseServerTime(data?.ends_at, current.endsAtMs),
-              mirageLane: state.current.lane,
-              opponentLane: versusOpponentLane,
-              damageDealt: current.damageDealt + damageApplied,
-            };
-            mirageInvasionRef.current = nextInvasion;
-            setMirageInvasion(nextInvasion);
-            setAbilityStateVersion((version) => version + 1);
-          });
-        return;
-      }
-      const step = advanceMirageInvasion(current, {
-        nowMs: Date.now(),
-        mirageLane: state.current.lane,
-        opponentLane: versusOpponentLane,
-      });
-      mirageInvasionRef.current = step.state;
-      setMirageInvasion(step.state);
-      if (step.opponentDamage > 0) {
-        if (isBotPractice) {
-          const nextOpponentHearts = Math.max(
-            0,
-            versusOpponentHearts - step.opponentDamage,
-          );
-          setVersusOpponentHearts(nextOpponentHearts);
-          showAbilityNotice(
-            `MIRAGE HIT · RIVAL -${step.opponentDamage} HP`,
-            550,
-          );
-          if (nextOpponentHearts <= 0) {
-            setVersusResult("PRACTICE VICTORY · MIRAGE INVASION");
-            setVersusPhase("finished");
-            setVersusIntermissionReady(false);
-            setRunning(false);
-            setOver(true);
           }
         }
-      }
-      if (step.selfDamage > 0) {
-        window.clearInterval(timer);
-        mirageInvasionRef.current = null;
-        setMirageInvasion(null);
-        applyCharacterSelfDamage(
-          step.selfDamage,
-          "MIRAGE RETURN · -1 HP",
-        );
-      }
-      setAbilityStateVersion((value) => value + 1);
-    }, isOnlineVersus ? 200 : 100);
+        if (step.selfDamage > 0) {
+          window.clearInterval(timer);
+          mirageInvasionRef.current = null;
+          setMirageInvasion(null);
+          applyCharacterSelfDamage(step.selfDamage, "MIRAGE RETURN · -1 HP");
+        }
+        setAbilityStateVersion((value) => value + 1);
+      },
+      isOnlineVersus ? 200 : 100,
+    );
     return () => window.clearInterval(timer);
   }, [
     activeCharacter,
@@ -6695,34 +6778,21 @@ function SkywayGame() {
     versusOpponentLane,
   ]);
   useEffect(() => {
-    if (
-      !isOnlineVersus ||
-      activeCharacter !== "runner_comet" ||
-      !running
-    )
+    if (!isOnlineVersus || activeCharacter !== "runner_comet" || !running)
       return;
     const matchId = versusMatchRef.current;
     if (!matchId) return;
     let stopped = false;
     const pollSharedHeatfeast = async () => {
-      const { data, error } = await supabase.rpc(
-        "get_1v1_ability_state",
-        { p_match_id: matchId },
-      );
-      if (
-        stopped ||
-        error ||
-        versusMatchRef.current !== matchId
-      )
-        return;
+      const { data, error } = await supabase.rpc("get_1v1_ability_state", {
+        p_match_id: matchId,
+      });
+      if (stopped || error || versusMatchRef.current !== matchId) return;
       const payload = (data ?? {}) as VersusAbilityStatePayload;
       applyHeatfeastPayload(payload.heatfeast, waveRef.current);
     };
     void pollSharedHeatfeast();
-    const timer = window.setInterval(
-      () => void pollSharedHeatfeast(),
-      1500,
-    );
+    const timer = window.setInterval(() => void pollSharedHeatfeast(), 1500);
     return () => {
       stopped = true;
       window.clearInterval(timer);
@@ -6766,11 +6836,7 @@ function SkywayGame() {
       attackIds: string[],
       attempt = 0,
     ) {
-      if (
-        attackIds.length === 0 ||
-        versusMatchRef.current !== matchId
-      )
-        return;
+      if (attackIds.length === 0 || versusMatchRef.current !== matchId) return;
       const { error } = await supabase.rpc("acknowledge_1v1_attacks", {
         p_match_id: matchId,
         p_attack_ids: attackIds,
@@ -6781,17 +6847,9 @@ function SkywayGame() {
         );
         return;
       }
-      if (
-        attempt < 3 &&
-        versusMatchRef.current === matchId
-      )
+      if (attempt < 3 && versusMatchRef.current === matchId)
         setTimeout(
-          () =>
-            void acknowledgeSpawnedAttacks(
-              matchId,
-              attackIds,
-              attempt + 1,
-            ),
+          () => void acknowledgeSpawnedAttacks(matchId, attackIds, attempt + 1),
           750 * (attempt + 1),
         );
     },
@@ -6997,10 +7055,10 @@ function SkywayGame() {
               match.status === "cancelled"
                 ? "MATCH CANCELLED"
                 : match.is_draw
-                ? "DRAW"
-                : match.winner_user_id === userIdRef.current
-                  ? "VICTORY"
-                  : "DEFEAT",
+                  ? "DRAW"
+                  : match.winner_user_id === userIdRef.current
+                    ? "VICTORY"
+                    : "DEFEAT",
             );
             setVersusPhase("finished");
             setVersusIntermissionReady(false);
@@ -7022,12 +7080,11 @@ function SkywayGame() {
             setVersusPhase("intermission");
             setVersusIntermissionReady(true);
             setPaused(true);
-            setVersusResult(remaining > 0 ? "INTERMISSION" : "STARTING NEXT WAVE");
+            setVersusResult(
+              remaining > 0 ? "INTERMISSION" : "STARTING NEXT WAVE",
+            );
             void enqueueVersusStateSync(async () => {
-              await hydrateVersusState(
-                matchId,
-                versusRunHydratedRef.current,
-              );
+              await hydrateVersusState(matchId, versusRunHydratedRef.current);
             });
             return;
           }
@@ -7065,10 +7122,7 @@ function SkywayGame() {
       if (versusMatchRef.current !== matchId) return;
       if (gambit.error)
         setVersusResult("COUNTING CARDS DATABASE SETUP IS MISSING");
-      else
-        applyOnlineGambitPayload(
-          (gambit.data ?? {}) as OnlineGambitPayload,
-        );
+      else applyOnlineGambitPayload((gambit.data ?? {}) as OnlineGambitPayload);
     }
     const { data, error } = await supabase.rpc("get_1v1_ability_state", {
       p_match_id: matchId,
@@ -7107,16 +7161,11 @@ function SkywayGame() {
     });
     const opponentLane = Number(payload.opponent?.lane_index);
     if (Number.isInteger(opponentLane))
-      setVersusOpponentLane(
-        Math.max(0, Math.min(laneCount - 1, opponentLane)),
-      );
+      setVersusOpponentLane(Math.max(0, Math.min(laneCount - 1, opponentLane)));
     const opponentHearts = Number(payload.opponent?.hearts);
     if (Number.isFinite(opponentHearts))
       setVersusOpponentHearts(Math.max(0, opponentHearts));
-    const opponentEndsAt = parseServerTime(
-      payload.opponent?.mirage_ends_at,
-      0,
-    );
+    const opponentEndsAt = parseServerTime(payload.opponent?.mirage_ends_at, 0);
     setVersusOpponentMirageUntil(
       payload.opponent?.mirage_active ? opponentEndsAt : 0,
     );
@@ -7128,14 +7177,8 @@ function SkywayGame() {
       );
     if (payload.self?.mirage_active) {
       const now = Date.now();
-      const startedAt = parseServerTime(
-        payload.self.mirage_started_at,
-        now,
-      );
-      const endsAt = parseServerTime(
-        payload.self.mirage_ends_at,
-        now + 5000,
-      );
+      const startedAt = parseServerTime(payload.self.mirage_started_at, now);
+      const endsAt = parseServerTime(payload.self.mirage_ends_at, now + 5000);
       const ownLane = Number(payload.self.lane_index);
       const restoredLane = Number.isInteger(ownLane)
         ? Math.max(0, Math.min(laneCount - 1, ownLane))
@@ -7152,10 +7195,7 @@ function SkywayGame() {
           : versusOpponentLane,
         matchingSinceMs: null,
         nextDamageAtMs: null,
-        damageDealt: Math.max(
-          0,
-          Number(payload.self.mirage_damage_dealt) || 0,
-        ),
+        damageDealt: Math.max(0, Number(payload.self.mirage_damage_dealt) || 0),
         finished: false,
         exitDamageApplied: false,
       };
@@ -7223,8 +7263,9 @@ function SkywayGame() {
         ? validatedCharacter.characterKey
         : "runner_ace";
     const characterKey =
-      (!restoredRunTestMode || restoredMap === "terminal" ? restoredMapRules.forcedCharacterId : null) ??
-      restoredCandidate;
+      (!restoredRunTestMode || restoredMap === "terminal"
+        ? restoredMapRules.forcedCharacterId
+        : null) ?? restoredCandidate;
     const characterClass = getCharacterClassKey(characterKey);
     const rawMaxHearts = Number(snapshot.self?.max_hearts);
     const restoredMaxHearts =
@@ -7245,13 +7286,29 @@ function SkywayGame() {
     const restoredHearts = Math.min(
       restoredMaxHearts,
       normalizeVersusHearts(Number(snapshot.self?.hearts) || 0),
-      preserveRunState && restoredMap === "terminal" && restoredWave === previousClientWave
-        ? Math.max(0,state.current.hearts - Math.max(0,(Number(snapshot.self?.sword_damage_total) || 0)-terminalDamageSeenRef.current))
+      preserveRunState &&
+        restoredMap === "terminal" &&
+        restoredWave === previousClientWave
+        ? Math.max(
+            0,
+            state.current.hearts -
+              Math.max(
+                0,
+                (Number(snapshot.self?.sword_damage_total) || 0) -
+                  terminalDamageSeenRef.current,
+              ),
+          )
         : restoredMaxHearts,
     );
-    if (restoredMap === "terminal") applyTerminalSnapshot(snapshot, preserveRunState);
-    if (restoredMap === "meadow" && Number.isInteger(snapshot.wave_rules?.bonus_lane_index)) {
-      meadowBonusLaneRef.current = Number(snapshot.wave_rules?.bonus_lane_index);
+    if (restoredMap === "terminal")
+      applyTerminalSnapshot(snapshot, preserveRunState);
+    if (
+      restoredMap === "meadow" &&
+      Number.isInteger(snapshot.wave_rules?.bonus_lane_index)
+    ) {
+      meadowBonusLaneRef.current = Number(
+        snapshot.wave_rules?.bonus_lane_index,
+      );
       setMeadowBonusLane(meadowBonusLaneRef.current);
     }
     const authoritativeConveyor =
@@ -7273,7 +7330,11 @@ function SkywayGame() {
     setSelectedCharacter(characterKey);
     setVersusServerMaxHearts(restoredMaxHearts);
     if (!preserveRunState) {
-      const restoredLane = restoredMap === "terminal" && Number.isInteger(snapshot.self?.lane_index) ? Math.max(0,Math.min(4,Number(snapshot.self?.lane_index))) : restoredCenterLane;
+      const restoredLane =
+        restoredMap === "terminal" &&
+        Number.isInteger(snapshot.self?.lane_index)
+          ? Math.max(0, Math.min(4, Number(snapshot.self?.lane_index)))
+          : restoredCenterLane;
       setLane(restoredLane);
       state.current.lane = restoredLane;
       void supabase.rpc("update_1v1_position", {
@@ -7285,8 +7346,7 @@ function SkywayGame() {
       processedPickupIdsRef.current.clear();
       ambientHazardStreakRef.current = { kind: null, count: 0 };
       resetCharacterAbilityState(freshMatch ? undefined : restoredWave);
-      const restoredWaveProgress =
-        (restoredWave - 1) * WAVE_PROGRESS_LENGTH;
+      const restoredWaveProgress = (restoredWave - 1) * WAVE_PROGRESS_LENGTH;
       waveProgressRef.current = restoredWaveProgress;
       setWaveProgress(restoredWaveProgress);
       setPauseMenuOpen(false);
@@ -7324,9 +7384,7 @@ function SkywayGame() {
       setFactoryConveyor(authoritativeConveyor);
     }
     if (!preserveRunState)
-      timeStopUsedRef.current = Boolean(
-        snapshot.self?.zenith_time_stop_used,
-      );
+      timeStopUsedRef.current = Boolean(snapshot.self?.zenith_time_stop_used);
     applyVersusTimeStopState(snapshot.self ?? {});
     setScore(restoredScore);
     setWave(restoredWave);
@@ -7363,9 +7421,7 @@ function SkywayGame() {
     setVersusOpponentScore(
       Math.max(
         0,
-        Number(
-          snapshot.opponent?.final_score ?? snapshot.opponent?.score,
-        ) || 0,
+        Number(snapshot.opponent?.final_score ?? snapshot.opponent?.score) || 0,
       ),
     );
     setVersusSelfMushrooms(
@@ -7386,8 +7442,7 @@ function SkywayGame() {
     pitchKatanaRef.current = {
       ...pitchKatanaRef.current,
       broken:
-        pitchKatanaRef.current.broken ||
-        Boolean(snapshot.self?.katana_broken),
+        pitchKatanaRef.current.broken || Boolean(snapshot.self?.katana_broken),
       activeUntilMs: snapshot.self?.katana_broken
         ? 0
         : pitchKatanaRef.current.activeUntilMs,
@@ -7409,38 +7464,43 @@ function SkywayGame() {
     setPlayScope("versus");
     if (!preserveRunState) setVersusGuideOpen(true);
     setOver(selfEliminated || matchFinished || matchCancelled);
-    setRunning(!selfEliminated && !matchFinished && !matchCancelled && matchStatus !== "countdown");
-
-    const pending = (restoredMap === "terminal" ? [] : snapshot.pending_attacks ?? []).flatMap(
-      (attack): PendingVersusAttack[] => {
-        const kind = normalizeVersusObstacle(attack.obstacle_type);
-        if (!attack.id || !kind) return [];
-        return [
-          {
-            id: attack.id,
-            kind,
-            lane:
-              Number.isInteger(attack.lane_index) && attack.lane_index !== null
-                ? Number(attack.lane_index)
-                : undefined,
-            laneGroup:
-              Number.isInteger(attack.lane_group) && attack.lane_group !== null
-                ? Number(attack.lane_group)
-                : undefined,
-            lanePosition:
-              Number.isInteger(attack.lane_position) &&
-              attack.lane_position !== null
-                ? Number(attack.lane_position)
-                : undefined,
-            escapeLane:
-              Number.isInteger(attack.escape_lane_index) &&
-              attack.escape_lane_index !== null
-                ? Number(attack.escape_lane_index)
-                : undefined,
-          },
-        ];
-      },
+    setRunning(
+      !selfEliminated &&
+        !matchFinished &&
+        !matchCancelled &&
+        matchStatus !== "countdown",
     );
+
+    const pending = (
+      restoredMap === "terminal" ? [] : (snapshot.pending_attacks ?? [])
+    ).flatMap((attack): PendingVersusAttack[] => {
+      const kind = normalizeVersusObstacle(attack.obstacle_type);
+      if (!attack.id || !kind) return [];
+      return [
+        {
+          id: attack.id,
+          kind,
+          lane:
+            Number.isInteger(attack.lane_index) && attack.lane_index !== null
+              ? Number(attack.lane_index)
+              : undefined,
+          laneGroup:
+            Number.isInteger(attack.lane_group) && attack.lane_group !== null
+              ? Number(attack.lane_group)
+              : undefined,
+          lanePosition:
+            Number.isInteger(attack.lane_position) &&
+            attack.lane_position !== null
+              ? Number(attack.lane_position)
+              : undefined,
+          escapeLane:
+            Number.isInteger(attack.escape_lane_index) &&
+            attack.escape_lane_index !== null
+              ? Number(attack.escape_lane_index)
+              : undefined,
+        },
+      ];
+    });
     const mergedPending = new Map(
       incomingAttacksRef.current.map((attack) => [attack.id, attack]),
     );
@@ -7488,7 +7548,9 @@ function SkywayGame() {
       setVersusResult("INTERMISSION");
       setPaused(true);
     } else if (matchStatus === "countdown") {
-      const deadline = Date.parse(snapshot.match?.character_selection_ends_at ?? "");
+      const deadline = Date.parse(
+        snapshot.match?.character_selection_ends_at ?? "",
+      );
       setCharacterSelectionEndsAt(Number.isFinite(deadline) ? deadline : null);
       setVersusPhase("ready");
       setPaused(true);
@@ -7509,18 +7571,22 @@ function SkywayGame() {
       if (attacks.length > 0) {
         const hasServerFormation = attacks.every(
           (attack) =>
-            Number.isInteger(attack.lane) &&
-            Number.isInteger(attack.laneGroup),
+            Number.isInteger(attack.lane) && Number.isInteger(attack.laneGroup),
         );
         enqueueDeferredAttackItems(
           hasServerFormation
             ? appendServerAttackGroups(
-                [], attacks, () => id.current++, restoredMapRules.laneCount,
+                [],
+                attacks,
+                () => id.current++,
+                restoredMapRules.laneCount,
                 preserveRunState ? state.current.lane : restoredCenterLane,
                 restoredMap,
               )
             : appendSafeAttackWave(
-                [], attacks.map((attack) => attack.kind), () => id.current++,
+                [],
+                attacks.map((attack) => attack.kind),
+                () => id.current++,
                 preserveRunState ? state.current.lane : restoredCenterLane,
                 restoredMapRules.laneCount,
                 restoredMap,
@@ -7638,6 +7704,41 @@ function SkywayGame() {
     }
   };
   beginVersusMatchRef.current = beginVersusMatch;
+  const unlockRanked = async () => {
+    const owner = userIdRef.current;
+    if (
+      !owner ||
+      guest ||
+      rankedUnlockBusy ||
+      adminTestModeActive ||
+      playerProgression.level < MODE_UNLOCKS.ranked.level ||
+      gems < MODE_UNLOCKS.ranked.gems
+    )
+      return;
+    setRankedUnlockBusy(true);
+    try {
+      const { data, error } = await supabase.rpc("unlock_ranked_1v1");
+      if (userIdRef.current !== owner) return;
+      if (error) {
+        setVersusResult(error.message);
+        return;
+      }
+      applyProgressionPayload(data, owner);
+      const balance = Number(data?.total_gems);
+      if (Number.isFinite(balance)) {
+        gemsRef.current = balance;
+        setGems(balance);
+      }
+      setVersusResult("RANKED UNLOCKED · ELO ENABLED");
+    } catch {
+      if (userIdRef.current === owner)
+        setVersusResult(
+          "Could not confirm the unlock. Refresh your account before trying again.",
+        );
+    } finally {
+      setRankedUnlockBusy(false);
+    }
+  };
   const invalidateVersusSearch = () => {
     versusSearchingRef.current = false;
     versusSearchTokenRef.current += 1;
@@ -7663,9 +7764,7 @@ function SkywayGame() {
       effectiveVersusMode === "ranked" &&
       !playerProgression.ranked_unlocked
     ) {
-      setVersusResult(
-        "RANKED IS LOCKED AFTER THE RATING RESET",
-      );
+      setVersusResult("RANKED REQUIRES LEVEL 25 AND A ONE-TIME 100-GEM UNLOCK");
       return;
     }
     if (
@@ -7677,11 +7776,7 @@ function SkywayGame() {
       );
       return;
     }
-    if (
-      versusSearchingRef.current ||
-      versusLeaving ||
-      versusMatchRef.current
-    )
+    if (versusSearchingRef.current || versusLeaving || versusMatchRef.current)
       return;
     versusReconnectIntentRef.current += 1;
     versusReconnectPendingRef.current = false;
@@ -7805,18 +7900,21 @@ function SkywayGame() {
     reset(false, practiceMap);
     setRunning(false);
     setPaused(true);
-    setCharacterSelectionEndsAt(Date.now()+10_000);
+    setCharacterSelectionEndsAt(Date.now() + 10_000);
   };
   useEffect(() => {
     if (playScope !== "practice" || characterSelectionEndsAt === null) return;
-    const timer=window.setTimeout(() => {
-      setCharacterSelectionEndsAt(null);
-      setVersusPhase("playing");
-      setPaused(false);
-      reset(false,versusMap);
-    },Math.max(0,characterSelectionEndsAt-Date.now()));
+    const timer = window.setTimeout(
+      () => {
+        setCharacterSelectionEndsAt(null);
+        setVersusPhase("playing");
+        setPaused(false);
+        reset(false, versusMap);
+      },
+      Math.max(0, characterSelectionEndsAt - Date.now()),
+    );
     return () => window.clearTimeout(timer);
-  },[characterSelectionEndsAt,playScope,reset,versusMap]);
+  }, [characterSelectionEndsAt, playScope, reset, versusMap]);
   const clearVersusLocalSession = () => {
     setCharacterSelectionEndsAt(null);
     versusReconnectIntentRef.current += 1;
@@ -8021,14 +8119,9 @@ function SkywayGame() {
       const authoritativePoints = Number(snapshot?.self?.obstacle_points);
       if (Number.isFinite(authoritativePoints))
         applyAuthoritativeVersusPoints(authoritativePoints);
-      const remaining = secondsUntil(
-        snapshot?.match?.intermission_ends_at,
-        0,
-      );
+      const remaining = secondsUntil(snapshot?.match?.intermission_ends_at, 0);
       setVersusCountdown(remaining);
-      setVersusIntermissionReady(
-        snapshot?.match?.status === "intermission",
-      );
+      setVersusIntermissionReady(snapshot?.match?.status === "intermission");
     };
     versusAttackBusyRef.current = true;
     setVersusAttackBusy(true);
@@ -8068,19 +8161,14 @@ function SkywayGame() {
         const spent = Number.isFinite(remaining)
           ? Math.max(0, pointsBeforeAttack - remaining)
           : attack.cost;
-        const nextHeat = addHeatfeastSpending(
-          heatfeastStateRef.current,
-          spent,
-        );
+        const nextHeat = addHeatfeastSpending(heatfeastStateRef.current, spent);
         heatfeastStateRef.current = nextHeat;
         setHeatfeastState(nextHeat);
         setAbilityStateVersion((value) => value + 1);
       }
       const quantity = Math.max(1, Number(attackResult.data?.quantity) || 1);
       void audioEngine.playSfx("attackSent");
-      setVersusResult(
-        quantity > 1 ? `${attack.label} ×${quantity} SENT` : "",
-      );
+      setVersusResult(quantity > 1 ? `${attack.label} ×${quantity} SENT` : "");
     } catch {
       if (versusMatchRef.current === matchId) {
         setVersusResult("COULD NOT SEND THAT ATTACK · TRY AGAIN");
@@ -8097,11 +8185,7 @@ function SkywayGame() {
     const key = (e: KeyboardEvent) => {
       if (mainView === "photon" || mainView === "rng") return;
       const target = e.target as HTMLElement | null;
-      if (
-        target?.closest(
-          'input, textarea, select, [contenteditable="true"]',
-        )
-      )
+      if (target?.closest('input, textarea, select, [contenteditable="true"]'))
         return;
       if (target?.closest("button") && ["Enter", " "].includes(e.key)) return;
       if (hexVoid?.encounter === "hades") {
@@ -8128,12 +8212,18 @@ function SkywayGame() {
         void audioEngine.playSfx("click");
         return;
       }
-      if ((e.key === "r" || e.key === "R") && activeCharacter === "runner_comet") {
+      if (
+        (e.key === "r" || e.key === "R") &&
+        activeCharacter === "runner_comet"
+      ) {
         e.preventDefault();
         consumeCometHeatfeast();
         return;
       }
-      if ((e.key === "r" || e.key === "R") && activeCharacter === "trickster_hex") {
+      if (
+        (e.key === "r" || e.key === "R") &&
+        hasCharacterAbility("trickster_hex")
+      ) {
         e.preventDefault();
         if (!e.repeat) throwHexChakram();
         return;
@@ -8208,6 +8298,7 @@ function SkywayGame() {
     move,
     museGame,
     hexVoid,
+    hasCharacterAbility,
     pulseGame,
     reset,
     settingsOpen,
@@ -8267,13 +8358,7 @@ function SkywayGame() {
       }
     }, 100);
     return () => clearInterval(timer);
-  }, [
-    isBotPractice,
-    isOnlineVersus,
-    maxHearts,
-    pulseGame,
-    showAbilityNotice,
-  ]);
+  }, [isBotPractice, isOnlineVersus, maxHearts, pulseGame, showAbilityNotice]);
   useEffect(() => {
     if (!museGame) return;
     const timer = window.setInterval(() => {
@@ -8286,9 +8371,7 @@ function SkywayGame() {
       }
       window.clearInterval(timer);
       const accuracy =
-        museGame.attempts > 0
-          ? (museGame.hits / museGame.attempts) * 100
-          : 0;
+        museGame.attempts > 0 ? (museGame.hits / museGame.attempts) * 100 : 0;
       const reward = getMuseReward(accuracy);
       setMuseGame(null);
       setMuseReward(reward);
@@ -8359,8 +8442,7 @@ function SkywayGame() {
       }
       const currentSpeedMultiplier = getWaveSpeedMultiplier(wave);
       const pacerRushActive =
-        activeCharacter === "runner_pacer" &&
-        pacerRushRemainingRef.current > 0;
+        activeCharacter === "runner_pacer" && pacerRushRemainingRef.current > 0;
       if (hasCharacterAbility("runner_velocity")) {
         velocityChargeMsRef.current = Math.min(
           100000,
@@ -8398,19 +8480,16 @@ function SkywayGame() {
       );
       let characterSpeedMultiplier = 1;
       if (pacerRushActive) characterSpeedMultiplier *= 3;
-      if (hasCharacterAbility("runner_dash"))
-        characterSpeedMultiplier *= 1.06;
-      if (dashBoostRemainingRef.current > 0)
-        characterSpeedMultiplier *= 1.5;
-      if (blitzBoostRemainingRef.current > 0)
-        characterSpeedMultiplier *= 2;
+      if (hasCharacterAbility("runner_dash")) characterSpeedMultiplier *= 1.06;
+      if (dashBoostRemainingRef.current > 0) characterSpeedMultiplier *= 1.5;
+      if (blitzBoostRemainingRef.current > 0) characterSpeedMultiplier *= 2;
       if (hasCharacterAbility("runner_tempo"))
         characterSpeedMultiplier *= wave % 2 === 1 ? 1.15 : 0.85;
       if (hasCharacterAbility("tank_reactor"))
         characterSpeedMultiplier *= 1 + missingHealthRatio * 0.4;
       if (hasCharacterAbility("runner_velocity"))
         characterSpeedMultiplier *=
-          1.05 + Math.min(1, velocityChargeMsRef.current / 100000);
+          1 + Math.min(1, velocityChargeMsRef.current / 100000);
       if (reviveFlyingRef.current) characterSpeedMultiplier *= 1.5;
       if (
         activeCharacter === "trickster_phantom" &&
@@ -8473,31 +8552,25 @@ function SkywayGame() {
         last.current = now;
         const r = Math.random(),
           danger = Math.min(0.82, 0.59 + wave * 0.025),
-          baseGemChance =
-            mode === "impossible" ? 0.14 : mode === "hardcore" ? 0.1 : 0.06,
+          baseGemChance = mode === "hardcore" ? 0.1 : 0.06,
           characterGemMultiplier =
             (hasCharacterAbility("misc_broker") ? 1.25 : 1) *
             (hasCharacterAbility("misc_prospector") ? 1.6 : 1),
-          gemChance =
-            hasCharacterAbility("runner_fortune")
-              ? getFortuneGemSpawnChance(
-                  baseGemChance,
-                  fortuneGemCountRef.current,
-                )
-              : Math.min(0.3, baseGemChance * characterGemMultiplier),
+          gemChance = hasCharacterAbility("runner_fortune")
+            ? getFortuneGemSpawnChance(
+                baseGemChance,
+                fortuneGemCountRef.current,
+              )
+            : Math.min(0.3, baseGemChance * characterGemMultiplier),
           gemThreshold = 1 - gemChance,
           versusGemThreshold =
             1 -
             (hasCharacterAbility("runner_fortune")
-              ? getFortuneGemSpawnChance(
-                  0.025,
-                  fortuneGemCountRef.current,
-                )
+              ? getFortuneGemSpawnChance(0.025, fortuneGemCountRef.current)
               : 0.025 * characterGemMultiplier),
-          attackPickupChance =
-            hasCharacterAbility("misc_broker")
-              ? ATTACK_COIN_SPAWN_CHANCE * 1.25
-              : ATTACK_COIN_SPAWN_CHANCE,
+          attackPickupChance = hasCharacterAbility("misc_broker")
+            ? ATTACK_COIN_SPAWN_CHANCE * 1.25
+            : ATTACK_COIN_SPAWN_CHANCE,
           sameHazardLimit =
             activeCharacter === "misc_muse"
               ? 2
@@ -8541,9 +8614,9 @@ function SkywayGame() {
               break;
           }
           return scribeCapReached && selected === scribeHazard
-            ? hazardChoices[
+            ? (hazardChoices[
                 Math.floor(Math.random() * hazardChoices.length)
-              ] ?? "log"
+              ] ?? "log")
             : selected;
         };
         let kind: Kind;
@@ -8564,8 +8637,7 @@ function SkywayGame() {
         const onlineCometRemoval =
           activeCharacter === "runner_comet" && isOnlineVersus
             ? cometRemovalReceiptsRef.current.find(
-                (receipt) =>
-                  receipt.wave === wave && receipt.kind === kind,
+                (receipt) => receipt.wave === wave && receipt.kind === kind,
               )
             : undefined;
         const queuedCometRemoval =
@@ -8579,8 +8651,7 @@ function SkywayGame() {
             const matchId = versusMatchRef.current;
             cometRemovalReceiptsRef.current =
               cometRemovalReceiptsRef.current.filter(
-                (receipt) =>
-                  receipt.receiptId !== onlineCometRemoval.receiptId,
+                (receipt) => receipt.receiptId !== onlineCometRemoval.receiptId,
               );
             void supabase
               .rpc("redeem_1v1_comet_removal", {
@@ -8611,20 +8682,11 @@ function SkywayGame() {
             850,
           );
           setAbilityStateVersion((value) => value + 1);
-        } else if (
-          isHazardKind(kind) &&
-          phoenixFeatherActiveRef.current &&
-          phoenixFeatherReadyWaveRef.current === wave
-        ) {
-          phoenixFeatherReadyWaveRef.current = wave + 1;
-          advancePlannedHazard();
-          showAbilityNotice("PHOENIX FEATHER · FIRST OBSTACLE DESTROYED", 900);
         } else {
           const currentItems = itemsSnapshotRef.current;
-          const activeProspectorWarnings =
-            prospectorWarningRef.current.filter(
-              (warning) => warning.spawnAt > Date.now(),
-            );
+          const activeProspectorWarnings = prospectorWarningRef.current.filter(
+            (warning) => warning.spawnAt > Date.now(),
+          );
           if (
             activeProspectorWarnings.length !==
             prospectorWarningRef.current.length
@@ -8661,9 +8723,7 @@ function SkywayGame() {
           );
           const hazardLanes = new Set(
             currentItems
-              .filter(
-                (item) => isHazardKind(item.kind) && item.y < 18,
-              )
+              .filter((item) => isHazardKind(item.kind) && item.y < 18)
               .map((item) => item.lane),
           );
           const hazardLaneLimitReached =
@@ -8700,8 +8760,7 @@ function SkywayGame() {
                 (lane) =>
                   !blocked.has(lane) &&
                   !queuedAttackLanes.has(lane) &&
-                  (!isHazardKind(kind) ||
-                    !reservedAttackSafeLanes.has(lane)),
+                  (!isHazardKind(kind) || !reservedAttackSafeLanes.has(lane)),
               );
           if (lanes.length > 0) {
             const spawnLane = lanes[Math.floor(Math.random() * lanes.length)];
@@ -8759,9 +8818,18 @@ function SkywayGame() {
       setItems((old) => {
         let clearRecoveryZone = false;
         if (activeMapId === "terminal") {
-          const course=terminalCourseRef.current;
-          const elapsed=course.startsAt ? Math.max(0,Date.now()-course.startsAt) : 0;
-          old=visibleTerminalCourse(combineTerminalCourse(course.items,terminalSharedAttacksRef.current),elapsed,terminalConsumedRef.current);
+          const course = terminalCourseRef.current;
+          const elapsed = course.startsAt
+            ? Math.max(0, Date.now() - course.startsAt)
+            : 0;
+          old = visibleTerminalCourse(
+            combineTerminalCourse(
+              course.items,
+              terminalSharedAttacksRef.current,
+            ),
+            elapsed,
+            terminalConsumedRef.current,
+          );
         }
         let clearDamagedLane = false;
         let relayDischarge = false;
@@ -8771,18 +8839,18 @@ function SkywayGame() {
             item.formationSpeed !== undefined
               ? item.formationSpeed
               : item.kind === "barrel"
-              ? 1.75
-              : item.kind === "current"
-                ? 1.75 * CURRENT_RULES.barrelSpeedMultiplier
-              : item.kind === "car"
-                ? 1.28
-                : item.kind === "log"
-                  ? 0.72
-                  : item.kind === "rock"
-                  ? 0.3
-                  : item.kind === "vortex"
-                  ? VORTEX_SPEED_FACTOR
-                  : 1;
+                ? 1.75
+                : item.kind === "current"
+                  ? 1.75 * CURRENT_RULES.barrelSpeedMultiplier
+                  : item.kind === "car"
+                    ? 1.28
+                    : item.kind === "log"
+                      ? 0.72
+                      : item.kind === "rock"
+                        ? 0.3
+                        : item.kind === "vortex"
+                          ? VORTEX_SPEED_FACTOR
+                          : 1;
           if (isHazard) {
             speedFactor *= permanentObstacleSlowRef.current;
             if (beaconActiveRef.current) speedFactor *= 0.5;
@@ -8893,15 +8961,15 @@ function SkywayGame() {
                 nextYById.set(item.id, item.y);
                 return;
               }
-              const proposedY =
-                item.sharedCourse ? item.y :
-                pendingKatanaReflectionIdsRef.current.has(item.id)
-                ? 65
-                : item.y +
-                  BASE_ITEM_SPEED *
-                    obstacleSpeedMultiplier *
-                    getItemSpeedFactor(item) *
-                    dt;
+              const proposedY = item.sharedCourse
+                ? item.y
+                : pendingKatanaReflectionIdsRef.current.has(item.id)
+                  ? 65
+                  : item.y +
+                    BASE_ITEM_SPEED *
+                      obstacleSpeedMultiplier *
+                      getItemSpeedFactor(item) *
+                      dt;
               const separatedY = Number.isFinite(frontY)
                 ? Math.min(proposedY, frontY - MIN_SAME_LANE_GAP)
                 : proposedY;
@@ -8929,9 +8997,7 @@ function SkywayGame() {
             activeCharacter === "runner_flare" &&
             flareActiveUntilRef.current > Date.now() &&
             n.lane === flareLaneRef.current &&
-            (n.kind === "log" ||
-              n.kind === "barrel" ||
-              n.kind === "snowflake")
+            (n.kind === "log" || n.kind === "barrel" || n.kind === "snowflake")
           ) {
             flareBurnCountRef.current += 1;
             if (n.attackToken && isOnlineVersus && versusMatchRef.current)
@@ -8947,12 +9013,19 @@ function SkywayGame() {
               );
             return [];
           }
-          if (pendingKatanaReflectionIdsRef.current.has(n.id))
-            return [n];
+          if (pendingKatanaReflectionIdsRef.current.has(n.id)) return [n];
           const crossedRunnerBand = item.y < 91 && n.y >= 65;
-          if (n.kind === "vortex" && crossedRunnerBand && Math.abs(n.lane-state.current.lane)===1 && !vortexSeenRef.current.has(n.id)) {
+          if (
+            n.kind === "vortex" &&
+            crossedRunnerBand &&
+            Math.abs(n.lane - state.current.lane) === 1 &&
+            !vortexSeenRef.current.has(n.id)
+          ) {
             vortexSeenRef.current.add(n.id);
-            vortexGravityRef.current = { blockedDirection: Math.sign(state.current.lane-n.lane), until: Date.now()+500 };
+            vortexGravityRef.current = {
+              blockedDirection: Math.sign(state.current.lane - n.lane),
+              until: Date.now() + 500,
+            };
             showAbilityNotice("VORTEX · GRAVITATED", 500);
           }
           const abilityGraze =
@@ -8978,12 +9051,9 @@ function SkywayGame() {
           }
           const rangerPickup =
             hasCharacterAbility("runner_ranger") &&
-            (n.kind === "gem" ||
-              n.kind === "coin" ||
-              n.kind === "melon") &&
+            (n.kind === "gem" || n.kind === "coin" || n.kind === "melon") &&
             Math.abs(n.lane - state.current.lane) <= 1;
-          const rangerPulled =
-            rangerPickup && n.lane !== state.current.lane;
+          const rangerPulled = rangerPickup && n.lane !== state.current.lane;
           const currentInteraction =
             n.kind === "current"
               ? resolveCurrentInteraction(
@@ -9001,15 +9071,27 @@ function SkywayGame() {
           ) {
             let phantomIgnore = false;
             if (n.sharedCourse) terminalConsumedRef.current.add(n.id);
-            if (activeMapId === "terminal" && (n.kind === "rock" || n.kind === "spikes")) {
-              terminalSwordRef.current = { ...terminalSwordRef.current, durability: Math.max(0, terminalSwordRef.current.durability-1) };
+            if (
+              activeMapId === "terminal" &&
+              (n.kind === "rock" || n.kind === "spikes")
+            ) {
+              terminalSwordRef.current = {
+                ...terminalSwordRef.current,
+                durability: Math.max(
+                  0,
+                  terminalSwordRef.current.durability - 1,
+                ),
+              };
               setTerminalSwordVersion((value) => value + 1);
-              if (isOnlineVersus && versusMatchRef.current) void supabase.rpc("record_1v1_terminal_contact", {p_match_id:versusMatchRef.current,p_item_id:String(n.id),p_kind:n.kind});
+              if (isOnlineVersus && versusMatchRef.current)
+                void supabase.rpc("record_1v1_terminal_contact", {
+                  p_match_id: versusMatchRef.current,
+                  p_item_id: String(n.id),
+                  p_kind: n.kind,
+                });
             }
             if (isHazard) {
               collisionWaveRef.current = wave;
-              if (activeCharacter === "medic_oracle")
-                oracleHitCountRef.current += 1;
               if (hasCharacterAbility("runner_velocity")) {
                 velocityChargeMsRef.current = 0;
                 velocityMilestoneRef.current = 0;
@@ -9041,19 +9123,15 @@ function SkywayGame() {
                 showAbilityNotice("SPECIAL DELIVERY · SCORE ×1.25", 900);
               }
             }
-            if (
-              isHazard &&
-              lifelineImmuneKindsRef.current.has(n.kind)
-            ) {
+            if (isHazard && lifelineImmuneKindsRef.current.has(n.kind)) {
               void audioEngine.playSfx("shield");
-              showAbilityNotice(`LIFELINE · ${n.kind.toUpperCase()} IMMUNE`, 850);
+              showAbilityNotice(
+                `LIFELINE · ${n.kind.toUpperCase()} IMMUNE`,
+                850,
+              );
               return [];
             }
-            if (
-              isHazard &&
-              beaconActiveRef.current &&
-              n.kind === "spikes"
-            ) {
+            if (isHazard && beaconActiveRef.current && n.kind === "spikes") {
               void audioEngine.playSfx("shield");
               showAbilityNotice("BEACON · SPIKES DEACTIVATED", 850);
               return [];
@@ -9145,8 +9223,7 @@ function SkywayGame() {
                 const reflectionId = `katana:${versusPickupNonceRef.current}:${n.attackToken ?? n.id}`;
                 if (isOnlineVersus && versusMatchRef.current) {
                   const matchId = versusMatchRef.current;
-                  const waitsForServer =
-                    katanaCollision.kind === "deflected";
+                  const waitsForServer = katanaCollision.kind === "deflected";
                   if (waitsForServer)
                     pendingKatanaReflectionIdsRef.current.add(n.id);
                   const reflectionArgs = n.attackToken
@@ -9176,10 +9253,7 @@ function SkywayGame() {
                             whiffSettled: true,
                           };
                           setPitchKatanaVersion((value) => value + 1);
-                          showAbilityNotice(
-                            "KATANA REFLECTION REJECTED",
-                            1100,
-                          );
+                          showAbilityNotice("KATANA REFLECTION REJECTED", 1100);
                         }
                         return;
                       }
@@ -9217,15 +9291,9 @@ function SkywayGame() {
                       }
                     });
                   if (waitsForServer) return [{ ...n, y: 65 }];
-                } else if (
-                  isBotPractice &&
-                  katanaCollision.sendToOpponent
-                )
+                } else if (isBotPractice && katanaCollision.sendToOpponent)
                   playerAttacksAgainstBotRef.current.push(attackKind);
-                if (
-                  katanaCollision.kind === "deflected" &&
-                  !isOnlineVersus
-                ) {
+                if (katanaCollision.kind === "deflected" && !isOnlineVersus) {
                   void audioEngine.playSfx("shield");
                   setFlash("shield");
                   setTimeout(() => setFlash(""), 150);
@@ -9268,9 +9336,15 @@ function SkywayGame() {
                     p_match_id: versusMatchRef.current,
                     p_lane_index: state.current.lane,
                   });
-                showAbilityNotice("SWITCHED CURRENT · PULLED ONE LANE CLOSER", 950);
+                showAbilityNotice(
+                  "SWITCHED CURRENT · PULLED ONE LANE CLOSER",
+                  950,
+                );
               } else {
-                showAbilityNotice("SWITCHED CURRENT · NO EFFECT IN ITS LANE", 850);
+                showAbilityNotice(
+                  "SWITCHED CURRENT · NO EFFECT IN ITS LANE",
+                  850,
+                );
               }
               return [];
             }
@@ -9345,13 +9419,13 @@ function SkywayGame() {
                     consecutivePickups: gemStreakRef.current,
                   });
               if (streakPickup)
-                gemStreakRef.current =
-                  streakPickup.state.consecutivePickups;
+                gemStreakRef.current = streakPickup.state.consecutivePickups;
               const gemAward = streakPickup?.gemsAwarded ?? 1;
-              const adjustedGemAward =
-                hasCharacterAbility("trickster_pickpocket")
-                  ? gemAward * 2
-                  : gemAward;
+              const adjustedGemAward = hasCharacterAbility(
+                "trickster_pickpocket",
+              )
+                ? gemAward * 2
+                : gemAward;
               const brokerBanksGem =
                 hasCharacterAbility("misc_broker") && !isVersusRun;
               if (brokerBanksGem) {
@@ -9365,10 +9439,7 @@ function SkywayGame() {
                   `BROKER GEM FUND · +${adjustedGemAward}`,
                   900,
                 );
-              } else if (
-                !isBotPractice &&
-                !runIsTestModeRef.current
-              ) {
+              } else if (!isBotPractice && !runIsTestModeRef.current) {
                 const total = gemsRef.current + adjustedGemAward;
                 gemsRef.current = total;
                 setGems(total);
@@ -9417,19 +9488,6 @@ function SkywayGame() {
                 setTonicIngredients((value) => value + 1);
                 showAbilityNotice("FIELD ALCHEMY · +1 INGREDIENT", 750);
               }
-              if (
-                healingEnabled &&
-                activeCharacter === "medic_seraph" &&
-                !reviveFlyingRef.current &&
-                Math.random() < 0.1
-              ) {
-                setHearts((value) => {
-                  const healed = Math.min(maxHearts, value + 1);
-                  state.current.hearts = healed;
-                  return healed;
-                });
-                showAbilityNotice("HALO STAFF · +1 HP", 900);
-              }
               if (activeCharacter === "medic_vial") {
                 const vialDamage =
                   vialAllegianceUntilRef.current > Date.now() ? 2 : 1;
@@ -9455,7 +9513,7 @@ function SkywayGame() {
                   MELON_BASE_SCORE *
                     currentCoinMultiplierRef.current *
                     (hasCharacterAbility("runner_ranger") ? 2 : 1),
-                  ),
+                ),
               );
               if (vialAllegianceActive) {
                 scoreRef.current = Math.max(0, scoreRef.current - melonScore);
@@ -9490,9 +9548,8 @@ function SkywayGame() {
                 getAttackPointsForCoin(activeMapId) *
                 currentCoinMultiplierRef.current *
                 (activeCharacter === "runner_comet"
-                  ? getHeatfeastBenefits(
-                      heatfeastStateRef.current.consumed,
-                    ).attackCoinMultiplierWithStarSpear
+                  ? getHeatfeastBenefits(heatfeastStateRef.current.consumed)
+                      .attackCoinMultiplierWithStarSpear
                   : 1);
               const brokerBanksCoin =
                 hasCharacterAbility("misc_broker") && isBotPractice;
@@ -9508,8 +9565,7 @@ function SkywayGame() {
                   900,
                 );
               } else if (isBotPractice) {
-                versusPointsRef.current +=
-                  coinValue;
+                versusPointsRef.current += coinValue;
                 setVersusPoints(versusPointsRef.current);
               } else if (isOnlineVersus && versusMatchRef.current) {
                 queueOnlineCoinAward(versusMatchRef.current, n.id);
@@ -9549,9 +9605,15 @@ function SkywayGame() {
                   return [];
                 }
               }
-              if (hasCharacterAbility("runner_scout") && scoutSnowflakeHealReadyRef.current) {
+              if (
+                hasCharacterAbility("runner_scout") &&
+                scoutSnowflakeHealReadyRef.current
+              ) {
                 scoutSnowflakeHealReadyRef.current = false;
-                state.current.hearts = Math.min(maxHearts, state.current.hearts + 0.5);
+                state.current.hearts = Math.min(
+                  maxHearts,
+                  state.current.hearts + 0.5,
+                );
                 setHearts(state.current.hearts);
                 showAbilityNotice("QUICKSTEP CATCH · +0.5 HP", 900);
               }
@@ -9563,16 +9625,14 @@ function SkywayGame() {
                   }
                   const resolved = resolveWeaverSnowflake(
                     {
-                      snowflakesSinceJacket:
-                        weaverSnowflakeCountRef.current,
+                      snowflakesSinceJacket: weaverSnowflakeCountRef.current,
                       healedThisWave: weaverHealedAmountRef.current,
                     },
                     true,
                   );
                   weaverSnowflakeCountRef.current =
                     resolved.state.snowflakesSinceJacket;
-                  weaverHealedAmountRef.current =
-                    resolved.state.healedThisWave;
+                  weaverHealedAmountRef.current = resolved.state.healedThisWave;
                   if (resolved.healing > 0) {
                     state.current.hearts = Math.min(
                       maxHearts,
@@ -9584,10 +9644,7 @@ function SkywayGame() {
                       900,
                     );
                   } else
-                    showAbilityNotice(
-                      "THAWING JACKET · FREEZE BLOCKED",
-                      800,
-                    );
+                    showAbilityNotice("THAWING JACKET · FREEZE BLOCKED", 800);
                   setAbilityStateVersion((value) => value + 1);
                   return [];
                 }
@@ -9619,9 +9676,7 @@ function SkywayGame() {
                 );
                 setFlash("freeze-hit");
                 setTimeout(() => {
-                  setFlash((value) =>
-                    value === "freeze-hit" ? "" : value,
-                  );
+                  setFlash((value) => (value === "freeze-hit" ? "" : value));
                 }, 700);
               }
             } else if (
@@ -9633,7 +9688,9 @@ function SkywayGame() {
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
-              showAbilityNotice(`VAULT · FIRST ${n.kind.toUpperCase()} BLOCKED`);
+              showAbilityNotice(
+                `VAULT · FIRST ${n.kind.toUpperCase()} BLOCKED`,
+              );
               return [];
             } else if (
               hasCharacterAbility("trickster_wildcard") &&
@@ -9669,7 +9726,7 @@ function SkywayGame() {
               (activeCharacter === "trickster_mirage" &&
                 Boolean(
                   mirageInvasionRef.current &&
-                    !mirageInvasionRef.current.finished,
+                  !mirageInvasionRef.current.finished,
                 )) ||
               (activeCharacter === "trickster_gambit" &&
                 gambitInvincibleThroughWaveRef.current >= wave)
@@ -9732,11 +9789,9 @@ function SkywayGame() {
               if (activeCharacter === "runner_flare")
                 flareDamageWaveRef.current = wave;
               const rawDamage =
-                mode === "impossible"
-                  ? 1
-                  : n.kind === "current"
-                    ? currentInteraction?.damage ??
-                      CURRENT_RULES.directHitDamage
+                n.kind === "current"
+                  ? (currentInteraction?.damage ??
+                    CURRENT_RULES.directHitDamage)
                   : n.kind === "rock"
                     ? 2
                     : n.kind === "barrel"
@@ -9757,9 +9812,7 @@ function SkywayGame() {
                   "tank_sentinel",
                   "tank_colossus",
                 ] as const
-              ).filter((characterKey) =>
-                hasCharacterAbility(characterKey),
-              );
+              ).filter((characterKey) => hasCharacterAbility(characterKey));
               const damageReasons: string[] = [];
               for (const characterKey of damagePassiveKeys) {
                 const tankResult = calculateTankDamage({
@@ -9767,8 +9820,7 @@ function SkywayGame() {
                   source: n.kind as HazardKind,
                   baseDamage: abilityAdjustedDamage,
                   currentHearts: state.current.hearts,
-                  bulwarkPlateAvailable:
-                    firstGuardWaveRef.current !== wave,
+                  bulwarkPlateAvailable: firstGuardWaveRef.current !== wave,
                   mercyPassiveActive: mercyChainActiveRef.current,
                   mercyContinuationRoll: Math.random(),
                   spikeDeactivated: Boolean(n.deactivated),
@@ -9811,14 +9863,12 @@ function SkywayGame() {
                 const effect = jesterEffectRef.current;
                 if (effect.kind === "first-zero" && !effect.firstUsed)
                   abilityAdjustedDamage = 0;
-                else if (effect.kind === "half")
-                  abilityAdjustedDamage *= 0.5;
+                else if (effect.kind === "half") abilityAdjustedDamage *= 0.5;
                 else if (effect.kind === "barrel-zero" && n.kind === "barrel")
                   abilityAdjustedDamage = 0;
                 else if (effect.kind === "first-double" && !effect.firstUsed)
                   abilityAdjustedDamage *= 2;
-                else if (effect.kind === "more")
-                  abilityAdjustedDamage *= 1.5;
+                else if (effect.kind === "more") abilityAdjustedDamage *= 1.5;
                 else if (effect.kind === "barrel-double" && n.kind === "barrel")
                   abilityAdjustedDamage *= 2;
                 effect.firstUsed = true;
@@ -9833,13 +9883,6 @@ function SkywayGame() {
                   abilityAdjustedDamage - 0.5,
                 );
                 showAbilityNotice("SEED WARD · 0.5 HP BLOCKED", 900);
-              }
-              if (
-                hasCharacterAbility("tank_atlas") &&
-                Date.now() - lastLaneChangeAtRef.current <= 2000
-              ) {
-                abilityAdjustedDamage *= 0.5;
-                showAbilityNotice("WORLD MAUL · DAMAGE HALVED", 900);
               }
               if (activeCharacter === "misc_muse" && museReward)
                 abilityAdjustedDamage *= 1 - museReward.damageReduction;
@@ -9872,16 +9915,13 @@ function SkywayGame() {
                 abilityAdjustedDamage *= getHeatfeastBenefits(
                   heatfeastStateRef.current.consumed,
                 ).selfDamageMultiplier;
-              if (activeCharacter === "medic_oracle") {
-                if (oracleHitCountRef.current === 1) {
-                  abilityAdjustedDamage = 0;
-                  showAbilityNotice("FATE SENSOR · FIRST HIT BLOCKED", 900);
-                } else if (oracleHitCountRef.current === 2) {
-                  abilityAdjustedDamage *= 0.5;
-                  showAbilityNotice("FATE SENSOR · SECOND HIT HALVED", 900);
-                }
-              }
-              const damage = mapContactDamage(activeMapId,n.kind,abilityAdjustedDamage,state.current.lane,meadowBonusLaneRef.current);
+              const damage = mapContactDamage(
+                activeMapId,
+                n.kind,
+                abilityAdjustedDamage,
+                state.current.lane,
+                meadowBonusLaneRef.current,
+              );
               if (damage === 0) {
                 void audioEngine.playSfx("shield");
                 setFlash("shield");
@@ -9897,28 +9937,20 @@ function SkywayGame() {
                 driftLastMoveAtRef.current = 0;
                 showAbilityNotice("SLIPSTREAM · CHAIN RESET", 800);
               }
-              if (playScope === "single")
-                queueEndlessGemStreakReset();
+              if (playScope === "single") queueEndlessGemStreakReset();
               void audioEngine.playSfx("hit");
               damageTakenWaveRef.current = wave;
               if (hasCharacterAbility("medic_mender"))
                 menderChargeRemainingRef.current = 20000;
-              if (hasCharacterAbility("medic_revive")) {
-                phoenixFeatherActiveRef.current = true;
-                phoenixFeatherReadyWaveRef.current = Math.max(
-                  phoenixFeatherReadyWaveRef.current,
-                  wave + 1,
-                );
-              }
               let nextHearts = state.current.hearts - damage;
               if (echoKnowingHit?.healing) {
-                nextHearts = Math.min(maxHearts, nextHearts + echoKnowingHit.healing);
+                nextHearts = Math.min(
+                  maxHearts,
+                  nextHearts + echoKnowingHit.healing,
+                );
                 showAbilityNotice("MIRROR REALM · +0.5 HP", 800);
               }
-              if (
-                echoKnowingHit?.opponentDamage &&
-                isBotPractice
-              )
+              if (echoKnowingHit?.opponentDamage && isBotPractice)
                 setVersusOpponentHearts((value) =>
                   Math.max(0, value - echoKnowingHit.opponentDamage),
                 );
@@ -9983,7 +10015,10 @@ function SkywayGame() {
                   echoQuestStateRef.current.mirrorShards,
                   isBotPractice,
                 );
-                if (death.remainingShards !== echoQuestStateRef.current.mirrorShards) {
+                if (
+                  death.remainingShards !==
+                  echoQuestStateRef.current.mirrorShards
+                ) {
                   const nextQuestState = {
                     ...echoQuestStateRef.current,
                     mirrorShards: death.remainingShards,
@@ -10101,7 +10136,10 @@ function SkywayGame() {
                 relayChargesRef.current -= 1;
                 relayDischarge = true;
                 setAbilityStateVersion((value) => value + 1);
-                showAbilityNotice("OVERCHARGE RELAY · ALL LANES DISCHARGED", 1200);
+                showAbilityNotice(
+                  "OVERCHARGE RELAY · ALL LANES DISCHARGED",
+                  1200,
+                );
               }
               if (
                 nextHearts > 0 &&
@@ -10111,7 +10149,10 @@ function SkywayGame() {
               ) {
                 beaconActiveRef.current = true;
                 setAbilityStateVersion((value) => value + 1);
-                showAbilityNotice("BEACON LIT · SPIKES OFF · HAZARDS 50% SLOWER", 1500);
+                showAbilityNotice(
+                  "BEACON LIT · SPIKES OFF · HAZARDS 50% SLOWER",
+                  1500,
+                );
               }
               if (nextHearts > 0 && activeCharacter === "tank_plow") {
                 clearDamagedLane = true;
@@ -10138,10 +10179,7 @@ function SkywayGame() {
                   setGems(0);
                   gemsRef.current = 0;
                 } else if (!runIsTestModeRef.current) {
-                  const best = Math.max(
-                    highScoreRef.current,
-                    scoreRef.current,
-                  );
+                  const best = Math.max(highScoreRef.current, scoreRef.current);
                   highScoreRef.current = best;
                   setHighScore(best);
                 }
@@ -10156,8 +10194,7 @@ function SkywayGame() {
               );
               setTimeout(() => {
                 setFlash("");
-                if (!triggerPacerPass && !triggerPulseRescue)
-                  setPaused(false);
+                if (!triggerPacerPass && !triggerPulseRescue) setPaused(false);
                 damageLockedRef.current = false;
               }, 480);
               return [];
@@ -10165,27 +10202,22 @@ function SkywayGame() {
             return [];
           }
           if (n.y < 108) return [n];
-          if (
-            isHazard &&
-            hasCharacterAbility("trickster_pickpocket")
-          ) {
+          if (isHazard && hasCharacterAbility("trickster_pickpocket")) {
             pickpocketPassedCountRef.current += 1;
             if (pickpocketPassedCountRef.current % 7 === 0) {
               const pickpocketScore = 50 + 10 * wave;
               setScore((value) => value + pickpocketScore);
-              showAbilityNotice(
-                `CLOSE COUNT · +${pickpocketScore} SCORE`,
-                950,
-              );
+              showAbilityNotice(`CLOSE COUNT · +${pickpocketScore} SCORE`, 950);
             }
           }
           rogueGrazedItemIdsRef.current.delete(n.id);
           return [];
         });
         // Keep the runner in place and clear every nearby object after impact.
-        const recoveryRetained = clearRecoveryZone && activeMapId !== "terminal"
-          ? advanced.filter((item) => item.y <= 45 || item.y >= 105)
-          : advanced;
+        const recoveryRetained =
+          clearRecoveryZone && activeMapId !== "terminal"
+            ? advanced.filter((item) => item.y <= 45 || item.y >= 105)
+            : advanced;
         const retained = clearDamagedLane
           ? recoveryRetained.filter(
               (item) =>
@@ -10234,10 +10266,8 @@ function SkywayGame() {
       const rawProgressGain = (dt / 12) * (1 + wave * 0.01);
       const waveProgressGain = Math.max(1, Math.round(rawProgressGain));
       let characterScoreMultiplier = 1;
-      if (hasCharacterAbility("runner_ace"))
-        characterScoreMultiplier *= 1.1;
-      if (hasCharacterAbility("runner_dash"))
-        characterScoreMultiplier *= 1.06;
+      if (hasCharacterAbility("runner_ace")) characterScoreMultiplier *= 1.1;
+      if (hasCharacterAbility("runner_dash")) characterScoreMultiplier *= 1.06;
       if (
         hasCharacterAbility("runner_courier") &&
         courierBoostRemainingRef.current > 0
@@ -10247,8 +10277,7 @@ function SkywayGame() {
         characterScoreMultiplier *= wave % 2 === 1 ? 1.15 : 0.85;
       if (
         hasCharacterAbility("runner_vector") &&
-        (state.current.lane === 0 ||
-          state.current.lane === activeLaneCount - 1)
+        (state.current.lane === 0 || state.current.lane === activeLaneCount - 1)
       )
         characterScoreMultiplier *= 1.12;
       if (activeCharacter === "runner_zenith")
@@ -10269,8 +10298,7 @@ function SkywayGame() {
         switchLaneChangesRef.current >= 50
       )
         characterScoreMultiplier *= 1.1;
-      if (hasCharacterAbility("tank_guard"))
-        characterScoreMultiplier *= 0.9;
+      if (hasCharacterAbility("tank_guard")) characterScoreMultiplier *= 0.9;
       if (activeCharacter === "tank_colossus")
         characterScoreMultiplier *=
           1 + Math.max(0, state.current.hearts - 3) * 0.05;
@@ -10290,16 +10318,12 @@ function SkywayGame() {
         state.current.hearts >= maxHearts
       )
         characterScoreMultiplier *= 1.15;
-      if (
-        activeCharacter === "tank_reactor" &&
-        missingHealthRatio > 0
-      )
+      if (activeCharacter === "tank_reactor" && missingHealthRatio > 0)
         characterScoreMultiplier *= 1 + missingHealthRatio * 0.3;
       if (activeCharacter === "runner_velocity")
         characterScoreMultiplier *=
           1 + Math.min(2, velocityChargeMsRef.current / 50000);
-      if (reviveFlyingRef.current)
-        characterScoreMultiplier *= 1.5;
+      if (reviveFlyingRef.current) characterScoreMultiplier *= 1.5;
       if (activeCharacter === "medic_oracle" && oracleCompleted > 0)
         characterScoreMultiplier *= 1 + oracleCompleted * 0.05;
       if (activeCharacter === "misc_muse" && museReward)
@@ -10324,12 +10348,19 @@ function SkywayGame() {
         modeMultiplier *
         classScoreMultiplier *
         characterScoreMultiplier *
-        activeWeaponScoreMultiplier * mapScoreBonus(activeMapId,state.current.lane,meadowBonusLaneRef.current,itemsSnapshotRef.current.filter(item=>item.kind==="spikes" && item.y>=-12 && item.y<108).map(item=>item.lane));
+        mapScoreBonus(
+          activeMapId,
+          state.current.lane,
+          meadowBonusLaneRef.current,
+          itemsSnapshotRef.current
+            .filter(
+              (item) => item.kind === "spikes" && item.y >= -12 && item.y < 108,
+            )
+            .map((item) => item.lane),
+        );
       currentCoinMultiplierRef.current = totalScoreMultiplier;
       scoreCarryRef.current +=
-        rawProgressGain *
-        obstacleSpeedMultiplier *
-        totalScoreMultiplier;
+        rawProgressGain * obstacleSpeedMultiplier * totalScoreMultiplier;
       const scoreGain = Math.floor(scoreCarryRef.current);
       scoreCarryRef.current -= scoreGain;
       if (pacerRushActive)
@@ -10426,8 +10457,7 @@ function SkywayGame() {
       }
       if (scoreGain > 0) setScore((v) => v + scoreGain);
       if (isBotPractice && versusOpponentHearts > 0) {
-        botScoreCarryRef.current +=
-          rawProgressGain * currentSpeedMultiplier;
+        botScoreCarryRef.current += rawProgressGain * currentSpeedMultiplier;
         const botScoreGain = Math.floor(botScoreCarryRef.current);
         if (botScoreGain > 0) {
           botScoreCarryRef.current -= botScoreGain;
@@ -10466,17 +10496,16 @@ function SkywayGame() {
     modeMultiplier,
     modeRules.hazardLaneLimit,
     classScoreMultiplier,
-    activeWeaponScoreMultiplier,
-    getActiveGambitEffects,
     hasCharacterAbility,
+    getActiveGambitEffects,
     museReward,
     oracleCompleted,
     grantInvincibility,
     applyFreezeEffect,
     clearFreezeEffect,
-      preserveFreezeThroughHit,
-      settleBrokerAtRunEnd,
-      showAbilityNotice,
+    preserveFreezeThroughHit,
+    settleBrokerAtRunEnd,
+    showAbilityNotice,
     soundtrack,
     queueGemClaim,
     queueEndlessGemStreakReset,
@@ -10528,12 +10557,11 @@ function SkywayGame() {
         );
       }
       if (activeCharacter === "tank_sentinel") {
-        sentinelAnalyzedKindRef.current =
-          selectSentinelAnalyzedSource(
-            sentinelDamageByKindRef.current as Partial<
-              Record<HazardKind, number>
-            >,
-          ) as Kind | null;
+        sentinelAnalyzedKindRef.current = selectSentinelAnalyzedSource(
+          sentinelDamageByKindRef.current as Partial<
+            Record<HazardKind, number>
+          >,
+        ) as Kind | null;
         sentinelAnalyzedBlockWaveRef.current = 0;
       }
       if (activeCharacter === "trickster_jester") {
@@ -10557,8 +10585,7 @@ function SkywayGame() {
                       : "barrel-double";
         jesterEffectRef.current = {
           kind: mappedKind,
-          percent:
-            rolled.kind === "score-and-speed" ? rolled.percent / 100 : 0,
+          percent: rolled.kind === "score-and-speed" ? rolled.percent / 100 : 0,
           firstUsed: false,
         };
         showAbilityNotice(
@@ -10581,10 +10608,7 @@ function SkywayGame() {
           1200,
         );
       }
-      if (
-        hasCharacterAbility("runner_relay") &&
-        completedWave % 2 === 0
-      ) {
+      if (hasCharacterAbility("runner_relay") && completedWave % 2 === 0) {
         relayChargesRef.current = Math.min(
           Math.ceil(maxHearts),
           relayChargesRef.current + 1,
@@ -10612,33 +10636,33 @@ function SkywayGame() {
         const healAmount =
           activeCharacter === "medic_vial"
             ? maxHearts
-          : activeCharacter === "medic_patch"
-            ? 1.5
-            : hasCharacterAbility("medic_salve")
-              ? state.current.hearts <= 1
-                ? 1.5
-                : 0
-            : hasCharacterAbility("medic_tonic")
-              ? 0.5
-            : hasCharacterAbility("medic_suture")
-              ? completedWave % 2 === 0
-                ? 1
-                : 0
-            : hasCharacterAbility("medic_seraph")
-              ? seraphTeleportChanceRef.current <= 0
-                ? 1.5
-                : 0
-            : reviveFlyingRef.current
-              ? 0
-            : activeCharacter === "tank_atlas"
-              ? 1
-            : activeCharacter === "tank_colossus"
-              ? collisionWaveRef.current === completedWave
-                ? 0
-                : 2
-            : activeClass === "tank"
-              ? 0.5
-              : 1;
+            : activeCharacter === "medic_patch"
+              ? 1.5
+              : hasCharacterAbility("medic_salve")
+                ? state.current.hearts <= 1
+                  ? 1.5
+                  : 0
+                : hasCharacterAbility("medic_tonic")
+                  ? 0.5
+                  : hasCharacterAbility("medic_suture")
+                    ? completedWave % 2 === 0
+                      ? 1
+                      : 0
+                    : hasCharacterAbility("medic_seraph")
+                      ? seraphTeleportChanceRef.current <= 0
+                        ? 1.5
+                        : 0
+                      : reviveFlyingRef.current
+                        ? 0
+                        : activeCharacter === "tank_atlas"
+                          ? 1
+                          : activeCharacter === "tank_colossus"
+                            ? collisionWaveRef.current === completedWave
+                              ? 0
+                              : 2
+                            : activeClass === "tank"
+                              ? 0.5
+                              : 1;
         if (
           activeCharacter === "medic_patch" &&
           state.current.hearts < maxHearts
@@ -10650,10 +10674,7 @@ function SkywayGame() {
           state.current.hearts < maxHearts
         )
           showAbilityNotice("DEEP SALVE · +1.5 HP", 1200);
-        if (
-          sutureFullRestore &&
-          state.current.hearts < maxHearts
-        )
+        if (sutureFullRestore && state.current.hearts < maxHearts)
           showAbilityNotice("TRIAGE CYCLE · HP RESTORED TO 5", 1200);
         if (
           hasCharacterAbility("medic_seraph") &&
@@ -10669,16 +10690,13 @@ function SkywayGame() {
         const healedHearts =
           activeCharacter === "medic_vial"
             ? maxHearts
-          : sutureFullRestore
-          ? maxHearts
-          : Math.min(maxHearts, state.current.hearts + healAmount);
+            : sutureFullRestore
+              ? maxHearts
+              : Math.min(maxHearts, state.current.hearts + healAmount);
         state.current.hearts = healedHearts;
         setHearts(healedHearts);
       }
-      if (
-        activeCharacter === "medic_oracle" &&
-        oracleProphecies.length > 0
-      ) {
+      if (activeCharacter === "medic_oracle" && oracleProphecies.length > 0) {
         let passiveChoiceOpened = false;
         const fulfilled = oracleProphecies.filter((prophecy) =>
           prophecy === "no-hit"
@@ -10713,8 +10731,7 @@ function SkywayGame() {
             (prophecy) => prophecy !== normalReward,
           );
           setOracleCompleted((value) => value + 1);
-          if (normalReward === "no-hit")
-            oracleInvincibleWaveRef.current = next;
+          if (normalReward === "no-hit") oracleInvincibleWaveRef.current = next;
           if (normalReward === "completion") {
             state.current.hearts = maxHearts;
             setHearts(maxHearts);
@@ -10762,8 +10779,7 @@ function SkywayGame() {
         }
         setOracleProphecies([]);
         setPaused(true);
-        if (!passiveChoiceOpened)
-          setAbilityChoice({ kind: "oracle-prophecy" });
+        if (!passiveChoiceOpened) setAbilityChoice({ kind: "oracle-prophecy" });
       }
       if (activeCharacter === "misc_scribe") {
         setAbilityChoice({
@@ -10780,11 +10796,11 @@ function SkywayGame() {
             echoProgressRef.current.highestWaveReached,
             next,
           ),
-          wavesCompletedAfterUnlockingAllTricksters:
-            echoProgressRef.current.allTrickstersUnlocked
-              ? echoProgressRef.current
-                  .wavesCompletedAfterUnlockingAllTricksters + 1
-              : 0,
+          wavesCompletedAfterUnlockingAllTricksters: echoProgressRef.current
+            .allTrickstersUnlocked
+            ? echoProgressRef.current
+                .wavesCompletedAfterUnlockingAllTricksters + 1
+            : 0,
         };
         echoProgressRef.current = progress;
         setEchoProgress(progress);
@@ -10849,9 +10865,8 @@ function SkywayGame() {
           next - 1,
           practiceBotMaxHeartsRef.current,
           activeCharacter === "runner_comet"
-            ? getHeatfeastBenefits(
-                heatfeastStateRef.current.consumed,
-              ).opponentDamageMultiplier
+            ? getHeatfeastBenefits(heatfeastStateRef.current.consumed)
+                .opponentDamageMultiplier
             : 1,
         );
         practiceBotNextWaveHeartsRef.current = outcome.heartsAfterHealing;
@@ -10870,16 +10885,14 @@ function SkywayGame() {
             ? activeMapRules.waveAttackReward.points
             : activeMapRules.waveAttackReward.tiedPlayerPoints;
         const simulatedBotCoinPickups =
-          Math.floor(Math.random() * 3) *
-          getAttackPointsForCoin(activeMapId);
+          Math.floor(Math.random() * 3) * getAttackPointsForCoin(activeMapId);
         botAttackPointsRef.current += waveReward + simulatedBotCoinPickups;
         versusPointsRef.current +=
           waveReward *
           currentCoinMultiplierRef.current *
           (activeCharacter === "runner_comet"
-            ? getHeatfeastBenefits(
-                heatfeastStateRef.current.consumed,
-              ).attackCoinMultiplierWithStarSpear
+            ? getHeatfeastBenefits(heatfeastStateRef.current.consumed)
+                .attackCoinMultiplierWithStarSpear
             : 1);
         if (activeCharacter === "runner_comet") {
           const taxFraction = getHeatfeastBenefits(
@@ -10917,10 +10930,7 @@ function SkywayGame() {
         setVersusIntermissionReady(false);
         setVersusResult("WAITING FOR RIVAL");
         setPaused(true);
-      } else if (
-        activeCharacter !== "misc_scribe" &&
-        !characterChoiceOpened
-      )
+      } else if (activeCharacter !== "misc_scribe" && !characterChoiceOpened)
         announceWave(next);
     }
   }, [
@@ -10985,7 +10995,8 @@ function SkywayGame() {
               attack.cost <= botBudget,
           );
           if (affordable.length === 0) break;
-          const chosen = affordable[Math.floor(Math.random() * affordable.length)];
+          const chosen =
+            affordable[Math.floor(Math.random() * affordable.length)];
           botAttacks.push(chosen.kind);
           botBudget -= chosen.cost;
         }
@@ -11032,14 +11043,26 @@ function SkywayGame() {
             ),
           );
         if (activeMapId === "terminal") {
-          terminalCourseRef.current = {wave,startsAt:Date.now(),items:createTerminalCourse("practice",wave)};
+          terminalCourseRef.current = {
+            wave,
+            startsAt: Date.now(),
+            items: createTerminalCourse("practice", wave),
+          };
           terminalConsumedRef.current.clear();
-          terminalSharedAttacksRef.current = attacksForPlayer.map((kind,index)=>({id:-(wave*100000+50000+index),lane:index%5,kind:(kind==="spike" ? "spikes" : kind) as CourseItem["kind"],at:3000+index*950,speed:.0452*getWaveSpeedMultiplier(wave)}));
-          deferredAttackGroupsRef.current=[];
+          terminalSharedAttacksRef.current = attacksForPlayer.map(
+            (kind, index) => ({
+              id: -(wave * 100000 + 50000 + index),
+              lane: index % 5,
+              kind: (kind === "spike" ? "spikes" : kind) as CourseItem["kind"],
+              at: 3000 + index * 950,
+              speed: 0.0452 * getWaveSpeedMultiplier(wave),
+            }),
+          );
+          deferredAttackGroupsRef.current = [];
           setDeferredAttackGroups([]);
         }
         if (activeMapId === "meadow") {
-          meadowBonusLaneRef.current=Math.floor(Math.random()*6);
+          meadowBonusLaneRef.current = Math.floor(Math.random() * 6);
           setMeadowBonusLane(meadowBonusLaneRef.current);
         }
         setVersusResult(
@@ -11075,14 +11098,21 @@ function SkywayGame() {
         if (versusMatchRef.current !== matchId) return;
         await enqueueVersusStateSync(async () => {
           if (versusMatchRef.current !== matchId) return;
-          const { data, error } = await supabase.rpc(activeMapId === "terminal" ? "update_1v1_terminal_state" : "update_1v1_state", {
-            p_match_id: matchId,
-            p_hearts: normalizeVersusHeartsForServer(state.current.hearts),
-            p_wave: wave,
-            p_score: scoreRef.current,
-            p_status: "playing",
-            ...(activeMapId === "terminal" ? {p_sword_damage_seen:terminalDamageSeenRef.current} : {}),
-          });
+          const { data, error } = await supabase.rpc(
+            activeMapId === "terminal"
+              ? "update_1v1_terminal_state"
+              : "update_1v1_state",
+            {
+              p_match_id: matchId,
+              p_hearts: normalizeVersusHeartsForServer(state.current.hearts),
+              p_wave: wave,
+              p_score: scoreRef.current,
+              p_status: "playing",
+              ...(activeMapId === "terminal"
+                ? { p_sword_damage_seen: terminalDamageSeenRef.current }
+                : {}),
+            },
+          );
           if (versusMatchRef.current !== matchId) return;
           if (error) {
             setVersusResult("MATCH SYNC INTERRUPTED · RETRYING");
@@ -11091,9 +11121,15 @@ function SkywayGame() {
             return;
           }
           applyAuthoritativeVersusPoints(data?.self?.obstacle_points);
-          if (activeMapId === "terminal") applyTerminalSnapshot(data as VersusStatePayload);
-          if (activeMapId === "meadow" && Number.isInteger(data?.wave_rules?.bonus_lane_index)) {
-            meadowBonusLaneRef.current = Number(data.wave_rules.bonus_lane_index);
+          if (activeMapId === "terminal")
+            applyTerminalSnapshot(data as VersusStatePayload);
+          if (
+            activeMapId === "meadow" &&
+            Number.isInteger(data?.wave_rules?.bonus_lane_index)
+          ) {
+            meadowBonusLaneRef.current = Number(
+              data.wave_rules.bonus_lane_index,
+            );
             setMeadowBonusLane(meadowBonusLaneRef.current);
           }
           const authoritativeConveyor =
@@ -11110,7 +11146,10 @@ function SkywayGame() {
           }
           const serverStatus = String(data?.match?.status ?? "playing");
           if (serverStatus !== "playing") {
-            const remaining = secondsUntil(data?.match?.intermission_ends_at, 1);
+            const remaining = secondsUntil(
+              data?.match?.intermission_ends_at,
+              1,
+            );
             setVersusCountdown(Math.max(1, remaining));
             setVersusIntermissionReady(serverStatus === "intermission");
             setVersusResult(
@@ -11138,7 +11177,8 @@ function SkywayGame() {
               attack.id &&
               (spawnedAttackIdsRef.current.has(attack.id) ||
                 queuedAttackTokenIdsRef.current.has(attack.id))
-            ) return;
+            )
+              return;
             if (attack.id && kind)
               pending.set(attack.id, {
                 id: attack.id,
@@ -11306,14 +11346,21 @@ function SkywayGame() {
         let data: VersusStatePayload | null = null;
         let syncError = "";
         try {
-          const response = await supabase.rpc(activeMapId === "terminal" ? "update_1v1_terminal_state" : "update_1v1_state", {
-            p_match_id: matchId,
-            p_hearts: normalizeVersusHeartsForServer(hearts),
-            p_wave: wave,
-            p_score: scoreRef.current,
-            p_status: nextStatus,
-            ...(activeMapId === "terminal" ? {p_sword_damage_seen:terminalDamageSeenRef.current} : {}),
-          });
+          const response = await supabase.rpc(
+            activeMapId === "terminal"
+              ? "update_1v1_terminal_state"
+              : "update_1v1_state",
+            {
+              p_match_id: matchId,
+              p_hearts: normalizeVersusHeartsForServer(hearts),
+              p_wave: wave,
+              p_score: scoreRef.current,
+              p_status: nextStatus,
+              ...(activeMapId === "terminal"
+                ? { p_sword_damage_seen: terminalDamageSeenRef.current }
+                : {}),
+            },
+          );
           data = response.data as VersusStatePayload | null;
           syncError = response.error?.message ?? "";
         } catch {
@@ -11352,15 +11399,16 @@ function SkywayGame() {
             serverStatus === "cancelled"
               ? "MATCH CANCELLED"
               : data?.match?.is_draw ||
-              String(data?.outcome ?? data?.match?.outcome).toLowerCase() ===
-                "draw"
-              ? "DRAW"
-              : data?.match?.winner_user_id === userIdRef.current ||
                   String(
                     data?.outcome ?? data?.match?.outcome,
-                  ).toLowerCase() === "win"
-                ? "VICTORY"
-                : "DEFEAT",
+                  ).toLowerCase() === "draw"
+                ? "DRAW"
+                : data?.match?.winner_user_id === userIdRef.current ||
+                    String(
+                      data?.outcome ?? data?.match?.outcome,
+                    ).toLowerCase() === "win"
+                  ? "VICTORY"
+                  : "DEFEAT",
           );
           setVersusPhase("finished");
           setVersusIntermissionReady(false);
@@ -11413,12 +11461,7 @@ function SkywayGame() {
     applyAuthoritativeVersusPoints,
   ]);
   useEffect(() => {
-    if (
-      playScope !== "versus" ||
-      versusPhase !== "playing" ||
-      !running ||
-      over
-    )
+    if (playScope !== "versus" || versusPhase !== "playing" || !running || over)
       return;
     const syncScore = () => {
       const matchId = versusMatchRef.current;
@@ -11458,7 +11501,9 @@ function SkywayGame() {
         if (authSessionGenerationRef.current !== generation) return;
         userIdRef.current = expectedUserId;
         setUserEmail(incomingSession?.user.email ?? null);
-        setPlayerAccessError("Could not verify your database session. Try again.");
+        setPlayerAccessError(
+          "Could not verify your database session. Try again.",
+        );
         setPlayerAccessChecking(false);
         setAuthReady(true);
         return;
@@ -11531,9 +11576,7 @@ function SkywayGame() {
             .eq("user_id", user.id),
           supabase
             .from("player_loadouts")
-            .select(
-              "class_key,character_key,player_cosmetic,obstacle_cosmetic,environment_cosmetic",
-            )
+            .select("*")
             .eq("user_id", user.id)
             .maybeSingle(),
           supabase.rpc("get_player_progression"),
@@ -11566,10 +11609,10 @@ function SkywayGame() {
         setAdminRole(role);
         const restoredTestMode = Boolean(
           admin &&
-            testMode &&
-            typeof testMode === "object" &&
-            "enabled" in testMode &&
-            testMode.enabled === true,
+          testMode &&
+          typeof testMode === "object" &&
+          "enabled" in testMode &&
+          testMode.enabled === true,
         );
         setAdminTestModeEnabled(restoredTestMode);
         if (restoredTestMode) setVersusMode("casual");
@@ -11582,6 +11625,7 @@ function SkywayGame() {
         );
         setUnlocks(ownedItems);
         setSelectedCharacter(safeLoadout.characterKey);
+
         setPlayerCosmetic(safeLoadout.playerCosmetic);
         setObstacleCosmetic(safeLoadout.obstacleCosmetic);
         setEnvironmentCosmetic(safeLoadout.environmentCosmetic);
@@ -11600,6 +11644,7 @@ function SkywayGame() {
         setRunIsTestMode(false);
         setUnlocks([]);
         setSelectedCharacter("runner_ace");
+
         setInventoryCharacter({
           classKey: "runner",
           characterKey: "runner_ace",
@@ -11628,16 +11673,19 @@ function SkywayGame() {
           authSessionUserIdRef.current === refreshedUserId &&
           userIdRef.current === refreshedUserId
         ) {
-          void ensureNeonCompatibleSession(session).then((databaseSession) => {
-            if (
-              authSessionGenerationRef.current === refreshGeneration &&
-              authSessionUserIdRef.current === refreshedUserId &&
-              userIdRef.current === refreshedUserId
-            ) setDataSession(databaseSession, refreshedUserId);
-          }).catch(() => {
-            if (authSessionGenerationRef.current === refreshGeneration)
-              setDataSession(null, null);
-          });
+          void ensureNeonCompatibleSession(session)
+            .then((databaseSession) => {
+              if (
+                authSessionGenerationRef.current === refreshGeneration &&
+                authSessionUserIdRef.current === refreshedUserId &&
+                userIdRef.current === refreshedUserId
+              )
+                setDataSession(databaseSession, refreshedUserId);
+            })
+            .catch(() => {
+              if (authSessionGenerationRef.current === refreshGeneration)
+                setDataSession(null, null);
+            });
         }
         return;
       }
@@ -11825,9 +11873,7 @@ function SkywayGame() {
         },
       });
       setAuthMessage(
-        error
-          ? error.message
-          : "Account created. Loading your runner profile…",
+        error ? error.message : "Account created. Loading your runner profile…",
       );
       if (!error) setAuthSessionRefresh((value) => value + 1);
     } else {
@@ -12003,6 +12049,7 @@ function SkywayGame() {
     setAdminAppealNotes({});
     setUnlocks([]);
     setSelectedCharacter("runner_ace");
+
     setInventoryCharacter({
       classKey: "runner",
       characterKey: "runner_ace",
@@ -12032,6 +12079,7 @@ function SkywayGame() {
     setGuest(true);
     setUnlocks([]);
     setSelectedCharacter("runner_ace");
+
     setInventoryCharacter({
       classKey: "runner",
       characterKey: "runner_ace",
@@ -12123,10 +12171,7 @@ function SkywayGame() {
   const changePassword = async (e: FormEvent) => {
     e.preventDefault();
     setPasswordStatus("");
-    const { error } = await changeManagedPassword(
-      currentPassword,
-      newPassword,
-    );
+    const { error } = await changeManagedPassword(currentPassword, newPassword);
     if (error) setPasswordStatus(error.message);
     else {
       setCurrentPassword("");
@@ -12293,9 +12338,7 @@ function SkywayGame() {
         .eq("user_id", sessionUserId),
       supabase
         .from("player_loadouts")
-        .select(
-          "class_key,character_key,player_cosmetic,obstacle_cosmetic,environment_cosmetic",
-        )
+        .select("*")
         .eq("user_id", sessionUserId)
         .maybeSingle(),
       supabase
@@ -12307,7 +12350,9 @@ function SkywayGame() {
     const collectionError =
       ownedResult.error ?? loadoutResult.error ?? catalogResult.error;
     if (collectionError) {
-      setInventoryStatus(`Could not load inventory: ${collectionError.message}`);
+      setInventoryStatus(
+        `Could not load inventory: ${collectionError.message}`,
+      );
       return;
     }
     const owned = ownedResult.data;
@@ -12334,9 +12379,10 @@ function SkywayGame() {
     setDirectPurchaseKey((current) =>
       lockedCatalog.some((item) => item.item_key === current)
         ? current
-        : lockedCatalog[0]?.item_key ?? "",
+        : (lockedCatalog[0]?.item_key ?? ""),
     );
     setSelectedCharacter(safeLoadout.characterKey);
+
     setPlayerCosmetic(safeLoadout.playerCosmetic);
     setObstacleCosmetic(safeLoadout.obstacleCosmetic);
     setEnvironmentCosmetic(safeLoadout.environmentCosmetic);
@@ -12503,26 +12549,18 @@ function SkywayGame() {
       setInventoryStatus("Character changes are only available before a run.");
       return;
     }
-    if (
-      !effectiveCharacterTestMode &&
-      mode === "impossible" &&
-      (classKey !== "runner" || characterKey !== "runner_ace")
-    ) {
-      setInventoryStatus("Impossible mode always uses the default Runner Ace.");
-      return;
-    }
-    if (
-      !effectiveCharacterTestMode &&
-      mode === "hardcore" &&
-      (classKey === "medic" || classKey === "tank")
-    ) {
-      setInventoryStatus("Healer and Tank cannot be used in Hardcore mode.");
+    if (mode === "hardcore" && characterKey !== "runner_ace") {
+      setInventoryStatus(
+        "Hardcore always uses Ace. Switch to Normal to equip another character.",
+      );
       return;
     }
     const owned = isCharacterOwned(unlocks, characterKey);
     const available = isCharacterAvailable(owned, testCharacterAccessContext);
     if (!available) {
-      setInventoryStatus("That character is locked. Extract it in the Shop first.");
+      setInventoryStatus(
+        "That character is locked. Extract it in the Shop first.",
+      );
       return;
     }
     if (guest) {
@@ -12594,9 +12632,7 @@ function SkywayGame() {
     });
     if (!error) applyDefault();
     setInventoryStatus(
-      error
-        ? error.message
-        : `DEFAULT ${slot.toUpperCase()} LOOK EQUIPPED.`,
+      error ? error.message : `DEFAULT ${slot.toUpperCase()} LOOK EQUIPPED.`,
     );
   };
   const purchaseCatalogItem = async () => {
@@ -12724,16 +12760,16 @@ function SkywayGame() {
       : null;
   const directPurchaseDescription = directPurchaseItem
     ? directPurchaseCharacter
-      ? `${CHARACTER_ABILITIES[directPurchaseCharacter.key as CharacterKey].name}: ${CHARACTER_ABILITIES[directPurchaseCharacter.key as CharacterKey].description} ${directPurchaseCharacter.weapon}: ${getCharacterWeaponLabel(directPurchaseCharacter.key as CharacterKey, directPurchaseCharacter.rarity)}.`
+      ? `${CHARACTER_ABILITIES[directPurchaseCharacter.key as CharacterKey].name}: ${CHARACTER_ABILITIES[directPurchaseCharacter.key as CharacterKey].description}`
       : directPurchaseItem.item_type === "player"
         ? "Changes your runner's appearance. Its listed cosmetic bonus applies while equipped."
         : directPurchaseItem.item_type === "obstacle"
           ? "Changes obstacle appearance. Its listed cosmetic bonus applies while equipped."
           : "Changes the arena environment. Its listed cosmetic bonus applies while equipped."
     : "";
-  const focusedCharacter = CLASS_CHARACTERS[
-    inventoryCharacter.classKey
-  ].find((character) => character.key === inventoryCharacter.characterKey);
+  const focusedCharacter = CLASS_CHARACTERS[inventoryCharacter.classKey].find(
+    (character) => character.key === inventoryCharacter.characterKey,
+  );
   const focusedCharacterOwned = Boolean(
     focusedCharacter && isCharacterOwned(unlocks, focusedCharacter.key),
   );
@@ -12743,27 +12779,13 @@ function SkywayGame() {
   const focusedCharacterAbility = focusedCharacter
     ? CHARACTER_ABILITIES[focusedCharacter.key as CharacterKey]
     : null;
-  const focusedWeaponScoreLabel = focusedCharacter
-    ? getCharacterWeaponLabel(
-        focusedCharacter.key as CharacterKey,
-        focusedCharacter.rarity,
-      )
-    : "";
   const canReceivePacerBaton = (characterKey: CharacterKey) => {
     const characterClass = getCharacterClassKey(characterKey);
     if (characterClass === "runner" || !canUseCharacter(characterKey))
       return false;
+    if (mode === "hardcore") return false;
     if (effectiveCharacterTestMode) return true;
-    if (
-      mode === "impossible" ||
-      (mode === "hardcore" &&
-        (characterClass === "medic" || characterClass === "tank"))
-    )
-      return false;
-    return (
-      !isVersusRun ||
-      isCharacterClassAllowed(activeMapId, characterClass)
-    );
+    return !isVersusRun || isCharacterClassAllowed(activeMapId, characterClass);
   };
   const pacerCharacterOptions = CHARACTER_ROSTER.filter((character) =>
     canReceivePacerBaton(character.key as CharacterKey),
@@ -12935,9 +12957,8 @@ function SkywayGame() {
   };
   const confirmGambitDiscard = async () => {
     const pendingWave = gambitPendingDrawWaveRef.current;
-    const required = pendingWave > 0
-      ? Math.max(1, gambitDiscardRequiredRef.current)
-      : 1;
+    const required =
+      pendingWave > 0 ? Math.max(1, gambitDiscardRequiredRef.current) : 1;
     if (gambitSelectedCards.length < required) {
       showAbilityNotice(
         pendingWave > 0
@@ -12961,9 +12982,7 @@ function SkywayGame() {
           setVersusResult(discarded.error.message);
           return;
         }
-        applyOnlineGambitPayload(
-          (discarded.data ?? {}) as OnlineGambitPayload,
-        );
+        applyOnlineGambitPayload((discarded.data ?? {}) as OnlineGambitPayload);
         if (pendingWave > 0) {
           const drawn = await supabase.rpc("draw_1v1_gambit_wave", {
             p_match_id: matchId,
@@ -13048,10 +13067,7 @@ function SkywayGame() {
       tinkerClickedSpikeIdsRef.current.add(itemId);
       tinkerInspirationRef.current += 1;
       setAbilityStateVersion((value) => value + 1);
-      showAbilityNotice(
-        `INSPIRATION · ${tinkerInspirationRef.current}/3`,
-        850,
-      );
+      showAbilityNotice(`INSPIRATION · ${tinkerInspirationRef.current}/3`, 850);
     }
   };
   const abilityAction = (() => {
@@ -13060,7 +13076,11 @@ function SkywayGame() {
       wave >= 15 &&
       !timeStopUsedRef.current
     )
-      return { label: "TIME STOP", status: "READY · ONCE PER RUN", ready: true };
+      return {
+        label: "TIME STOP",
+        status: "READY · ONCE PER RUN",
+        ready: true,
+      };
     if (activeCharacter === "runner_blitz")
       return {
         label: "VOLT CLEAVE",
@@ -13165,8 +13185,8 @@ function SkywayGame() {
           !museChallengeUsedRef.current ||
           Boolean(
             museReward?.unlocksMuseMix &&
-              museMixUntilRef.current <= Date.now() &&
-              museMixCooldownUntilRef.current <= Date.now(),
+            museMixUntilRef.current <= Date.now() &&
+            museMixCooldownUntilRef.current <= Date.now(),
           ),
       };
     if (activeCharacter === "tank_hammer")
@@ -13190,7 +13210,10 @@ function SkywayGame() {
     if (activeCharacter === "tank_sentinel")
       return {
         label: "STEEL SPEAR",
-        status: sentinelActionWaveRef.current === wave ? "USED THIS WAVE" : "BARRELS -75% SPEED · 15s",
+        status:
+          sentinelActionWaveRef.current === wave
+            ? "USED THIS WAVE"
+            : "BARRELS -75% SPEED · 15s",
         ready: sentinelActionWaveRef.current !== wave,
       };
     if (activeCharacter === "trickster_smoke")
@@ -13211,7 +13234,10 @@ function SkywayGame() {
     if (activeCharacter === "trickster_flicker")
       return {
         label: "FLICKER",
-        status: flickerUsedWaveRef.current === wave ? "USED THIS WAVE" : "TRANSFORM EACH LANE'S CLOSEST HAZARD",
+        status:
+          flickerUsedWaveRef.current === wave
+            ? "USED THIS WAVE"
+            : "TRANSFORM EACH LANE'S CLOSEST HAZARD",
         ready: flickerUsedWaveRef.current !== wave,
       };
     if (activeCharacter === "runner_flare")
@@ -13246,17 +13272,16 @@ function SkywayGame() {
     if (activeCharacter === "trickster_mirage")
       return {
         label: "MIRAGE INVASION",
-        status: mirageInvasion && !mirageInvasion.finished
-          ? `${Math.max(0, (mirageInvasion.endsAtMs - Date.now()) / 1000).toFixed(1)}s · MATCH RIVAL LANE ${versusOpponentLane + 1}`
-          : !isVersusRun
-            ? "1V1 ONLY"
-            : mirageUsedWaveRef.current === wave
-              ? "USED THIS WAVE"
-              : "5s INVASION · MATCH LANES TO DEAL 1 HP EVERY 0.5s",
+        status:
+          mirageInvasion && !mirageInvasion.finished
+            ? `${Math.max(0, (mirageInvasion.endsAtMs - Date.now()) / 1000).toFixed(1)}s · MATCH RIVAL LANE ${versusOpponentLane + 1}`
+            : !isVersusRun
+              ? "1V1 ONLY"
+              : mirageUsedWaveRef.current === wave
+                ? "USED THIS WAVE"
+                : "5s INVASION · MATCH LANES TO DEAL 1 HP EVERY 0.5s",
         ready:
-          isVersusRun &&
-          !mirageInvasion &&
-          mirageUsedWaveRef.current !== wave,
+          isVersusRun && !mirageInvasion && mirageUsedWaveRef.current !== wave,
       };
     if (activeCharacter === "runner_scout")
       return {
@@ -13289,8 +13314,7 @@ function SkywayGame() {
         label: "CLAIM COIN FUND",
         status: isOnlineVersus
           ? "ONLINE COINS SETTLE DIRECTLY · SERVER VERIFIED"
-          :
-          brokerFundsRef.current.coins > 0
+          : brokerFundsRef.current.coins > 0
             ? `${brokerFundsRef.current.coins.toFixed(2)} ATTACK COINS READY`
             : "COIN FUND EMPTY",
         ready: !isOnlineVersus && brokerFundsRef.current.coins > 0,
@@ -13322,11 +13346,17 @@ function SkywayGame() {
     if (activeCharacter === "misc_weaver")
       return {
         label: "WEAVE JACKET",
-        status: weaverJacketRef.current ? "JACKET ACTIVE" : `${weaverSnowflakeCountRef.current}/5 SNOWFLAKES`,
+        status: weaverJacketRef.current
+          ? "JACKET ACTIVE"
+          : `${weaverSnowflakeCountRef.current}/5 SNOWFLAKES`,
         ready: !weaverJacketRef.current && weaverSnowflakeCountRef.current >= 5,
       };
     if (activeCharacter === "misc_catalyst")
-      return { label: "FLUX PULL", status: "COLLECT EVERY PICKUP ON SCREEN", ready: true };
+      return {
+        label: "FLUX PULL",
+        status: "COLLECT EVERY PICKUP ON SCREEN",
+        ready: true,
+      };
     if (activeCharacter === "misc_harvester") {
       const highest = Math.max(...Object.values(harvesterCountsRef.current));
       return {
@@ -13335,7 +13365,7 @@ function SkywayGame() {
         ready: highest >= 10 && harvesterCooldownUntilRef.current <= Date.now(),
       };
     }
-    if (activeCharacter === "medic_lifeline")
+    if (hasCharacterAbility("medic_lifeline"))
       return {
         label: "RESCUE HOOK",
         status: `${Math.max(0, 3 - lifelineHookUsesRef.current)} USES LEFT`,
@@ -13344,13 +13374,16 @@ function SkywayGame() {
     if (hasCharacterAbility("medic_reserve"))
       return {
         label: "RESERVE DOSE",
-        status: reserveHealStoredRef.current ? "READY · +0.5 HP" : "NO DOSE STORED",
+        status: reserveHealStoredRef.current
+          ? "READY · +0.5 HP"
+          : "NO DOSE STORED",
         ready: reserveHealStoredRef.current,
       };
     if (hasCharacterAbility("medic_tonic"))
       return {
         label: "DRINK POTION",
-        status: tonicPotion > 0 ? `READY · +${tonicPotion} HP` : "BREW FROM THE MENU",
+        status:
+          tonicPotion > 0 ? `READY · +${tonicPotion} HP` : "BREW FROM THE MENU",
         ready: tonicPotion > 0,
       };
     if (hasCharacterAbility("medic_sprout"))
@@ -13482,9 +13515,8 @@ function SkywayGame() {
                 <div className="appeal-pending" role="status">
                   <b>APPEAL PENDING</b>
                   <span>
-                    Sent {new Date(
-                      myBanAppeal.appeal.created_at,
-                    ).toLocaleString()}
+                    Sent{" "}
+                    {new Date(myBanAppeal.appeal.created_at).toLocaleString()}
                   </span>
                   <p>{myBanAppeal.appeal.player_note}</p>
                 </div>
@@ -13593,113 +13625,117 @@ function SkywayGame() {
             </form>
           ) : (
             <>
-          <form onSubmit={submitAuth} autoComplete="on">
-            <label>
-              Email
-              <input
-                id="login-email"
-                name="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="runner@example.com"
-                required
-                autoComplete="email"
-              />
-            </label>
-            <label>
-              Password
-              <input
-                id="login-password"
-                name="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="At least 8 characters"
-                minLength={8}
-                required
-                autoComplete={
-                  authMode === "signin" ? "current-password" : "new-password"
-                }
-              />
-            </label>
-            {authMode === "signup" && (
-              <label>
-                Confirm Password
-                <input
-                  id="confirm-password"
-                  name="confirm-password"
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Enter the same password again"
-                  minLength={8}
-                  required
-                  autoComplete="new-password"
-                />
-              </label>
-            )}
-            {authMessage && (
-              <div className="auth-message" role="status">
-                {authMessage}
-              </div>
-            )}
-            <button disabled={authBusy}>
-              {authBusy
-                ? "PLEASE WAIT…"
-                : authMode === "signin"
-                  ? "SIGN IN →"
-                  : "CREATE ACCOUNT →"}
-            </button>
-          </form>
-          {authMode === "signin" && (
-            <button
-              type="button"
-              className="forgot-button"
-              disabled={passwordResetBusy}
-              onClick={() => sendPasswordReset(email, setAuthMessage)}
-            >
-              {passwordResetBusy ? "SENDING RECOVERY EMAIL…" : "FORGOT PASSWORD?"}
-            </button>
-          )}
-          {authMode === "signin" && (
-            <>
-              <div className="guest-divider auth-provider-divider">
-                <span>OR</span>
-              </div>
+              <form onSubmit={submitAuth} autoComplete="on">
+                <label>
+                  Email
+                  <input
+                    id="login-email"
+                    name="email"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="runner@example.com"
+                    required
+                    autoComplete="email"
+                  />
+                </label>
+                <label>
+                  Password
+                  <input
+                    id="login-password"
+                    name="password"
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="At least 8 characters"
+                    minLength={8}
+                    required
+                    autoComplete={
+                      authMode === "signin"
+                        ? "current-password"
+                        : "new-password"
+                    }
+                  />
+                </label>
+                {authMode === "signup" && (
+                  <label>
+                    Confirm Password
+                    <input
+                      id="confirm-password"
+                      name="confirm-password"
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Enter the same password again"
+                      minLength={8}
+                      required
+                      autoComplete="new-password"
+                    />
+                  </label>
+                )}
+                {authMessage && (
+                  <div className="auth-message" role="status">
+                    {authMessage}
+                  </div>
+                )}
+                <button disabled={authBusy}>
+                  {authBusy
+                    ? "PLEASE WAIT…"
+                    : authMode === "signin"
+                      ? "SIGN IN →"
+                      : "CREATE ACCOUNT →"}
+                </button>
+              </form>
+              {authMode === "signin" && (
+                <button
+                  type="button"
+                  className="forgot-button"
+                  disabled={passwordResetBusy}
+                  onClick={() => sendPasswordReset(email, setAuthMessage)}
+                >
+                  {passwordResetBusy
+                    ? "SENDING RECOVERY EMAIL…"
+                    : "FORGOT PASSWORD?"}
+                </button>
+              )}
+              {authMode === "signin" && (
+                <>
+                  <div className="guest-divider auth-provider-divider">
+                    <span>OR</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="google-auth-button"
+                    disabled={authBusy || passwordResetBusy}
+                    onClick={() => void signInWithGoogle()}
+                  >
+                    CONTINUE WITH GOOGLE
+                  </button>
+                  <small className="google-recovery-note">
+                    Recovery email missing? Choose the Google account with the
+                    same email as your Skyway account. Your existing
+                    stats and inventory stay connected.
+                  </small>
+                </>
+              )}
+              {authMode === "signin" && (
+                <small className="migration-auth-note">
+                  Existing Skyway account? After the Neon move, use Forgot
+                  Password once. Your username, stats, gems, inventory, and
+                  records stay attached to the same email.
+                </small>
+              )}
               <button
-                type="button"
-                className="google-auth-button"
-                disabled={authBusy || passwordResetBusy}
-                onClick={() => void signInWithGoogle()}
+                className="auth-switch"
+                onClick={() => {
+                  setAuthMode((v) => (v === "signin" ? "signup" : "signin"));
+                  setAuthMessage("");
+                }}
               >
-                CONTINUE WITH GOOGLE
+                {authMode === "signin"
+                  ? "New runner? Create an account"
+                  : "Already registered? Sign in"}
               </button>
-              <small className="google-recovery-note">
-                Recovery email missing? Choose the Google account with the same
-                email as your Skyway account. Your existing stats and inventory
-                stay connected.
-              </small>
-            </>
-          )}
-          {authMode === "signin" && (
-            <small className="migration-auth-note">
-              Existing Skyway account? After the Neon move, use Forgot
-              Password once. Your username, stats, gems, inventory, and records
-              stay attached to the same email.
-            </small>
-          )}
-          <button
-            className="auth-switch"
-            onClick={() => {
-              setAuthMode((v) => (v === "signin" ? "signup" : "signin"));
-              setAuthMessage("");
-            }}
-          >
-            {authMode === "signin"
-              ? "New runner? Create an account"
-              : "Already registered? Sign in"}
-          </button>
             </>
           )}
           {!recoveryToken && (
@@ -13725,9 +13761,7 @@ function SkywayGame() {
   );
   const katanaActive = renderedKatanaState.activeUntilMs > Date.now();
   const waitingForVersusResult =
-    isOnlineVersus &&
-    versusSelfEliminated &&
-    versusPhase !== "finished";
+    isOnlineVersus && versusSelfEliminated && versusPhase !== "finished";
   const showPlayerLevel =
     !guest &&
     mainView === "endless" &&
@@ -13784,8 +13818,7 @@ function SkywayGame() {
                     style={{
                       width: `${Math.min(
                         100,
-                        (playerProgression.xp /
-                          playerProgression.xp_required) *
+                        (playerProgression.xp / playerProgression.xp_required) *
                           100,
                       )}%`,
                     }}
@@ -13794,7 +13827,9 @@ function SkywayGame() {
                 <em>
                   {playerProgression.ranked_unlocked
                     ? "RANKED 1V1 UNLOCKED"
-                    : "RANKED LOCKED · NEW SEASON"}
+                    : playerProgression.ranked_purchased
+                      ? "RANKED · REACH LEVEL 25"
+                      : "RANKED · LEVEL 25 + 100 GEMS"}
                 </em>
               </span>
             </div>
@@ -13810,8 +13845,8 @@ function SkywayGame() {
               isBotPractice
                 ? "Switch to Endless and end bot practice"
                 : isOnlineVersus
-                ? "Switch to Endless and leave the current 1v1 match"
-                : "Switch to Endless"
+                  ? "Switch to Endless and leave the current 1v1 match"
+                  : "Switch to Endless"
             }
             disabled={versusLeaving}
             onClick={() => void switchMainView("endless")}
@@ -13824,7 +13859,7 @@ function SkywayGame() {
                   ? "END PRACTICE"
                   : isOnlineVersus
                     ? "LEAVE MATCH · FORFEIT"
-                  : "SOLO · CHASE YOUR BEST"}
+                    : "SOLO · CHASE YOUR BEST"}
               </small>
             </span>
           </button>
@@ -13842,1785 +13877,2936 @@ function SkywayGame() {
               <small>REALTIME · OUTLAST A RIVAL</small>
             </span>
           </button>
-          <button className={mainView === "photon" ? "active" : ""} aria-pressed={mainView === "photon"} disabled={versusLeaving} onClick={() => void switchMainView("photon")}><span>✦</span><span><b>PHOTON FURY</b><small>LASERDROME · REFLECT & SURVIVE</small></span></button>
-          <button className={mainView === "rng" ? "active" : ""} aria-pressed={mainView === "rng"} disabled={versusLeaving} onClick={() => void switchMainView("rng")}><span>⚄</span><span><b>RNG</b><small>COMING SOON</small></span></button>
+          <button
+            className={mainView === "photon" ? "active" : ""}
+            aria-pressed={mainView === "photon"}
+            disabled={versusLeaving}
+            onClick={() => void switchMainView("photon")}
+          >
+            <span>✦</span>
+            <span>
+              <b>PHOTON FURY</b>
+              <small>LASERDROME · REFLECT & SURVIVE</small>
+            </span>
+          </button>
+          <button
+            className={mainView === "rng" ? "active" : ""}
+            aria-pressed={mainView === "rng"}
+            disabled={versusLeaving}
+            onClick={() => void switchMainView("rng")}
+          >
+            <span>⚄</span>
+            <span>
+              <b>RNG</b>
+              <small>COMING SOON</small>
+            </span>
+          </button>
         </section>
         {mainView === "endless" && (
           <nav className="game-actions" aria-label="Player menus">
-          <button
-            className="action-leaderboard"
-            disabled={isVersusRun}
-            onClick={() => {
-              void loadLeaderboard();
-              setPauseMenuOpen(false);
-              setPaused(true);
-            }}
-          >
-            <span className="trophy-icon">🏆</span>
-            <b>LEADERBOARD</b>
-          </button>
-          <button
-            className="action-shop"
-            disabled={isVersusRun}
-            onClick={() => {
-              cancelPendingProgressionStart();
-              setShopOpen(true);
-              setPauseMenuOpen(false);
-              setPaused(true);
-              setShopStatus("");
-              setExtractResults([]);
-              void loadCollection();
-            }}
-          >
-            <span className="cart-icon">
-              <i />
-              <i />
-              <i />
-            </span>
-            <b>SHOP</b>
-          </button>
-          <button
-            className="action-inventory"
-            disabled={isVersusRun}
-            onClick={() => {
-              cancelPendingProgressionStart();
-              setInventoryOpen(true);
-              setPauseMenuOpen(false);
-              setPaused(true);
-              setInventoryStatus("");
-              setInventoryCharacter({
-                classKey: (activeClass in CLASS_CHARACTERS
-                  ? activeClass
-                  : "runner") as keyof typeof CLASS_CHARACTERS,
-                characterKey: activeCharacter,
-              });
-              void loadCollection();
-            }}
-          >
-            <span className="inventory-icon" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </span>
-            <b>INVENTORY</b>
-          </button>
-          <button
-            className="action-updates"
-            onClick={() => {
-              cancelPendingProgressionStart();
-              setUpdateLogOpen(true);
-              setPauseMenuOpen(false);
-              setPaused(true);
-            }}
-          >
-            <span aria-hidden="true">▤</span>
-            <b>UPDATES</b>
-          </button>
-          {!guest && !isVersusRun && (
             <button
-              className="action-settings"
+              className="action-leaderboard"
+              disabled={isVersusRun}
               onClick={() => {
-                cancelPendingProgressionStart();
-                setSettingsOpen(true);
+                void loadLeaderboard();
                 setPauseMenuOpen(false);
                 setPaused(true);
               }}
             >
-              <span>⚙</span>
-              <b>SETTINGS</b>
+              <span className="trophy-icon">🏆</span>
+              <b>LEADERBOARD</b>
             </button>
-          )}
-          {isAdmin && !guest && !isVersusRun && (
-            <button className="action-admin" onClick={loadReports}>
-              <span>★</span>
-              <b>ADMIN</b>
+            <button
+              className="action-shop"
+              disabled={isVersusRun}
+              onClick={() => {
+                cancelPendingProgressionStart();
+                setShopOpen(true);
+                setPauseMenuOpen(false);
+                setPaused(true);
+                setShopStatus("");
+                setExtractResults([]);
+                void loadCollection();
+              }}
+            >
+              <span className="cart-icon">
+                <i />
+                <i />
+                <i />
+              </span>
+              <b>SHOP</b>
             </button>
-          )}
+            <button
+              className="action-inventory"
+              disabled={isVersusRun}
+              onClick={() => {
+                cancelPendingProgressionStart();
+                setInventoryOpen(true);
+                setPauseMenuOpen(false);
+                setPaused(true);
+                setInventoryStatus("");
+                setInventoryCharacter({
+                  classKey: (activeClass in CLASS_CHARACTERS
+                    ? activeClass
+                    : "runner") as keyof typeof CLASS_CHARACTERS,
+                  characterKey: activeCharacter,
+                });
+                void loadCollection();
+              }}
+            >
+              <span className="inventory-icon" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
+              <b>INVENTORY</b>
+            </button>
+            <button
+              className="action-updates"
+              onClick={() => {
+                cancelPendingProgressionStart();
+                setUpdateLogOpen(true);
+                setPauseMenuOpen(false);
+                setPaused(true);
+              }}
+            >
+              <span aria-hidden="true">▤</span>
+              <b>UPDATES</b>
+            </button>
+            {!guest && !isVersusRun && (
+              <button
+                className="action-settings"
+                onClick={() => {
+                  cancelPendingProgressionStart();
+                  setSettingsOpen(true);
+                  setPauseMenuOpen(false);
+                  setPaused(true);
+                }}
+              >
+                <span>⚙</span>
+                <b>SETTINGS</b>
+              </button>
+            )}
+            {isAdmin && !guest && !isVersusRun && (
+              <button className="action-admin" onClick={loadReports}>
+                <span>★</span>
+                <b>ADMIN</b>
+              </button>
+            )}
           </nav>
         )}
-        {mainView === "photon" ? <PhotonFury key={userIdRef.current ?? "guest"} userId={guest ? null : userIdRef.current} level={playerProgression.level} gems={gems} testMode={adminTestModeActive} soundtrack={soundtrack} onGems={value => { gemsRef.current = value; setGems(value); }} /> : mainView === "rng" ? <section className="photon-panel rng-panel" id="main-game-panel"><h2>RNG</h2><p>Coming soon.</p></section> : <section
-          id="main-game-panel"
-          className={`game-card${mainView === "versus" && playScope === "single" ? " versus-hub-card" : ""}`}
-          aria-label={
-            mainView === "versus" && playScope === "single"
-              ? "Skyway Sprint 1v1 hub"
-              : "Skyway Sprint runner game"
-          }
-          aria-labelledby={
-            mainView === "versus" && playScope === "single"
-              ? "versus-hub-title"
-              : undefined
-          }
-        >
-          {characterSelectionEndsAt !== null && playScope !== "single" ? (
-            <section className="match-character-picker" aria-label="Choose a character for this match">
-              <header><small>{MAP_GUIDES[versusMap].name ?? versusMap.toUpperCase()}</small><h2>CHOOSE YOUR CHARACTER</h2><strong>{Math.max(0,Math.ceil((characterSelectionEndsAt-(weaponClock || Date.now()))/1000))}s</strong></header>
-              <p>Choose an owned character that follows this map’s rules. Your selected character will be used when the timer ends.</p>
-              <div className="match-character-grid">{CHARACTER_ROSTER.filter(character =>
-                isCharacterAvailable(isCharacterOwned(unlocks,character.key),testCharacterAccessContext) &&
-                isCharacterClassAllowed(versusMap,getCharacterClassKey(character.key)) &&
-                (!getMapRules(versusMap).forcedCharacterId || getMapRules(versusMap).forcedCharacterId===character.key) &&
-                (versusMode!=="ranked" || character.rarity!=="mythic")
-              ).map(character => <button key={character.key} className={selectedCharacter===character.key ? "selected" : ""} disabled={characterPickBusy || (weaponClock || Date.now())>=characterSelectionEndsAt} onClick={async () => {
-                if (playScope==="practice") {setSelectedCharacter(character.key);setVersusResult(`${character.name.toUpperCase()} SELECTED`);return;}
-                const matchId=versusMatchRef.current; if(!matchId) return;
-                setCharacterPickBusy(true);
-                const {error}=await supabase.rpc("choose_1v1_character",{p_match_id:matchId,p_character_key:character.key});
-                if(error) setVersusResult(error.message); else await hydrateVersusState(matchId,false);
-                setCharacterPickBusy(false);
-              }}><b>{character.name}</b><small>{getCharacterClassKey(character.key).toUpperCase()} · {character.rarity.toUpperCase()}</small><span>{CHARACTER_ABILITIES[character.key].description}</span>{selectedCharacter===character.key && <em>SELECTED</em>}</button>)}</div>
-              <p role="status">{versusResult}</p><button onClick={() => void leaveVersusSession().then(left => {if(left){setCharacterSelectionEndsAt(null);resetGameToMenu();}})}>LEAVE MATCH</button>
-            </section>
-          ) : mainView === "versus" && playScope === "single" ? (
-            <div className="versus-hub">
-              <header className="versus-hub-heading">
-                <div>
-                  <p>MULTI-DEVICE REALTIME</p>
-                  <h2 id="versus-hub-title">
-                    {versusMode === "ranked" ? "RANKED 1V1" : "CASUAL 1V1"}
-                  </h2>
-                </div>
-                <strong>
-                  {versusMode === "ranked" ? "ELO ON THE LINE" : "NO ELO · JUST PLAY"}
-                </strong>
-                <button
-                  type="button"
-                  className="versus-update-log"
-                  onClick={() => setUpdateLogOpen(true)}
-                >
-                  ▤ UPDATE LOG
-                </button>
-              </header>
-              <div className="versus-hub-scroll">
-                <section
-                  className="versus-hub-panel versus-matchmaking"
-                  aria-labelledby="versus-matchmaking-title"
-                  aria-busy={versusPhase === "searching" || versusLeaving}
-                >
-                  <header>
-                    <span>01</span>
-                    <div>
-                      <small>READY UP</small>
-                      <h3 id="versus-matchmaking-title">MATCHMAKING</h3>
-                    </div>
-                  </header>
-                  <div className="versus-mode-picker" aria-label="1v1 queue type">
+        {mainView === "photon" ? (
+          <PhotonFury
+            key={userIdRef.current ?? "guest"}
+            userId={guest ? null : userIdRef.current}
+            level={playerProgression.level}
+            gems={gems}
+            testMode={adminTestModeActive}
+            soundtrack={soundtrack}
+            onGems={(value) => {
+              gemsRef.current = value;
+              setGems(value);
+            }}
+          />
+        ) : mainView === "rng" ? (
+          <section className="photon-panel rng-panel" id="main-game-panel">
+            <h2>RNG</h2>
+            <p>Coming soon.</p>
+          </section>
+        ) : (
+          <section
+            id="main-game-panel"
+            className={`game-card${mainView === "versus" && playScope === "single" ? " versus-hub-card" : ""}`}
+            aria-label={
+              mainView === "versus" && playScope === "single"
+                ? "Skyway Sprint 1v1 hub"
+                : "Skyway Sprint runner game"
+            }
+            aria-labelledby={
+              mainView === "versus" && playScope === "single"
+                ? "versus-hub-title"
+                : undefined
+            }
+          >
+            {characterSelectionEndsAt !== null && playScope !== "single" ? (
+              <section
+                className="match-character-picker"
+                aria-label="Choose a character for this match"
+              >
+                <header>
+                  <small>
+                    {MAP_GUIDES[versusMap].name ?? versusMap.toUpperCase()}
+                  </small>
+                  <h2>CHOOSE YOUR CHARACTER</h2>
+                  <strong>
+                    {Math.max(
+                      0,
+                      Math.ceil(
+                        (characterSelectionEndsAt -
+                          (weaponClock || Date.now())) /
+                          1000,
+                      ),
+                    )}
+                    s
+                  </strong>
+                </header>
+                <p>
+                  Choose an owned character that follows this map’s rules. Your
+                  selected character will be used when the timer ends.
+                </p>
+                <div className="match-character-grid">
+                  {CHARACTER_ROSTER.filter(
+                    (character) =>
+                      isCharacterAvailable(
+                        isCharacterOwned(unlocks, character.key),
+                        testCharacterAccessContext,
+                      ) &&
+                      isCharacterClassAllowed(
+                        versusMap,
+                        getCharacterClassKey(character.key),
+                      ) &&
+                      (!getMapRules(versusMap).forcedCharacterId ||
+                        getMapRules(versusMap).forcedCharacterId ===
+                          character.key) &&
+                      (versusMode !== "ranked" ||
+                        character.rarity !== "mythic"),
+                  ).map((character) => (
                     <button
-                      className={versusMode === "casual" ? "selected" : ""}
-                      aria-pressed={versusMode === "casual"}
-                      disabled={versusPhase === "searching" || versusLeaving}
-                      onClick={() => {
-                        setVersusMode("casual");
-                        setVersusResult("");
-                      }}
-                    >
-                      <b>CASUAL</b>
-                      <small>NO ELO · OPEN TO EVERY LEVEL</small>
-                    </button>
-                    <button
-                      className={versusMode === "ranked" ? "selected" : ""}
-                      aria-pressed={versusMode === "ranked"}
-                      disabled={
-                        versusPhase === "searching" ||
-                        versusLeaving ||
-                        !isRankedAvailable(
-                          playerProgression.ranked_unlocked,
-                          adminTestModeContext,
-                        ) ||
-                        getCharacterDefinition(equippedCharacter).rarity ===
-                          "mythic"
+                      key={character.key}
+                      className={
+                        selectedCharacter === character.key ? "selected" : ""
                       }
-                      onClick={() => {
-                        if (adminTestModeActive) {
-                          setVersusMode("casual");
+                      disabled={
+                        characterPickBusy ||
+                        (weaponClock || Date.now()) >= characterSelectionEndsAt
+                      }
+                      onClick={async () => {
+                        if (playScope === "practice") {
+                          setSelectedCharacter(character.key);
                           setVersusResult(
-                            "TEST MODE USES CASUAL 1V1 · NO ELO OR REWARDS",
+                            `${character.name.toUpperCase()} SELECTED`,
                           );
                           return;
                         }
-                        setVersusMode("ranked");
-                        setVersusResult("");
-                        void loadVersusLeaderboard();
+                        const matchId = versusMatchRef.current;
+                        if (!matchId) return;
+                        setCharacterPickBusy(true);
+                        const { error } = await supabase.rpc(
+                          "choose_1v1_character",
+                          {
+                            p_match_id: matchId,
+                            p_character_key: character.key,
+                          },
+                        );
+                        if (error) setVersusResult(error.message);
+                        else await hydrateVersusState(matchId, false);
+                        setCharacterPickBusy(false);
                       }}
                     >
-                      <b>RANKED</b>
+                      <b>{character.name}</b>
                       <small>
-                        {adminTestModeActive
-                          ? "TEST MODE ON · CASUAL ONLY"
-                          : playerProgression.ranked_unlocked
-                          ? getCharacterDefinition(equippedCharacter).rarity ===
-                            "mythic"
-                            ? "MYTHIC EQUIPPED · CHOOSE A NON-MYTHIC"
-                            : "ELO ENABLED · COMPETITIVE"
-                          : "LOCKED · RATING RESET"}
+                        {getCharacterClassKey(character.key).toUpperCase()} ·{" "}
+                        {character.rarity.toUpperCase()}
                       </small>
+                      <span>
+                        {CHARACTER_ABILITIES[character.key].description}
+                      </span>
+                      {selectedCharacter === character.key && <em>SELECTED</em>}
                     </button>
+                  ))}
+                </div>
+                <p role="status">{versusResult}</p>
+                <button
+                  onClick={() =>
+                    void leaveVersusSession().then((left) => {
+                      if (left) {
+                        setCharacterSelectionEndsAt(null);
+                        resetGameToMenu();
+                      }
+                    })
+                  }
+                >
+                  LEAVE MATCH
+                </button>
+              </section>
+            ) : mainView === "versus" && playScope === "single" ? (
+              <div className="versus-hub">
+                <header className="versus-hub-heading">
+                  <div>
+                    <p>MULTI-DEVICE REALTIME</p>
+                    <h2 id="versus-hub-title">
+                      {versusMode === "ranked" ? "RANKED 1V1" : "CASUAL 1V1"}
+                    </h2>
                   </div>
-                  {versusPhase === "searching" ? (
-                    <div className="versus-searching" role="status" aria-live="polite">
-                      <div className="matchmaking-spinner" aria-hidden="true">
-                        ⚔
+                  <strong>
+                    {versusMode === "ranked"
+                      ? "ELO ON THE LINE"
+                      : "NO ELO · JUST PLAY"}
+                  </strong>
+                  <button
+                    type="button"
+                    className="versus-update-log"
+                    onClick={() => setUpdateLogOpen(true)}
+                  >
+                    ▤ UPDATE LOG
+                  </button>
+                </header>
+                <div className="versus-hub-scroll">
+                  <section
+                    className="versus-hub-panel versus-matchmaking"
+                    aria-labelledby="versus-matchmaking-title"
+                    aria-busy={versusPhase === "searching" || versusLeaving}
+                  >
+                    <header>
+                      <span>01</span>
+                      <div>
+                        <small>READY UP</small>
+                        <h3 id="versus-matchmaking-title">MATCHMAKING</h3>
                       </div>
-                      <b>FINDING AN OPPONENT…</b>
-                      <small>Keep this screen open while we pair your account.</small>
+                    </header>
+                    <div
+                      className="versus-mode-picker"
+                      aria-label="1v1 queue type"
+                    >
                       <button
-                        className="versus-cancel"
-                        disabled={versusLeaving}
-                        onClick={() => void cancelVersus()}
+                        className={versusMode === "casual" ? "selected" : ""}
+                        aria-pressed={versusMode === "casual"}
+                        disabled={versusPhase === "searching" || versusLeaving}
+                        onClick={() => {
+                          setVersusMode("casual");
+                          setVersusResult("");
+                        }}
                       >
-                        {versusLeaving ? "LEAVING QUEUE…" : "CANCEL SEARCH"}
+                        <b>CASUAL</b>
+                        <small>NO ELO · OPEN TO EVERY LEVEL</small>
+                      </button>
+                      <button
+                        className={versusMode === "ranked" ? "selected" : ""}
+                        aria-pressed={versusMode === "ranked"}
+                        disabled={
+                          versusPhase === "searching" ||
+                          versusLeaving ||
+                          !isRankedAvailable(
+                            playerProgression.ranked_unlocked,
+                            adminTestModeContext,
+                          ) ||
+                          getCharacterDefinition(equippedCharacter).rarity ===
+                            "mythic"
+                        }
+                        onClick={() => {
+                          if (adminTestModeActive) {
+                            setVersusMode("casual");
+                            setVersusResult(
+                              "TEST MODE USES CASUAL 1V1 · NO ELO OR REWARDS",
+                            );
+                            return;
+                          }
+                          setVersusMode("ranked");
+                          setVersusResult("");
+                          void loadVersusLeaderboard();
+                        }}
+                      >
+                        <b>RANKED</b>
+                        <small>
+                          {adminTestModeActive
+                            ? "TEST MODE ON · CASUAL ONLY"
+                            : playerProgression.ranked_unlocked
+                              ? getCharacterDefinition(equippedCharacter)
+                                  .rarity === "mythic"
+                                ? "MYTHIC EQUIPPED · CHOOSE A NON-MYTHIC"
+                                : "ELO ENABLED · COMPETITIVE"
+                              : playerProgression.ranked_purchased
+                                ? "REACH LEVEL 25"
+                                : "LEVEL 25 + 100 GEMS"}
+                        </small>
                       </button>
                     </div>
-                  ) : (
-                    <div className="versus-ready">
-                      <div className="rival-card" aria-label="Match preview">
-                        <span>
-                          {guest ? "GUEST" : username || "YOU"}
-                          <b>READY</b>
-                        </span>
-                        <strong>VS</strong>
-                        <span>
-                          RIVAL
-                          <b>SEARCHING</b>
-                        </span>
-                      </div>
-                      <button
-                        className="versus-primary"
-                        onClick={() => void findVersusMatch()}
-                        disabled={guest || versusLeaving}
-                        aria-describedby={guest ? "versus-signin-note" : undefined}
-                      >
-                        {versusLeaving
-                          ? "FINISHING PREVIOUS MATCH…"
-                          : `FIND ${versusMode.toUpperCase()} OPPONENT`}
-                      </button>
-                      {guest && (
-                        <small id="versus-signin-note" className="versus-signin-note">
-                          Sign in to enter account-based 1v1 matchmaking.
-                        </small>
+                    {versusPhase !== "searching" &&
+                      !guest &&
+                      !playerProgression.ranked_purchased && (
+                        <div className="ranked-unlock-panel">
+                          <p>
+                            Ranked unlocks separately from Photon Fury at level
+                            25 for 100 Gems.
+                          </p>
+                          <button
+                            type="button"
+                            disabled={
+                              rankedUnlockBusy ||
+                              adminTestModeActive ||
+                              versusLeaving ||
+                              playerProgression.level <
+                                MODE_UNLOCKS.ranked.level ||
+                              gems < MODE_UNLOCKS.ranked.gems
+                            }
+                            onClick={() => void unlockRanked()}
+                          >
+                            {rankedUnlockBusy
+                              ? "UNLOCKING…"
+                              : "UNLOCK RANKED · 100 GEMS"}
+                          </button>
+                        </div>
                       )}
-                      <div className="versus-practice-divider" aria-hidden="true">
-                        <span>OR</span>
-                      </div>
-                      <label className="practice-map-picker">
-                        <span>PRACTICE MAP</span>
-                        <select
-                          value={practiceMapChoice}
+                    {versusPhase === "searching" ? (
+                      <div
+                        className="versus-searching"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <div className="matchmaking-spinner" aria-hidden="true">
+                          ⚔
+                        </div>
+                        <b>FINDING AN OPPONENT…</b>
+                        <small>
+                          Keep this screen open while we pair your account.
+                        </small>
+                        <button
+                          className="versus-cancel"
                           disabled={versusLeaving}
-                          onChange={(event) =>
-                            setPracticeMapChoice(
-                              event.target.value as MapId | "random",
-                            )
+                          onClick={() => void cancelVersus()}
+                        >
+                          {versusLeaving ? "LEAVING QUEUE…" : "CANCEL SEARCH"}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="versus-ready">
+                        <div className="rival-card" aria-label="Match preview">
+                          <span>
+                            {guest ? "GUEST" : username || "YOU"}
+                            <b>READY</b>
+                          </span>
+                          <strong>VS</strong>
+                          <span>
+                            RIVAL
+                            <b>SEARCHING</b>
+                          </span>
+                        </div>
+                        <button
+                          className="versus-primary"
+                          onClick={() => void findVersusMatch()}
+                          disabled={guest || versusLeaving}
+                          aria-describedby={
+                            guest ? "versus-signin-note" : undefined
                           }
                         >
-                          <option value="random">RANDOM ARENA</option>
-                          {MAP_IDS.map((mapId) => (
-                            <option key={mapId} value={mapId}>
-                              {MAP_RULES[mapId].name.toUpperCase()}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <div className="practice-map-guide">
-                        {practiceMapChoice === "random" ? (
-                          <>
-                            <b>RANDOM ARENA</b>
-                            <p>
-                              Uses your two saved map votes when possible, then
-                              picks an Arena at random.
-                            </p>
-                          </>
-                        ) : (
-                          <>
-                            <b>{MAP_GUIDES[practiceMapChoice].name}</b>
-                            <p>{MAP_GUIDES[practiceMapChoice].description}</p>
+                          {versusLeaving
+                            ? "FINISHING PREVIOUS MATCH…"
+                            : `FIND ${versusMode.toUpperCase()} OPPONENT`}
+                        </button>
+                        {guest && (
+                          <small
+                            id="versus-signin-note"
+                            className="versus-signin-note"
+                          >
+                            Sign in to enter account-based 1v1 matchmaking.
+                          </small>
+                        )}
+                        <div
+                          className="versus-practice-divider"
+                          aria-hidden="true"
+                        >
+                          <span>OR</span>
+                        </div>
+                        <label className="practice-map-picker">
+                          <span>PRACTICE MAP</span>
+                          <select
+                            value={practiceMapChoice}
+                            disabled={versusLeaving}
+                            onChange={(event) =>
+                              setPracticeMapChoice(
+                                event.target.value as MapId | "random",
+                              )
+                            }
+                          >
+                            <option value="random">RANDOM ARENA</option>
+                            {MAP_IDS.map((mapId) => (
+                              <option key={mapId} value={mapId}>
+                                {MAP_RULES[mapId].name.toUpperCase()}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <div className="practice-map-guide">
+                          {practiceMapChoice === "random" ? (
+                            <>
+                              <b>RANDOM ARENA</b>
+                              <p>
+                                Uses your two saved map votes when possible,
+                                then picks an Arena at random.
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              <b>{MAP_GUIDES[practiceMapChoice].name}</b>
+                              <p>{MAP_GUIDES[practiceMapChoice].description}</p>
+                              <ul>
+                                {MAP_GUIDES[practiceMapChoice].rules.map(
+                                  (rule) => (
+                                    <li key={rule}>{rule}</li>
+                                  ),
+                                )}
+                              </ul>
+                            </>
+                          )}
+                        </div>
+                        <button
+                          className="versus-practice"
+                          onClick={startBotPractice}
+                          disabled={versusLeaving}
+                        >
+                          <b>PRACTICE VS BOT</b>
+                          <small>
+                            LOCAL · UNRANKED · NO REWARDS · GUESTS OK
+                          </small>
+                        </button>
+                      </div>
+                    )}
+                    {versusResult && (
+                      <div
+                        className="versus-message"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        {versusResult}
+                      </div>
+                    )}
+                  </section>
+
+                  <section
+                    className="versus-hub-panel versus-map-priority-panel"
+                    aria-labelledby="versus-map-priority-title"
+                  >
+                    <header>
+                      <span>02</span>
+                      <div>
+                        <small>CHOOSE EXACTLY TWO ARENAS</small>
+                        <h3 id="versus-map-priority-title">MAP VOTES</h3>
+                      </div>
+                    </header>
+                    <p className="versus-map-priority-note">
+                      Each player votes for two maps. One shared vote wins. If
+                      both votes match, one of those two is picked at random.
+                      With no shared votes, the match randomly picks from all
+                      four votes.
+                    </p>
+                    {guest ? (
+                      <div className="versus-hub-empty">
+                        Sign in to choose and save your two map votes.
+                      </div>
+                    ) : (
+                      <>
+                        <div
+                          className="versus-map-vote-grid"
+                          aria-label="Choose two maps to vote for"
+                        >
+                          {MAP_IDS.map((mapId) => {
+                            const selected = mapPriority.includes(mapId);
+                            return (
+                              <button
+                                key={mapId}
+                                type="button"
+                                className={selected ? "selected" : ""}
+                                aria-pressed={selected}
+                                disabled={
+                                  mapPriorityBusy ||
+                                  versusPhase === "searching" ||
+                                  (!selected &&
+                                    mapPriority.length >= MAP_VOTE_COUNT)
+                                }
+                                onClick={() => toggleMapVote(mapId)}
+                              >
+                                <strong aria-hidden="true">
+                                  {selected ? "✓" : "○"}
+                                </strong>
+                                <span>
+                                  <b>{MAP_RULES[mapId].name}</b>
+                                  <small>{MAP_GUIDES[mapId].description}</small>
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <button
+                          type="button"
+                          className="versus-save-priority"
+                          disabled={
+                            mapPriorityBusy ||
+                            versusPhase === "searching" ||
+                            mapPriority.length !== MAP_VOTE_COUNT
+                          }
+                          onClick={() => void saveMapPriority()}
+                        >
+                          {mapPriorityBusy
+                            ? "SAVING…"
+                            : `SAVE ${mapPriority.length}/2 MAP VOTES`}
+                        </button>
+                        <small
+                          className={`versus-priority-status${mapPriorityConfigured ? " saved" : ""}`}
+                          role="status"
+                        >
+                          {mapPriorityStatus ||
+                            (mapPriorityConfigured
+                              ? "SAVED TO THIS ACCOUNT"
+                              : "PICK 2 DIFFERENT MAPS TO SAVE YOUR VOTES")}
+                        </small>
+                      </>
+                    )}
+                    <details className="arena-guide-list">
+                      <summary>OPEN FULL ARENA MAP GUIDE</summary>
+                      <div className="gameplay-guide-grid">
+                        {MAP_IDS.map((mapId) => (
+                          <article className="gameplay-guide-item" key={mapId}>
+                            <b>{MAP_GUIDES[mapId].name}</b>
+                            <p>{MAP_GUIDES[mapId].description}</p>
                             <ul>
-                              {MAP_GUIDES[practiceMapChoice].rules.map((rule) => (
+                              {MAP_GUIDES[mapId].rules.map((rule) => (
                                 <li key={rule}>{rule}</li>
                               ))}
                             </ul>
-                          </>
-                        )}
+                          </article>
+                        ))}
                       </div>
-                      <button
-                        className="versus-practice"
-                        onClick={startBotPractice}
-                        disabled={versusLeaving}
-                      >
-                        <b>PRACTICE VS BOT</b>
-                        <small>LOCAL · UNRANKED · NO REWARDS · GUESTS OK</small>
-                      </button>
-                    </div>
-                  )}
-                  {versusResult && (
-                    <div className="versus-message" role="status" aria-live="polite">
-                      {versusResult}
-                    </div>
-                  )}
-                </section>
+                    </details>
+                  </section>
 
-                <section
-                  className="versus-hub-panel versus-map-priority-panel"
-                  aria-labelledby="versus-map-priority-title"
-                >
-                  <header>
-                    <span>02</span>
-                    <div>
-                      <small>CHOOSE EXACTLY TWO ARENAS</small>
-                      <h3 id="versus-map-priority-title">MAP VOTES</h3>
-                    </div>
-                  </header>
-                  <p className="versus-map-priority-note">
-                    Each player votes for two maps. One shared vote wins. If both
-                    votes match, one of those two is picked at random. With no
-                    shared votes, the match randomly picks from all four votes.
-                  </p>
-                  {guest ? (
-                    <div className="versus-hub-empty">
-                      Sign in to choose and save your two map votes.
-                    </div>
-                  ) : (
-                    <>
-                      <div
-                        className="versus-map-vote-grid"
-                        aria-label="Choose two maps to vote for"
-                      >
-                        {MAP_IDS.map((mapId) => {
-                          const selected = mapPriority.includes(mapId);
-                          return (
-                            <button
-                              key={mapId}
-                              type="button"
-                              className={selected ? "selected" : ""}
-                              aria-pressed={selected}
-                              disabled={
-                                mapPriorityBusy ||
-                                versusPhase === "searching" ||
-                                (!selected &&
-                                  mapPriority.length >= MAP_VOTE_COUNT)
-                              }
-                              onClick={() => toggleMapVote(mapId)}
-                            >
-                              <strong aria-hidden="true">
-                                {selected ? "✓" : "○"}
-                              </strong>
-                              <span>
-                                <b>{MAP_RULES[mapId].name}</b>
-                                <small>{MAP_GUIDES[mapId].description}</small>
-                              </span>
-                            </button>
-                          );
-                        })}
+                  <section
+                    className="versus-hub-panel versus-rules-panel"
+                    aria-labelledby="versus-rules-title"
+                  >
+                    <header>
+                      <span>03</span>
+                      <div>
+                        <small>HOW IT WORKS</small>
+                        <h3 id="versus-rules-title">1V1 RULES</h3>
                       </div>
-                      <button
-                        type="button"
-                        className="versus-save-priority"
-                        disabled={
-                          mapPriorityBusy ||
-                          versusPhase === "searching" ||
-                          mapPriority.length !== MAP_VOTE_COUNT
-                        }
-                        onClick={() => void saveMapPriority()}
-                      >
-                        {mapPriorityBusy
-                          ? "SAVING…"
-                          : `SAVE ${mapPriority.length}/2 MAP VOTES`}
-                      </button>
-                      <small
-                        className={`versus-priority-status${mapPriorityConfigured ? " saved" : ""}`}
-                        role="status"
-                      >
-                        {mapPriorityStatus ||
-                          (mapPriorityConfigured
-                            ? "SAVED TO THIS ACCOUNT"
-                            : "PICK 2 DIFFERENT MAPS TO SAVE YOUR VOTES")}
-                      </small>
-                    </>
-                  )}
-                  <details className="arena-guide-list">
-                    <summary>OPEN FULL ARENA MAP GUIDE</summary>
-                    <div className="gameplay-guide-grid">
-                      {MAP_IDS.map((mapId) => (
-                        <article className="gameplay-guide-item" key={mapId}>
-                          <b>{MAP_GUIDES[mapId].name}</b>
-                          <p>{MAP_GUIDES[mapId].description}</p>
-                          <ul>
-                            {MAP_GUIDES[mapId].rules.map((rule) => (
-                              <li key={rule}>{rule}</li>
-                            ))}
-                          </ul>
+                    </header>
+                    <ol className="versus-rule-list">
+                      <li>Both runners play the same selected Arena map.</li>
+                      <li>
+                        When one runner falls, the other keeps playing until
+                        their run ends too.
+                      </li>
+                      <li>
+                        The second runner to fall receives{" "}
+                        <b>+{ONE_V_ONE_SCORING_RULES.secondDeathBonus} score</b>
+                        , then the higher final score wins. Equal scores are a
+                        draw.
+                      </li>
+                      <li>
+                        Coins and completed waves award map-specific attack
+                        points.
+                      </li>
+                      <li>
+                        Spend attack coins during the 10-second intermission to
+                        send hazards into your rival&apos;s next wave.
+                      </li>
+                      <li>
+                        Bot practice uses the same local rules but never changes
+                        wins, losses, XP, or rating.
+                      </li>
+                      <li>
+                        Casual never shows or changes Elo. Ranked is locked
+                        after the update. The new ranked pool starts at 1500
+                        Elo.
+                      </li>
+                    </ol>
+                  </section>
+
+                  <section
+                    className="versus-hub-panel versus-armory-panel"
+                    aria-labelledby="versus-armory-title"
+                  >
+                    <header>
+                      <span>04</span>
+                      <div>
+                        <small>INTERMISSION SHOP</small>
+                        <h3 id="versus-armory-title">ATTACK COIN ARMORY</h3>
+                      </div>
+                    </header>
+                    <p className="versus-armory-note">
+                      Spend the Attack Coins earned in this match. Purchased
+                      hazards are released one at a time through the next wave
+                      and wait for a clear lane. Map restrictions still apply.
+                    </p>
+                    <div className="versus-attack-catalog">
+                      {VERSUS_ATTACKS.map((attack) => (
+                        <article key={attack.kind}>
+                          <span aria-hidden="true">{attack.icon}</span>
+                          <div>
+                            <b>{attack.label}</b>
+                            <small>{attack.description}</small>
+                          </div>
+                          <strong>◉ {attack.cost} COINS</strong>
                         </article>
                       ))}
                     </div>
-                  </details>
-                </section>
+                  </section>
 
-                <section
-                  className="versus-hub-panel versus-rules-panel"
-                  aria-labelledby="versus-rules-title"
-                >
-                  <header>
-                    <span>03</span>
-                    <div>
-                      <small>HOW IT WORKS</small>
-                      <h3 id="versus-rules-title">1V1 RULES</h3>
-                    </div>
-                  </header>
-                  <ol className="versus-rule-list">
-                    <li>Both runners play the same selected Arena map.</li>
-                    <li>
-                      When one runner falls, the other keeps playing until
-                      their run ends too.
-                    </li>
-                    <li>
-                      The second runner to fall receives <b>+{ONE_V_ONE_SCORING_RULES.secondDeathBonus} score</b>, then
-                      the higher final score wins. Equal scores are a draw.
-                    </li>
-                    <li>
-                      Coins and completed waves award map-specific attack
-                      points.
-                    </li>
-                    <li>
-                      Spend attack coins during the 10-second intermission to
-                      send hazards into your rival&apos;s next wave.
-                    </li>
-                    <li>
-                      Bot practice uses the same local rules but never changes
-                      wins, losses, XP, or rating.
-                    </li>
-                    <li>
-                      Casual never shows or changes Elo. Ranked is locked after
-                      the update. The new ranked pool starts at 1500 Elo.
-                    </li>
-                  </ol>
-                </section>
-
-                <section
-                  className="versus-hub-panel versus-armory-panel"
-                  aria-labelledby="versus-armory-title"
-                >
-                  <header>
-                    <span>04</span>
-                    <div>
-                      <small>INTERMISSION SHOP</small>
-                      <h3 id="versus-armory-title">ATTACK COIN ARMORY</h3>
-                    </div>
-                  </header>
-                  <p className="versus-armory-note">
-                    Spend the Attack Coins earned in this match. Purchased
-                    hazards are released one at a time through
-                    the next wave and wait for a clear lane. Map restrictions
-                    still apply.
-                  </p>
-                  <div className="versus-attack-catalog">
-                    {VERSUS_ATTACKS.map((attack) => (
-                      <article key={attack.kind}>
-                        <span aria-hidden="true">{attack.icon}</span>
+                  {versusMode === "ranked" && (
+                    <section
+                      className="versus-hub-panel versus-leaderboard-panel"
+                      aria-labelledby="versus-leaderboard-title"
+                    >
+                      <header>
+                        <span>05</span>
                         <div>
-                          <b>{attack.label}</b>
-                          <small>{attack.description}</small>
+                          <small>RANKED RECORDS</small>
+                          <h3 id="versus-leaderboard-title">1V1 LEADERBOARD</h3>
                         </div>
-                        <strong>◉ {attack.cost} COINS</strong>
-                      </article>
+                        <button
+                          className="versus-refresh"
+                          onClick={() => void loadVersusLeaderboard()}
+                          disabled={versusLeadersLoading}
+                        >
+                          {versusLeadersLoading ? "LOADING…" : "REFRESH"}
+                        </button>
+                      </header>
+                      {guest ? (
+                        <div className="versus-hub-empty">
+                          Sign in to view the ranked 1v1 leaderboard.
+                        </div>
+                      ) : versusLeadersError ? (
+                        <div className="versus-hub-empty error" role="status">
+                          {versusLeadersError}
+                        </div>
+                      ) : versusLeadersLoading && versusLeaders.length === 0 ? (
+                        <div className="versus-hub-empty" role="status">
+                          Loading ranked records…
+                        </div>
+                      ) : versusLeaders.length === 0 ? (
+                        <div className="versus-hub-empty">
+                          No ranked matches yet.
+                        </div>
+                      ) : (
+                        <ol className="versus-leader-list">
+                          {versusLeaders.map((entry) => {
+                            const winRate = Number(entry.win_rate);
+                            const rating = Number(entry.rating);
+                            const roundedRating = Number.isFinite(rating)
+                              ? Math.round(rating)
+                              : 1500;
+                            return (
+                              <li
+                                key={`${entry.rank}-${entry.username}`}
+                                className={entry.is_self ? "me" : ""}
+                              >
+                                <b>#{Number(entry.rank)}</b>
+                                <span>
+                                  <strong>{entry.username}</strong>
+                                  <small>
+                                    {entry.provisional
+                                      ? "PROVISIONAL"
+                                      : `${Number.isFinite(winRate) ? winRate.toFixed(1) : "0.0"}% WIN RATE`}
+                                  </small>
+                                </span>
+                                <span>
+                                  <strong>{roundedRating} RATING</strong>
+                                  <small>
+                                    {Number(entry.wins)}W–{Number(entry.losses)}
+                                    L · BEST WAVE {Number(entry.best_wave)}
+                                  </small>
+                                </span>
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      )}
+                    </section>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <>
+                <header className="topbar">
+                  <div className="brand">
+                    <span>S</span>
+                    <div>
+                      <b>SKYWAY</b>
+                      <small>SPRINT</small>
+                    </div>
+                  </div>
+                  <div className="stats">
+                    <div>
+                      <small>SCORE</small>
+                      <strong>{score.toString().padStart(6, "0")}</strong>
+                    </div>
+                    <div className="high-score-inline">
+                      <small>HIGH SCORE</small>
+                      <strong>
+                        {guest ? "—" : highScore.toLocaleString()}
+                      </strong>
+                    </div>
+                    <div className={`gem-total ${gemBump ? "bump" : ""}`}>
+                      <small>{guest ? "RUN GEMS" : "GEMS"}</small>
+                      <strong className="gold">● {gems}</strong>
+                      {gemBump && <em>+1</em>}
+                    </div>
+                    <div>
+                      <small>WAVE</small>
+                      <strong>{wave}</strong>
+                    </div>
+                  </div>
+                  <div className="account">
+                    <span>
+                      {guest ? "GUEST RUNNER" : username || userEmail}
+                    </span>
+                  </div>
+                </header>
+                <div
+                  className={`playfield map-${activeMapId}${environmentCosmetic ? ` environment-${environmentCosmetic}` : ""}${phantomNightActive ? " phantom-night" : ""}${phantomBloodmoonActive ? " phantom-bloodmoon" : ""}${phantomLordsdownActive ? " phantom-lordsdown" : ""}${phantomLord ? " phantom-lord" : ""}`}
+                >
+                  <div className="sky" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                  </div>
+                  <div className="horizon" aria-hidden="true">
+                    {Array.from({ length: 8 }, (_, index) => (
+                      <span key={index} />
                     ))}
                   </div>
-                </section>
-
-                {versusMode === "ranked" && (
-                <section
-                  className="versus-hub-panel versus-leaderboard-panel"
-                  aria-labelledby="versus-leaderboard-title"
-                >
-                  <header>
-                    <span>05</span>
-                    <div>
-                      <small>RANKED RECORDS</small>
-                      <h3 id="versus-leaderboard-title">1V1 LEADERBOARD</h3>
+                  {isVersusRun && (
+                    <div className="versus-hud">
+                      <div>
+                        <small>YOU</small>
+                        <b>
+                          {getDisplayedHearts(hearts)} HP ·{" "}
+                          {score.toLocaleString()}
+                        </b>
+                      </div>
+                      <strong>⚔</strong>
+                      <div>
+                        <small>{versusOpponent}</small>
+                        <b>
+                          {getDisplayedHearts(versusOpponentHearts)} HP ·{" "}
+                          {versusOpponentScore.toLocaleString()}
+                        </b>
+                      </div>
+                      <em
+                        aria-label={`${getDisplayedAttackPoints(versusPoints)} attack coins`}
+                      >
+                        ◉ {getDisplayedAttackPoints(versusPoints)}
+                      </em>
                     </div>
-                    <button
-                      className="versus-refresh"
-                      onClick={() => void loadVersusLeaderboard()}
-                      disabled={versusLeadersLoading}
-                    >
-                      {versusLeadersLoading ? "LOADING…" : "REFRESH"}
-                    </button>
-                  </header>
-                  {guest ? (
-                    <div className="versus-hub-empty">
-                      Sign in to view the ranked 1v1 leaderboard.
-                    </div>
-                  ) : versusLeadersError ? (
-                    <div className="versus-hub-empty error" role="status">
-                      {versusLeadersError}
-                    </div>
-                  ) : versusLeadersLoading && versusLeaders.length === 0 ? (
-                    <div className="versus-hub-empty" role="status">
-                      Loading ranked records…
-                    </div>
-                  ) : versusLeaders.length === 0 ? (
-                    <div className="versus-hub-empty">No ranked matches yet.</div>
-                  ) : (
-                    <ol className="versus-leader-list">
-                      {versusLeaders.map((entry) => {
-                        const winRate = Number(entry.win_rate);
-                        const rating = Number(entry.rating);
-                        const roundedRating = Number.isFinite(rating)
-                          ? Math.round(rating)
-                          : 1500;
-                        return (
-                          <li
-                            key={`${entry.rank}-${entry.username}`}
-                            className={entry.is_self ? "me" : ""}
-                          >
-                            <b>#{Number(entry.rank)}</b>
-                            <span>
-                              <strong>{entry.username}</strong>
-                              <small>
-                                {entry.provisional
-                                  ? "PROVISIONAL"
-                                  : `${Number.isFinite(winRate) ? winRate.toFixed(1) : "0.0"}% WIN RATE`}
-                              </small>
-                            </span>
-                            <span>
-                              <strong>{roundedRating} RATING</strong>
-                              <small>
-                                {Number(entry.wins)}W–{Number(entry.losses)}L · BEST WAVE {Number(entry.best_wave)}
-                              </small>
-                            </span>
-                          </li>
-                        );
-                      })}
-                    </ol>
                   )}
-                </section>
-                )}
-              </div>
-            </div>
-          ) : (
-            <>
-          <header className="topbar">
-            <div className="brand">
-              <span>S</span>
-              <div>
-                <b>SKYWAY</b>
-                <small>SPRINT</small>
-              </div>
-            </div>
-            <div className="stats">
-              <div>
-                <small>SCORE</small>
-                <strong>{score.toString().padStart(6, "0")}</strong>
-              </div>
-              <div className="high-score-inline">
-                <small>HIGH SCORE</small>
-                <strong>{guest ? "—" : highScore.toLocaleString()}</strong>
-              </div>
-              <div className={`gem-total ${gemBump ? "bump" : ""}`}>
-                <small>{guest ? "RUN GEMS" : "GEMS"}</small>
-                <strong className="gold">● {gems}</strong>
-                {gemBump && <em>+1</em>}
-              </div>
-              <div>
-                <small>WAVE</small>
-                <strong>{wave}</strong>
-              </div>
-            </div>
-            <div className="account">
-              <span>{guest ? "GUEST RUNNER" : username || userEmail}</span>
-            </div>
-          </header>
-          <div
-            className={`playfield map-${activeMapId}${environmentCosmetic ? ` environment-${environmentCosmetic}` : ""}${phantomNightActive ? " phantom-night" : ""}${phantomBloodmoonActive ? " phantom-bloodmoon" : ""}${phantomLordsdownActive ? " phantom-lordsdown" : ""}${phantomLord ? " phantom-lord" : ""}`}
-          >
-            <div className="sky" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </div>
-            <div className="horizon" aria-hidden="true">
-              {Array.from({ length: 8 }, (_, index) => (
-                <span key={index} />
-              ))}
-            </div>
-            {isVersusRun && (
-              <div className="versus-hud">
-                <div>
-                  <small>YOU</small>
-                  <b>{getDisplayedHearts(hearts)} HP · {score.toLocaleString()}</b>
-                </div>
-                <strong>⚔</strong>
-                <div>
-                  <small>{versusOpponent}</small>
-                  <b>
-                    {getDisplayedHearts(versusOpponentHearts)} HP · {versusOpponentScore.toLocaleString()}
-                  </b>
-                </div>
-                <em aria-label={`${getDisplayedAttackPoints(versusPoints)} attack coins`}>
-                  ◉ {getDisplayedAttackPoints(versusPoints)}
-                </em>
-              </div>
-            )}
-            {isVersusRun && (
-              <details
-                className="gameplay-guide-drawer"
-                open={versusGuideOpen}
-                onToggle={(event) =>
-                  setVersusGuideOpen(event.currentTarget.open)
-                }
-              >
-                <summary>
-                  <span>
-                    <small>ARENA GUIDE</small>
-                    <b>{activeMapGuide.name.toUpperCase()}</b>
-                  </span>
-                  <strong>{activeLaneCount} LANES</strong>
-                  {activeMapId === "grove" && (
-                    <em>
-                      🍄 {versusSelfMushrooms} — {versusOpponentMushrooms} 🍄
-                    </em>
-                  )}
-                </summary>
-                <div className="gameplay-guide-body">
-                  <p className="gameplay-guide-intro">
-                    {activeMapGuide.description}
-                  </p>
-                  <section className="gameplay-guide-section">
-                    <b>MAP RULES</b>
-                    <ul>
-                      {activeMapGuide.rules.map((rule) => (
-                        <li key={rule}>{rule}</li>
-                      ))}
-                    </ul>
-                  </section>
-                  <section className="gameplay-guide-section gameplay-runner-ability">
-                    <b>
-                      YOUR RUNNER · {activeCharacterDefinition.name.toUpperCase()}
-                    </b>
-                    <p>
-                      <strong>{activeAbility.name}</strong> · {activeAbility.description}
-                    </p>
-                  </section>
-                </div>
-              </details>
-            )}
-            {isVersusRun &&
-              versusResult &&
-              !over &&
-              (versusPhase !== "intermission" ||
-                !versusIntermissionReady) && (
-                <div
-                  className="versus-live-message"
-                  role="status"
-                  aria-live="polite"
-                >
-                  {versusResult}
-                </div>
-              )}
-            {waveMessage && (
-              <div className="wave-announcement">
-                <small>GET READY</small>
-                <strong>{waveMessage}</strong>
-              </div>
-            )}
-            <div
-              className="active-ability-chip"
-              title={`${activeAbility.description} ${activeCharacterDefinition.weapon}: ${activeWeaponLabel}. Running score is the score earned continuously while surviving and moving forward.`}
-              aria-label={`Passive ability: ${activeAbility.name}. ${activeAbility.description} Weapon: ${activeCharacterDefinition.weapon}. ${activeWeaponLabel}.`}
-            >
-              <small>PASSIVE</small>
-              <b>{activeAbility.name}</b>
-              <span>{activeAbility.description}</span>
-              <div className="active-weapon-readout">
-                <small>WEAPON</small>
-                <b>{activeCharacterDefinition.weapon}</b>
-                <em>{activeWeaponLabel}</em>
-              </div>
-              <small className="running-score-help">
-                DISTANCE / RUNNING SCORE = SCORE EARNED CONTINUOUSLY WHILE YOU SURVIVE
-              </small>
-            </div>
-            {running && abilityAction && (
-              <button
-                type="button"
-                className={`ability-action-button ${abilityAction.ready ? "ready" : "cooldown"}`}
-                disabled={
-                  !abilityAction.ready ||
-                  wavePause ||
-                  (paused &&
-                    !(
-                      activeCharacter === "runner_comet" &&
-                      isVersusRun &&
-                      versusPhase === "intermission" &&
-                      versusIntermissionReady
-                    ) &&
-                    !(
-                      activeCharacter === "trickster_echo" &&
-                      echoKnowingState.chargingSinceMs !== null
-                    ))
-                }
-                onPointerDown={() => {
-                  if (
-                    activeCharacter === "trickster_echo" &&
-                    !echoKnowingState.awakened &&
-                    echoQuestState.currentQuest === null
-                  )
-                    triggerCharacterAction();
-                }}
-                onPointerUp={cancelEchoKnowingHold}
-                onPointerCancel={cancelEchoKnowingHold}
-                onPointerLeave={cancelEchoKnowingHold}
-                onClick={
-                  activeCharacter === "trickster_echo" &&
-                  !echoKnowingState.awakened &&
-                  echoQuestState.currentQuest === null
-                    ? undefined
-                    : triggerCharacterAction
-                }
-                data-ability-version={abilityStateVersion}
-              >
-                <kbd className="ability-action-key">E</kbd>
-                <span className="ability-action-copy">
-                  <small>ACTIVE ABILITY</small>
-                  <b>{abilityAction.label}</b>
-                  <em>{abilityAction.status}</em>
-                </span>
-              </button>
-            )}
-            {running &&
-              (hasCharacterAbility("medic_tonic") ||
-                waveForecast.length > 0 ||
-                activeCharacter === "runner_velocity" ||
-                activeCharacter === "misc_broker" ||
-                activeCharacter === "misc_prospector" ||
-                activeCharacter === "misc_scribe" ||
-                activeCharacter === "misc_mimic" ||
-                activeCharacter === "misc_muse" ||
-                activeCharacter === "trickster_wildcard" ||
-                activeCharacter === "trickster_gambit" ||
-                activeCharacter === "trickster_echo" ||
-                activeCharacter === "trickster_hex" ||
-                activeCharacter === "trickster_mirage" ||
-                activeCharacter === "runner_comet" ||
-                hasCharacterAbility("medic_halo") ||
-                hasCharacterAbility("runner_relay") ||
-                hasCharacterAbility("medic_seraph")) && (
-                <aside className={`ability-side-panel ${abilitySidePanelCollapsed ? "minimized" : ""}`} data-ability-version={abilityStateVersion}>
-                  <header>
-                    <div><small>LIVE KIT</small><b>ABILITY STATUS</b></div>
-                    <button
-                      type="button"
-                      className="ability-panel-close"
-                      aria-expanded={!abilitySidePanelCollapsed}
-                      aria-controls="ability-side-panel-body"
-                      aria-label={
-                        abilitySidePanelCollapsed
-                          ? "Expand ability status"
-                          : "Minimize ability status"
-                      }
-                      onClick={() =>
-                        setAbilitySidePanelCollapsed((value) => !value)
+                  {isVersusRun && (
+                    <details
+                      className="gameplay-guide-drawer"
+                      open={versusGuideOpen}
+                      onToggle={(event) =>
+                        setVersusGuideOpen(event.currentTarget.open)
                       }
                     >
-                      {abilitySidePanelCollapsed ? "+" : "−"}
-                    </button>
-                  </header>
-                  {!abilitySidePanelCollapsed && (
-                    <div id="ability-side-panel-body" className="ability-panel-body">
-                    {hasCharacterAbility("medic_tonic") && (
-                      <>
-                        <p className="ability-panel-note">
-                          {tonicIngredients} INGREDIENTS · {tonicPotion > 0 ? `${tonicPotion} HP POTION READY` : "NO POTION BREWED"}
-                        </p>
-                        <div className="ability-option-grid">
-                          {([1, 2, 3] as const).map((strength) => (
-                            <button key={strength} className="ability-option" disabled={tonicPotion > 0 || tonicIngredients < strength * 5} onClick={() => brewTonic(strength)}>
-                              <span>{strength}</span><span><b>+{strength} HP</b><small>{strength * 5} INGREDIENTS</small></span>
-                            </button>
-                          ))}
-                        </div>
-                      </>
-                    )}
-                    {activeCharacter === "runner_velocity" && (
-                      <div className={`ability-meter velocity-meter ${velocityDisplayPercent >= 100 ? "max" : velocityDisplayPercent >= 50 ? "charged" : velocityDisplayPercent > 0 ? "charging" : ""}`}><div className="ability-meter-label"><b>VELOCITY</b><span>{velocityDisplayPercent}%</span></div><span className="ability-meter-track"><i className="ability-meter-fill" style={{ width: `${velocityDisplayPercent}%` }} /></span></div>
-                    )}
-                    {hasCharacterAbility("medic_halo") && (
-                      <div className="ability-meter"><div className="ability-meter-label"><b>HALO REVIVE</b><span>{haloPartsRef.current}/3</span></div><div className="ability-pips">{[1, 2, 3].map((part) => <i key={part} className={haloPartsRef.current >= part ? "filled" : ""} />)}</div></div>
-                    )}
-                    {hasCharacterAbility("runner_relay") && <p className="ability-panel-note">OVERCHARGED HEARTS · {relayChargesRef.current}</p>}
-                    {hasCharacterAbility("medic_seraph") && <p className="ability-panel-note">TELEPORT CHANCE · {seraphTeleportChanceRef.current}%</p>}
-                    {activeCharacter === "misc_broker" && (
-                      <div className="broker-funds" data-ability-version={abilityStateVersion}>
-                        <p className="ability-panel-note">BROKER FUNDS · MOVE 1–50% AT EACH WAVE END</p>
-                        <div className="ability-preview-grid">
-                          <div className="ability-preview-card"><small>GEM FUND</small><b>{brokerFundsRef.current.gems.toFixed(2)}</b></div>
-                          <div className="ability-preview-card"><small>COIN FUND</small><b>{brokerFundsRef.current.coins.toFixed(2)}</b></div>
-                          <div className="ability-preview-card"><small>MELON SCORE FUND</small><b>{Math.floor(brokerFundsRef.current.melons).toLocaleString()}</b></div>
-                        </div>
-                      </div>
-                    )}
-                    {activeCharacter === "misc_prospector" && (
-                      <p className="ability-panel-note">
-                        {prospectorWarnings.length > 0
-                          ? `GEM SURVEY · ${prospectorWarnings.map((warning) => `LANE ${warning.lane + 1} IN ${Math.max(0, (warning.spawnAt - Date.now()) / 1000).toFixed(1)}s`).join(" · ")}`
-                          : "GEM SURVEY · SCANNING FOR THE NEXT GEM"}
-                      </p>
-                    )}
-                    {activeCharacter === "misc_scribe" && (
-                      <p className="ability-panel-note">SCRIBE CAP · {scribeHazard ? `${scribeHazard.toUpperCase()} MAX ${getScribeHazardCap(wave)}` : "CHOOSE AFTER THIS WAVE"}</p>
-                    )}
-                    {activeCharacter === "misc_mimic" && (
-                      <p className="ability-panel-note">COPIED PASSIVES · {mimicSelectedAbilities.length > 0 ? mimicSelectedAbilities.map((key) => CHARACTER_ABILITIES[key].name).join(" + ") : "CHOOSE TWO AT RUN START"}</p>
-                    )}
-                    {activeCharacter === "misc_muse" && (
-                      <p className="ability-panel-note">MUSE · {museReward ? `${museReward.tier.toUpperCase()} · SCORE +${Math.round(museReward.scoreBonus * 100)}% · HAZARDS -${Math.round(museReward.hazardSlow * 100)}% · DAMAGE -${Math.round(museReward.damageReduction * 100)}%` : "RHYTHM BREAK READY"}</p>
-                    )}
-                    {activeCharacter === "trickster_wildcard" && (
-                      <div data-ability-version={abilityStateVersion}>
-                        <p className="ability-panel-note">LUCKY DRAW · {wildcardEffect?.label ?? "DRAWING AT WAVE START"}</p>
-                        <div className="ability-preview-grid">
-                          <div className="ability-preview-card"><span>{wildcardCard?.suit === "hearts" ? "♥" : wildcardCard?.suit === "diamonds" ? "♦" : wildcardCard?.suit === "clubs" ? "♣" : wildcardCard?.suit === "spades" ? "♠" : "★"}</span><b>{wildcardCard?.rank ?? "?"}</b><small>CURRENT CARD</small></div>
-                          <div className="ability-preview-card"><b>{wildcardStateRef.current ? Math.max(0, 54 - (wildcardStateRef.current.nextIndex % 54)) : 54}</b><small>CARDS UNTIL SHUFFLE</small></div>
-                          <div className="ability-preview-card"><b>{wildcardIgnoredHitsRef.current}</b><small>IGNORED HITS LEFT</small></div>
-                        </div>
-                      </div>
-                    )}
-                    {activeCharacter === "trickster_gambit" && (
-                      <div data-ability-version={abilityStateVersion}>
-                        <p className="ability-panel-note">COUNTING CARDS · {gambitState.hand.length}/10 HELD</p>
-                        <p className="ability-panel-note">{gambitRunReward?.label ?? "FIVE CARDS ARE DRAWN AT EACH WAVE START"}</p>
-                        <div
-                          className="gambit-mini-hand"
-                          aria-label={`Gambit hand: ${gambitState.hand.map((card) => `${card.rank} of ${card.suit}`).join(", ") || "empty"}`}
-                        >
-                          {gambitState.hand.map((card: StandardCard) => (
-                            <span
-                              key={card.id}
-                              className={`gambit-mini-card ${card.suit}`}
-                            >
-                              <b>{card.rank}</b>
-                              <i aria-hidden="true">
-                                {card.suit === "hearts"
-                                  ? "♥"
-                                  : card.suit === "diamonds"
-                                    ? "♦"
-                                    : card.suit === "clubs"
-                                      ? "♣"
-                                      : "♠"}
-                              </i>
-                            </span>
-                          ))}
-                        </div>
-                        <p className="gambit-mini-hand-label">
-                          BEST HAND · {(evaluateGambitHand(gambitState.hand) ?? "none")
-                            .replaceAll("-", " ")
-                            .toUpperCase()}
-                        </p>
-                        <div className="ability-preview-grid">
-                          <div className="ability-preview-card">
-                            <small>SCORE</small>
-                            <b>×{activeGambitEffects.scoreMultiplier.toFixed(2)}</b>
-                          </div>
-                          <div className="ability-preview-card">
-                            <small>DAMAGE TAKEN</small>
-                            <b>{activeGambitEffects.invincible ? "INVINCIBLE" : `×${activeGambitEffects.damageMultiplier.toFixed(2)}`}</b>
-                          </div>
-                          <div className="ability-preview-card">
-                            <small>1V1 SENDS</small>
-                            <b>×{activeGambitEffects.sentObstacleMultiplier.toFixed(0)}</b>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    {activeCharacter === "trickster_echo" && (
-                      <div data-ability-version={abilityStateVersion}>
-                        <p className="ability-panel-note">
-                          THE MIRROR · {echoQuestState.currentQuest ? ECHO_QUESTS[echoQuestState.currentQuest].label : "ALL QUESTS COMPLETE"} · {echoQuestState.mirrorShards} SHARD{echoQuestState.mirrorShards === 1 ? "" : "S"}
-                        </p>
-                        {echoQuestState.currentQuest && (
-                          <div className="ability-preview-grid">
-                            <div className="ability-preview-card">
-                              <small>QUEST</small>
-                              <b>{ECHO_QUESTS[echoQuestState.currentQuest].requirementLabel}</b>
-                            </div>
-                            <div className="ability-preview-card">
-                              <small>LIVE PROGRESS</small>
-                              <b>
-                                {echoQuestState.currentQuest === "dreamer-i"
-                                  ? `${Math.min(5, echoProgress.highestWaveReached)}/5 WAVES`
-                                  : echoQuestState.currentQuest === "uplift"
-                                    ? `${Math.min(5, echoProgress.totalHeartsHealed).toFixed(1)}/5 HP HEALED`
-                                    : echoQuestState.currentQuest === "hope"
-                                      ? `${Math.min(10, echoProgress.totalDamageTaken).toFixed(1)}/10 DAMAGE`
-                                      : echoQuestState.currentQuest === "understanding"
-                                        ? echoProgress.allTrickstersUnlocked
-                                          ? `${Math.min(5, echoProgress.wavesCompletedAfterUnlockingAllTricksters)}/5 WAVES`
-                                          : "UNLOCK ALL TRICKSTERS"
-                                        : echoQuestState.currentQuest === "the-knowing"
-                                          ? echoProgress.allCharactersUnlocked
-                                            ? "COMPLETE"
-                                            : "UNLOCK ALL CHARACTERS"
-                                          : "READY · ADVANCES NEXT WAVE"
-                                }
-                              </b>
-                            </div>
-                          </div>
+                      <summary>
+                        <span>
+                          <small>ARENA GUIDE</small>
+                          <b>{activeMapGuide.name.toUpperCase()}</b>
+                        </span>
+                        <strong>{activeLaneCount} LANES</strong>
+                        {activeMapId === "grove" && (
+                          <em>
+                            🍄 {versusSelfMushrooms} — {versusOpponentMushrooms}{" "}
+                            🍄
+                          </em>
                         )}
-                        <p className="ability-panel-note">BORROWED PASSIVES · {echoSelectedAbilities.length > 0 ? echoSelectedAbilities.map((key) => CHARACTER_ABILITIES[key].name).join(" + ") : "NONE YET"}</p>
-                        {echoQuestState.currentQuest === null && (
-                          <div className="ability-preview-grid">
-                            <div className="ability-preview-card"><small>THE KNOWING</small><b>{echoKnowingState.awakened ? "AWAKENED" : echoKnowingState.chargingSinceMs !== null ? `${Math.floor(echoChargePercent)}%` : "HOLD E 10s"}</b></div>
-                            <div className="ability-preview-card"><small>MAX HP</small><b>{echoKnowingState.awakened && !isOnlineVersus ? "8" : "—"}</b></div>
-                            <div className="ability-preview-card"><small>DAMAGE TAKEN</small><b>{echoKnowingState.awakened && !isOnlineVersus ? "×0.20" : "—"}</b></div>
-                            <div className="ability-preview-card"><small>SCORE</small><b>×{echoKnowingBenefits.scoreMultiplier.toFixed(2)}</b></div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    {activeCharacter === "trickster_hex" && (
-                      <div data-ability-version={abilityStateVersion}>
-                        <p className="ability-panel-note">VOID REALM · {hexState.damnation} DAMNATION · {hexState.soulsRemaining} SOUL{hexState.soulsRemaining === 1 ? "" : "S"}</p>
-                        <div className="ability-preview-grid">
-                          <div className="ability-preview-card"><small>SCORE</small><b>×{getHexDamnationBenefits(hexState.damnation).scoreMultiplier.toFixed(2)}</b></div>
-                          <div className="ability-preview-card"><small>DAMAGE TAKEN</small><b>×{getHexDamnationBenefits(hexState.damnation).damageMultiplier.toFixed(3)}</b></div>
-                          <div className="ability-preview-card"><small>NEXT UNLOCK</small><b>{hexState.damnation < 10 ? "10 · SCORE" : hexState.damnation < 30 ? "30 · CURRENT" : hexState.damnation < 60 ? "60 · SOULS" : hexState.damnation < 100 ? "100 · HADES" : hexState.godMode ? "VOID GOD" : "ENTER VOID FOR HADES"}</b></div>
-                          <div className="ability-preview-card"><small>VOID CUT</small><b>{!getHexDamnationBenefits(hexState.damnation).currentUnlocked ? "LOCKED · 30" : hexVoidCutStateRef.current.cooldownUntilMs > Date.now() ? `${Math.ceil((hexVoidCutStateRef.current.cooldownUntilMs - Date.now()) / 1000)}s COOLDOWN` : `${hexVoidCutStateRef.current.movesSinceCut}/3 MOVES`}</b></div>
-                          <div className="ability-preview-card"><small>VOID CHAKRAM</small><b>{hexChakramCooldownUntilRef.current > Date.now() ? `${Math.ceil((hexChakramCooldownUntilRef.current - Date.now()) / 1000)}s COOLDOWN` : "READY · R"}</b></div>
-                        </div>
-                        <button
-                          type="button"
-                          className="ability-confirm"
-                          disabled={
-                            paused ||
-                            wavePause ||
-                            hexChakramCooldownUntilRef.current > Date.now()
-                          }
-                          onClick={throwHexChakram}
-                        >
-                          {hexChakramCooldownUntilRef.current > Date.now()
-                            ? `VOID CHAKRAM · ${Math.ceil((hexChakramCooldownUntilRef.current - Date.now()) / 1000)}s`
-                            : "THROW VOID CHAKRAM (R)"}
-                        </button>
-                      </div>
-                    )}
-                    {activeCharacter === "runner_comet" && (
-                      <div data-ability-version={abilityStateVersion}>
-                        <p className="ability-panel-note">HEATFEAST · PRESS R TO CONSUME UP TO 100 PER WAVE</p>
-                        <div className="ability-preview-grid">
-                          <div className="ability-preview-card"><small>STORED</small><b>{Math.floor(heatfeastState.stored)}</b></div>
-                          <div className="ability-preview-card"><small>CONSUMED</small><b>{Math.floor(heatfeastState.consumed)}</b></div>
-                          <div className="ability-preview-card"><small>THIS WAVE</small><b>{Math.floor(heatfeastState.trackedWave === wave ? heatfeastState.consumedThisWave : 0)}/100</b></div>
-                        </div>
-                        <p className="ability-panel-note">UNLOCKS · 50 COIN BOOST · 100 ARMOR · 250 TAX · 500 REMOVAL DISCOUNT · 750 SEND DISCOUNT · 1000 SPLIT ATTACKS</p>
-                        <button
-                          type="button"
-                          className="ability-confirm"
-                          disabled={
-                            heatfeastState.stored <= 0 ||
-                            (heatfeastState.trackedWave === wave &&
-                              heatfeastState.consumedThisWave >= 100)
-                          }
-                          onClick={consumeCometHeatfeast}
-                        >
-                          CONSUME HEATFEAST (R)
-                        </button>
-                      </div>
-                    )}
-                    {activeCharacter === "trickster_mirage" && (
-                      <div data-ability-version={abilityStateVersion}>
-                        <p className="ability-panel-note">MIRAGE INVASION · YOUR LANE {lane + 1} · RIVAL LANE {versusOpponentLane + 1}</p>
-                        {mirageInvasion && !mirageInvasion.finished && (
-                          <p className="ability-panel-note">ACTIVE · {Math.max(0, (mirageInvasion.endsAtMs - Date.now()) / 1000).toFixed(1)}s · {mirageInvasion.damageDealt} DAMAGE DEALT</p>
-                        )}
-                        {versusOpponentMirageUntil > Date.now() && (
-                          <p className="ability-panel-note danger">
-                            RIVAL MIRAGE INVADING · {Math.max(0, (versusOpponentMirageUntil - Date.now()) / 1000).toFixed(1)}s
+                      </summary>
+                      <div className="gameplay-guide-body">
+                        <p className="gameplay-guide-intro">
+                          {activeMapGuide.description}
+                        </p>
+                        <section className="gameplay-guide-section">
+                          <b>MAP RULES</b>
+                          <ul>
+                            {activeMapGuide.rules.map((rule) => (
+                              <li key={rule}>{rule}</li>
+                            ))}
+                          </ul>
+                        </section>
+                        <section className="gameplay-guide-section gameplay-runner-ability">
+                          <b>
+                            YOUR RUNNER ·{" "}
+                            {activeCharacterDefinition.name.toUpperCase()}
+                          </b>
+                          <p>
+                            <strong>{activeAbility.name}</strong> ·{" "}
+                            {activeAbility.description}
                           </p>
-                        )}
+                        </section>
+                      </div>
+                    </details>
+                  )}
+                  {isVersusRun &&
+                    versusResult &&
+                    !over &&
+                    (versusPhase !== "intermission" ||
+                      !versusIntermissionReady) && (
+                      <div
+                        className="versus-live-message"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        {versusResult}
                       </div>
                     )}
-                    {waveForecast.length > 0 && (
-                      <section className="horizon-forecast">
-                        <button
-                          type="button"
-                          className="horizon-forecast-toggle"
-                          aria-expanded={!waveForecastCollapsed}
-                          aria-controls="horizon-forecast-results"
-                          onClick={() => setWaveForecastCollapsed((value) => !value)}
-                        >
-                          <span><small>EXACT NEXT 12</small><b>HORIZON FORECAST</b></span>
-                          <strong aria-hidden="true">{waveForecastCollapsed ? "+" : "−"}</strong>
-                        </button>
-                        {!waveForecastCollapsed && (
-                          <div id="horizon-forecast-results" className="ability-preview-grid">
-                            {waveForecast.map((entry, index) => <div className="ability-preview-card" key={`${index}:${entry}`}><small>{entry}</small></div>)}
-                          </div>
-                        )}
-                      </section>
-                    )}
+                  {waveMessage && (
+                    <div className="wave-announcement">
+                      <small>GET READY</small>
+                      <strong>{waveMessage}</strong>
                     </div>
                   )}
-                </aside>
-              )}
-            {running && hasCharacterAbility("tank_atlas") && (
-              <div className={`ability-timer ${atlasTimerRemaining <= 1000 ? "danger" : ""}`}><small>SWITCH LANES BEFORE SKY CRUSH</small><b>{(atlasTimerRemaining / 1000).toFixed(1)}s</b></div>
-            )}
-            {running && hasCharacterAbility("tank_atlas") && atlasTimerRemaining <= 1000 && <div className="ability-danger-vignette" />}
-            {abilityNotice && (
-              <div className="ability-proc" role="status" aria-live="polite">
-                {abilityNotice}
-              </div>
-            )}
-            <div
-              className={`road road-${activeMapId}`}
-              onPointerDown={startMobileLaneGesture}
-              onPointerUp={finishMobileLaneGesture}
-              onPointerCancel={cancelMobileLaneGesture}
-            >
-              {Array.from({ length: activeLaneCount - 1 }, (_, n) => (
-                <i
-                  className="line lane-divider"
-                  style={{ left: `${((n + 1) / activeLaneCount) * 100}%` }}
-                  key={n}
-                />
-              ))}
-              {activeMapId === "factory" && (
-                <div
-                  className={`factory-conveyor ${factoryConveyor.speedMultiplier > 1 ? "fast" : "slow"}`}
-                  style={{
-                    left: `${(factoryConveyor.lane / activeLaneCount) * 100}%`,
-                    width: `${100 / activeLaneCount}%`,
-                  }}
-                  aria-label={`Conveyor lane ${factoryConveyor.lane + 1} at ${factoryConveyor.speedMultiplier} times speed`}
-                >
-                  {(factoryConveyor.lane === 0 || factoryConveyor.lane === 3) && (
-                    <span>CONVEYOR ×{factoryConveyor.speedMultiplier}</span>
-                  )}
-                </div>
-              )}
-              {activeMapId === "meadow" && (
-                <div className="meadow-bonus-lane" style={{left:`${meadowBonusLane/activeLaneCount*100}%`,width:`${100/activeLaneCount}%`}} aria-label={`Bonus lane ${meadowBonusLane+1}: 40% more score and double damage`}><span>+40% SCORE · ×2 DAMAGE</span></div>
-              )}
-              {activeMapId === "factory" &&
-                (factoryConveyor.lane === 1 || factoryConveyor.lane === 2) && (
                   <div
-                    className={`factory-conveyor-top-label ${factoryConveyor.speedMultiplier > 1 ? "fast" : "slow"}`}
-                    style={{
-                      left: `${((factoryConveyor.lane + 0.5) / activeLaneCount) * 100}%`,
-                    }}
+                    className="active-ability-chip"
+                    title={`${activeAbility.description} Running score is the score earned continuously while surviving and moving forward.`}
+                    aria-label={`Passive ability: ${activeAbility.name}. ${activeAbility.description}`}
                   >
-                    CONVEYOR ×{factoryConveyor.speedMultiplier}
+                    <small>PASSIVE</small>
+                    <b>{activeAbility.name}</b>
+                    <span>{activeAbility.description}</span>
+                    <small className="running-score-help">
+                      DISTANCE / RUNNING SCORE = SCORE EARNED CONTINUOUSLY WHILE
+                      YOU SURVIVE
+                    </small>
                   </div>
-                )}
-              <div className="wave-chip">
-                WAVE {wave}
-                <small>
-                  SPEED ×{getWaveSpeedMultiplier(wave).toFixed(2)}
-                </small>
-                {mode !== "normal" && (
-                  <small>SCORE ×{modeMultiplier.toFixed(2)}</small>
-                )}
-              </div>
-              {activeCharacter === "runner_flare" &&
-                flareLaneRef.current !== null &&
-                flareActiveUntilRef.current > Date.now() && (
-                  <div
-                    className="character-flare-zone"
-                    style={{
-                      left: `${(flareLaneRef.current / activeLaneCount) * 100}%`,
-                      width: `${100 / activeLaneCount}%`,
-                    }}
-                    aria-label={`Signal flare burning lane ${flareLaneRef.current + 1}`}
-                  />
-                )}
-              {prospectorWarnings.map((prospectorWarning) => (
-                <div
-                  key={prospectorWarning.itemId}
-                  className="prospector-lane-warning"
-                  style={{
-                    left: `${(prospectorWarning.lane / activeLaneCount) * 100}%`,
-                    width: `${100 / activeLaneCount}%`,
-                  }}
-                  aria-label={`Prospector gem warning in lane ${prospectorWarning.lane + 1}`}
-                >
-                  <b>GEM</b>
-                  <small>{Math.max(0, (prospectorWarning.spawnAt - Date.now()) / 1000).toFixed(1)}s</small>
-                </div>
-              ))}
-              {items.filter((x) => !x.scheduledAt || x.scheduledAt <= Date.now()).map((x) => (
-                <div
-                  key={x.id}
-                  className={`item ${x.kind}${
-                    obstacleCosmetic && isHazardKind(x.kind)
-                      ? ` obstacle-${obstacleCosmetic}`
-                      : ""
-                  }${(x.seededUntilWave ?? 0) >= wave ? " seeded" : ""}${x.deactivated ? " deactivated" : ""}${activeCharacter === "tank_sentinel" && x.kind === sentinelAnalyzedKindRef.current ? " analyzed" : ""}${phantomBloodmoonActive && phantomBloodmoonKindsRef.current.has(x.kind) ? " bloodmoon-friendly" : ""}`}
-                  style={{
-                    left: `${((x.lane + 0.5) / activeLaneCount) * 100}%`,
-                    top: `${x.y}%`,
-                  }}
-                  aria-label={x.kind}
-                  role={
-                    x.kind === "spikes" &&
-                    (activeCharacter === "tank_warden" ||
-                      activeCharacter === "misc_tinker")
-                      ? "button"
-                      : undefined
-                  }
-                  tabIndex={
-                    x.kind === "spikes" &&
-                    (activeCharacter === "tank_warden" ||
-                      activeCharacter === "misc_tinker")
-                      ? 0
-                      : undefined
-                  }
-                  onClick={() => {
-                    if (x.kind === "spikes") interactWithSpike(x.id);
-                  }}
-                  onKeyDown={(event) => {
-                    if (
-                      x.kind === "spikes" &&
-                      (event.key === "Enter" || event.key === " ")
-                    ) {
-                      event.preventDefault();
-                      interactWithSpike(x.id);
-                    }
-                  }}
-                >
-                  <Obstacle kind={x.kind} />
-                </div>
-              ))}
-              {(activeMapId === "terminal" || (mirageInvasion && !mirageInvasion.finished) ||
-                versusOpponentMirageUntil > Date.now()) && (
-                <div
-                  className="mirage-rival-marker"
-                  style={{
-                    left: `${((versusOpponentLane + 0.5) / activeLaneCount) * 100}%`,
-                  }}
-                  aria-label={`Rival is in lane ${versusOpponentLane + 1}`}
-                >
-                  <span>RIVAL</span>
-                  <b>{versusOpponentLane + 1}</b>
-                </div>
-              )}
-              {activeMapId === "terminal" && <div className="runner terminal-rival character-runner_ace" style={{left:`${((versusOpponentLane+.5)/activeLaneCount)*100}%`}} aria-label={`Rival in lane ${versusOpponentLane+1}`}><div className="head"/><div className="body"/><i className="arm a1"/><i className="arm a2"/><i className="leg g1"/><i className="leg g2"/></div>}
-              <div
-                className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}${mirageInvasion && !mirageInvasion.finished ? " mirage-invading" : ""}${beaconActiveRef.current ? " beacon-active" : ""}${reviveFlyingRef.current ? " flight-active" : ""}${haloPartsRef.current >= 3 ? " halo-ready" : ""}${phantomLord ? " phantom-lord-form" : ""}${echoKnowingState.chargingSinceMs !== null ? " echo-charging" : ""}${echoKnowingState.awakened ? " echo-awakened" : ""}${echoKnowingState.realmUntilMs > Date.now() ? " echo-realm" : ""}${activeCharacter === "runner_velocity" && velocityDisplayPercent > 0 ? velocityDisplayPercent >= 100 ? " velocity-max" : velocityDisplayPercent >= 50 ? " velocity-charged" : " velocity-charging" : ""}`}
-                style={{ left: `${((lane + 0.5) / activeLaneCount) * 100}%` }}
-              >
-                {hasCharacterAbility("medic_halo") && haloPartsRef.current > 0 && <i className="runner-halo" data-pieces={haloPartsRef.current} />}
-                {beaconActiveRef.current && <i className="runner-beacon" />}
-                {reviveFlyingRef.current && <i className="flight-wings" />}
-                {activeCharacter === "runner_velocity" && velocityDisplayPercent > 0 && <i className="velocity-trail" aria-hidden="true" />}
-                <div className="head" />
-                <div className="body" />
-                <i className="arm a1" />
-                <i className="arm a2" />
-                <i className="leg g1" />
-                <i className="leg g2" />
-                <em />
-                <span className="character-weapon" aria-hidden="true" />
-              </div>
-              {activeMapId === "pitch" && isVersusRun && (
-                <button
-                  type="button"
-                  className={`pitch-katana${katanaActive ? " active" : ""}${renderedKatanaState.broken ? " broken" : ""}`}
-                  data-version={pitchKatanaVersion}
-                  disabled={
-                    !running ||
-                    paused ||
-                    renderedKatanaState.broken ||
-                    katanaCooldownSeconds > 0
-                  }
-                  onClick={triggerPitchKatana}
-                  title={MAP_GUIDES.pitch.rules.join(" ")}
-                  aria-label="Katana: press Q or click for a 0.4-second guard. It reflects non-rock hazards. Missing costs 0.5 HP; rocks break it for the match."
-                >
-                  <span aria-hidden="true">刀</span>
-                  <b>KATANA · Q</b>
-                  <small>
-                    {renderedKatanaState.broken
-                      ? "BROKEN"
-                      : katanaActive
-                        ? `GUARDING · ${katanaCooldownSeconds.toFixed(1)}s`
-                        : katanaCooldownSeconds > 0
-                          ? `${katanaCooldownSeconds.toFixed(1)}s`
-                          : "0.0s · READY"}
-                  </small>
-                  <em className="pitch-katana-description">
-                    0.4s GUARD · REFLECTS NON-ROCKS · MISS COSTS 0.5 HP
-                  </em>
-                </button>
-              )}
-              {activeMapId === "terminal" && isVersusRun && (
-                <button type="button" className={`pitch-katana terminal-sword${terminalSwordRef.current.durability===0 ? " broken" : ""}`} data-version={terminalSwordVersion} onClick={()=>void triggerTerminalSword()} disabled={!running || paused || terminalSwordRef.current.durability===0 || terminalSwordRef.current.cooldownUntil>Date.now()} title={MAP_GUIDES.terminal.rules.join(" ")}>
-                  <span aria-hidden="true">⚔</span><b>SWORD · Q</b><small>{terminalSwordRef.current.durability===0 ? "BROKEN" : `${terminalSwordRef.current.durability}/4 · ${Math.max(0,(terminalSwordRef.current.cooldownUntil-Date.now())/1000).toFixed(1)}s`}</small><em className="pitch-katana-description">MATCH LANE: RIVAL −1 HP · MISS: YOU −0.5 HP<br/>EDGE WRAP: {terminalWrapWaveRef.current===wave ? "USED" : "READY"}</em>
-                </button>
-              )}
-            </div>
-            {abilityChoice?.kind === "lifeline-lane" && (
-              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose a Rescue Hook lane">
-                <section className="ability-panel healer-panel">
-                  <header><div><small>TIME STOPPED</small><b>RESCUE HOOK</b></div></header>
-                  <div className="ability-panel-body"><p className="ability-panel-note">Choose any lane except your current lane. This zip is immune to collisions.</p><div className="ability-lane-grid" style={{ "--lane-count": activeLaneCount } as CSSProperties}>{getTrackLanes(activeLaneCount).map((targetLane) => <button key={targetLane} className={`ability-option ${targetLane === lane ? "current-lane" : ""}`} disabled={targetLane === lane} onClick={() => chooseLifelineLane(targetLane)}><span>{targetLane + 1}</span><b>LANE {targetLane + 1}</b></button>)}</div></div>
-                </section>
-              </div>
-            )}
-            {abilityChoice?.kind === "pacer-character" && (
-              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Pass the baton">
-                <section className="ability-panel runner-panel"><header><div><small>ONE LAST RELAY</small><b>PASS THE BATON</b></div></header><div className="ability-panel-body"><p className="ability-panel-note">Continue from this wave as any owned non-Runner character.</p><div className="ability-option-grid">{pacerCharacterOptions.map((character) => <button key={character.key} className="ability-option" onClick={() => choosePacerCharacter(character.key as CharacterKey)}><span>↗</span><span><b>{character.name}</b><small>{getCharacterClassKey(character.key).toUpperCase()} · {character.rarity.toUpperCase()} · {CHARACTER_ABILITIES[character.key as CharacterKey].name}</small><em>{CHARACTER_ABILITIES[character.key as CharacterKey].description}</em></span></button>)}</div></div></section>
-              </div>
-            )}
-            {abilityChoice?.kind === "oracle-prophecy" && (
-              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose an Oracle prophecy">
-                <section className="ability-panel mythic-panel"><header><div><small>{oracleCompleted} COMPLETED</small><b>CHOOSE THE NEXT PROPHECY</b></div></header><div className="ability-panel-body"><p className="ability-panel-note">Success gives the reward shown plus a permanent 5% score bonus. Failure costs 1 HP and can be lethal.</p><div className="ability-option-grid">{oracleChoiceSets.map((choice) => <button key={choice.join("-")} className="ability-option reward" onClick={() => chooseOracleProphecy(choice)}><span>✦</span><span><b>{choice.map((value) => value.replace("-", " ").toUpperCase()).join(" + ")}</b><small>{choice.map((value, index) => `${ORACLE_PROPHECY_COPY[value].condition} → ${index === 0 ? ORACLE_PROPHECY_COPY[value].reward : ORACLE_PROPHECY_COPY[value].reducedReward}`).join(" · ")}</small></span></button>)}</div></div></section>
-              </div>
-            )}
-            {abilityChoice?.kind === "oracle-passive" && (
-              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose a Healer passive">
-                <section className="ability-panel mythic-panel"><header><div><small>NEAR-DEATH REWARD</small><b>TAKE A HEALER PASSIVE</b></div></header><div className="ability-panel-body"><div className="ability-option-grid">{abilityChoice.options.map((characterKey) => { const definition = getCharacterDefinition(characterKey); return <button key={characterKey} className="ability-option reward" onClick={() => chooseOraclePassive(characterKey)}><span>+</span><span><b>{definition.name}</b><small>{CHARACTER_ABILITIES[characterKey].name}</small><em>{CHARACTER_ABILITIES[characterKey].description} · KEEP FOR THIS RUN</em></span></button>; })}</div></div></section>
-              </div>
-            )}
-            {abilityChoice?.kind === "mimic-passives" && (
-              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose two passives for Mimic">
-                <section className="ability-panel mythic-panel">
-                  <header><div><small>{abilityChoice.selected.length}/2 SELECTED</small><b>MIMIC · CHOOSE TWO PASSIVES</b></div></header>
-                  <div className="ability-panel-body">
-                    <p className="ability-panel-note">
-                      Choose any two Rare-or-lower passive abilities. They remain
-                      active for this {isVersusRun ? "1v1 match" : "Endless run"}.
-                    </p>
-                    <div className="ability-option-grid">
-                      {abilityChoice.options.map((characterKey) => {
-                        const definition = getCharacterDefinition(characterKey);
-                        const selected = abilityChoice.selected.includes(characterKey);
-                        return (
-                          <button key={characterKey} className={`ability-option reward ${selected ? "selected" : ""}`} onClick={() => toggleMimicPassive(characterKey)}>
-                            <span>{selected ? "✓" : "+"}</span>
-                            <span><b>{definition.name}</b><small>{CHARACTER_ABILITIES[characterKey].name}</small><em>{CHARACTER_ABILITIES[characterKey].description}</em></span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <button className="ability-confirm" disabled={abilityChoice.selected.length !== 2} onClick={confirmMimicPassives}>USE THESE TWO PASSIVES</button>
-                  </div>
-                </section>
-              </div>
-            )}
-            {abilityChoice?.kind === "echo-passives" && (
-              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose two passives for Echo">
-                <section className="ability-panel mythic-panel">
-                  <header>
-                    <div>
-                      <small>{abilityChoice.selected.length}/2 SELECTED · {ECHO_QUESTS[abilityChoice.quest].label}</small>
-                      <b>ECHO · CHOOSE TWO PASSIVES</b>
-                    </div>
-                  </header>
-                  <div className="ability-panel-body">
-                    <p className="ability-panel-note">This Mirror quest is complete. Choose exactly two eligible passives to keep for this run.</p>
-                    <div className="ability-option-grid">
-                      {abilityChoice.options.map((characterKey) => {
-                        const definition = getCharacterDefinition(characterKey);
-                        const selected = abilityChoice.selected.includes(characterKey);
-                        return (
-                          <button key={characterKey} className={`ability-option reward ${selected ? "selected" : ""}`} onClick={() => toggleEchoPassive(characterKey)}>
-                            <span>{selected ? "✓" : "+"}</span>
-                            <span>
-                              <b>{definition.name}</b>
-                              <small>{CHARACTER_ABILITIES[characterKey].name}</small>
-                              <em>{CHARACTER_ABILITIES[characterKey].description}</em>
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <button className="ability-confirm" disabled={abilityChoice.selected.length !== 2} onClick={confirmEchoPassives}>LEARN THESE TWO PASSIVES</button>
-                  </div>
-                </section>
-              </div>
-            )}
-            {abilityChoice?.kind === "scribe-hazard" && (
-              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Choose Scribe's capped hazard">
-                <section className="ability-panel mythic-panel">
-                  <header><div><small>NEXT WAVE · CAP {getScribeHazardCap(abilityChoice.nextWave)}</small><b>SCRIBE · CHOOSE A HAZARD</b></div></header>
-                  <div className="ability-panel-body">
-                    <p className="ability-panel-note">The selected hazard can appear no more than this cap during wave {abilityChoice.nextWave}.</p>
-                    <div className="ability-option-grid">
-                      {abilityChoice.options.map((hazard) => (
-                        <button key={hazard} className="ability-option reward" onClick={() => chooseScribeHazard(hazard)}>
-                          <span>⌁</span><span><b>{hazard.toUpperCase()}</b><small>MAX {getScribeHazardCap(abilityChoice.nextWave)} SPAWN{getScribeHazardCap(abilityChoice.nextWave) === 1 ? "" : "S"}</small></span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </section>
-              </div>
-            )}
-            {abilityChoice?.kind === "comet-remove" && (
-              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Remove natural hazards with Comet">
-                <section className="ability-panel mythic-panel">
-                  <header>
-                    <div>
-                      <small>WAVE {abilityChoice.targetWave} · ATTACK COINS {getDisplayedAttackPoints(versusPoints)}</small>
-                      <b>COMET DEFENSE</b>
-                    </div>
+                  {running && abilityAction && (
                     <button
                       type="button"
-                      className="ability-panel-close"
-                      aria-label="Close Comet defense"
-                      onClick={() => setAbilityChoice(null)}
+                      className={`ability-action-button ${abilityAction.ready ? "ready" : "cooldown"}`}
+                      disabled={
+                        !abilityAction.ready ||
+                        wavePause ||
+                        (paused &&
+                          !(
+                            activeCharacter === "runner_comet" &&
+                            isVersusRun &&
+                            versusPhase === "intermission" &&
+                            versusIntermissionReady
+                          ) &&
+                          !(
+                            activeCharacter === "trickster_echo" &&
+                            echoKnowingState.chargingSinceMs !== null
+                          ))
+                      }
+                      onPointerDown={() => {
+                        if (
+                          activeCharacter === "trickster_echo" &&
+                          !echoKnowingState.awakened &&
+                          echoQuestState.currentQuest === null
+                        )
+                          triggerCharacterAction();
+                      }}
+                      onPointerUp={cancelEchoKnowingHold}
+                      onPointerCancel={cancelEchoKnowingHold}
+                      onPointerLeave={cancelEchoKnowingHold}
+                      onClick={
+                        activeCharacter === "trickster_echo" &&
+                        !echoKnowingState.awakened &&
+                        echoQuestState.currentQuest === null
+                          ? undefined
+                          : triggerCharacterAction
+                      }
+                      data-ability-version={abilityStateVersion}
                     >
-                      ×
+                      <kbd className="ability-action-key">E</kbd>
+                      <span className="ability-action-copy">
+                        <small>ACTIVE ABILITY</small>
+                        <b>{abilityAction.label}</b>
+                        <em>{abilityAction.status}</em>
+                      </span>
                     </button>
-                  </header>
-                  <div className="ability-panel-body">
-                    <p className="ability-panel-note">Remove natural hazards before they enter the next wave. Rival-sent hazards cannot be removed.</p>
-                    <div className="ability-option-grid">
-                      {abilityChoice.options.map((hazard) => {
-                        const cost = getCometNaturalRemovalPrice(
-                          hazard as "barrel" | "log" | "snowflake" | "car" | "spikes" | "rock",
-                          heatfeastState.consumed,
-                        );
-                        const queued =
-                          cometRemovalQueueRef.current.wave === abilityChoice.targetWave
-                            ? cometRemovalQueueRef.current.counts[hazard] ?? 0
-                            : 0;
-                        return (
+                  )}
+                  {running &&
+                    (hasCharacterAbility("medic_tonic") ||
+                      waveForecast.length > 0 ||
+                      activeCharacter === "runner_velocity" ||
+                      activeCharacter === "misc_broker" ||
+                      activeCharacter === "misc_prospector" ||
+                      activeCharacter === "misc_scribe" ||
+                      activeCharacter === "misc_mimic" ||
+                      activeCharacter === "misc_muse" ||
+                      activeCharacter === "trickster_wildcard" ||
+                      activeCharacter === "trickster_gambit" ||
+                      activeCharacter === "trickster_echo" ||
+                      activeCharacter === "trickster_hex" ||
+                      activeCharacter === "trickster_mirage" ||
+                      activeCharacter === "runner_comet" ||
+                      hasCharacterAbility("medic_halo") ||
+                      hasCharacterAbility("runner_relay") ||
+                      hasCharacterAbility("medic_seraph")) && (
+                      <aside
+                        className={`ability-side-panel ${abilitySidePanelCollapsed ? "minimized" : ""}`}
+                        data-ability-version={abilityStateVersion}
+                      >
+                        <header>
+                          <div>
+                            <small>LIVE KIT</small>
+                            <b>ABILITY STATUS</b>
+                          </div>
                           <button
                             type="button"
-                            key={hazard}
-                            className="ability-option reward"
-                            disabled={versusPoints < cost}
-                            onClick={() => void removeCometNaturalHazard(hazard)}
+                            className="ability-panel-close"
+                            aria-expanded={!abilitySidePanelCollapsed}
+                            aria-controls="ability-side-panel-body"
+                            aria-label={
+                              abilitySidePanelCollapsed
+                                ? "Expand ability status"
+                                : "Minimize ability status"
+                            }
+                            onClick={() =>
+                              setAbilitySidePanelCollapsed((value) => !value)
+                            }
                           >
-                            <span>−</span>
-                            <span>
-                              <b>{hazard.toUpperCase()}</b>
-                              <small>{cost} COINS · {queued} QUEUED</small>
-                            </span>
+                            {abilitySidePanelCollapsed ? "+" : "−"}
                           </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </section>
-              </div>
-            )}
-            {gambitPanelOpen && activeCharacter === "trickster_gambit" && (
-              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Gambit card hand">
-                <section className="ability-panel gambit-panel">
-                  <header>
-                    <div><small>{gambitState.hand.length}/10 CARDS</small><b>COUNTING CARDS</b></div>
-                    <button type="button" className="ability-panel-close" onClick={closeGambitPanel} aria-label="Close card hand">×</button>
-                  </header>
-                  <div className="ability-panel-body">
-                    <p className="ability-panel-note">{gambitPendingDrawWaveRef.current > 0 ? `Select at least ${Math.max(1, gambitDiscardRequiredRef.current)} cards to discard so the next five can be drawn.` : `BEST HAND · ${(evaluateGambitHand(gambitState.hand) ?? "none").replaceAll("-", " ").toUpperCase()}`}</p>
-                    <div className="gambit-card-grid">
-                      {gambitState.hand.map((card: StandardCard) => {
-                        const selected = gambitSelectedCards.includes(card.id);
-                        const symbol = card.suit === "hearts" ? "♥" : card.suit === "diamonds" ? "♦" : card.suit === "clubs" ? "♣" : "♠";
-                        return <button type="button" key={card.id} className={`gambit-card ${selected ? "selected" : ""} ${card.suit}`} onClick={() => toggleGambitCard(card.id)}><b>{card.rank}</b><span>{symbol}</span><small>{selected ? "DISCARD" : "KEEP"}</small></button>;
-                      })}
-                    </div>
-                    {gambitRunReward && <p className="ability-panel-note">ACTIVE REWARD · {gambitRunReward.label}</p>}
-                    <button className="ability-confirm" disabled={gambitSelectedCards.length === 0 || (gambitPendingDrawWaveRef.current > 0 && gambitSelectedCards.length < Math.max(1, gambitDiscardRequiredRef.current))} onClick={() => void confirmGambitDiscard()}>DISCARD {gambitSelectedCards.length || "SELECTED"}</button>
-                  </div>
-                </section>
-              </div>
-            )}
-            {hexVoid && activeCharacter === "trickster_hex" && (
-              <div className="ability-overlay hex-void-overlay" role="dialog" aria-modal="true" aria-label="Hex Void Realm">
-                <section className="ability-panel mythic-panel hex-void-panel">
-                  <header>
-                    <div>
-                      <small>{(hexVoid.remaining / 1000).toFixed(1)} SECONDS · WAVE CLOCK PAUSED</small>
-                      <b>{hexVoid.encounter === "hades" ? "HADES · VOID BOSS" : "THE VOID REALM"}</b>
-                    </div>
-                  </header>
-                  <div className="ability-panel-body">
-                    {hexVoid.encounter === "damned" ? (
-                      <>
-                        <p className="ability-panel-note">Collect up to {HEX_DAMNATION_PER_VOID_CAP} Damned before the realm closes. Each one permanently adds 1 Damnation this run.</p>
-                        <button type="button" className="void-target damned-target" disabled={hexVoid.collected >= HEX_DAMNATION_PER_VOID_CAP} onClick={collectVoidTarget}>
-                          <span aria-hidden="true">◆</span>
-                          <b>{hexVoid.collected >= HEX_DAMNATION_PER_VOID_CAP ? "VOID LIMIT REACHED" : "COLLECT DAMNED"}</b>
-                          <small>{hexVoid.collected}/{HEX_DAMNATION_PER_VOID_CAP} COLLECTED · {hexState.damnation} TOTAL DAMNATION</small>
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <p className="ability-panel-note">
-                          Match {HEX_HADES_REQUIRED_DODGES} runes before the realm closes. Hades attacks every {HEX_HADES_DODGE_INTERVAL_MS / 1000} seconds; {HEX_HADES_MAX_MISSES} misses end the fight.
-                        </p>
-                        <div className="void-target hades-target">
-                          <span aria-hidden="true">♆</span>
-                          <b>{hexVoid.hadesDodges >= HEX_HADES_REQUIRED_DODGES ? "HADES EXPOSED" : `DODGE · ${hexVoid.hadesPrompt}`}</b>
-                          <small>{hexVoid.hadesDodges}/{HEX_HADES_REQUIRED_DODGES} DODGES · {hexVoid.hadesMisses}/{HEX_HADES_MAX_MISSES} MISSES</small>
-                        </div>
-                        <div className="ability-key-sequence">
-                          {HEX_HADES_RUNES.map((rune) => (
-                            <button
-                              type="button"
-                              key={rune}
-                              className={`ability-option ${hexVoid.hadesPrompt === rune ? "selected" : ""}`}
-                              disabled={
-                                hexVoid.hadesDodges >= HEX_HADES_REQUIRED_DODGES ||
-                                Date.now() < hexVoid.hadesNextDodgeAt
-                              }
-                              onClick={() => submitHexHadesInput(rune)}
-                            >
-                              <kbd>{rune}</kbd>
-                            </button>
-                          ))}
-                        </div>
-                        <button className="ability-confirm" disabled={hexVoid.hadesDodges < HEX_HADES_REQUIRED_DODGES} onClick={defeatHexHades}>DESTROY THE VOID REALM</button>
-                      </>
+                        </header>
+                        {!abilitySidePanelCollapsed && (
+                          <div
+                            id="ability-side-panel-body"
+                            className="ability-panel-body"
+                          >
+                            {hasCharacterAbility("medic_tonic") && (
+                              <>
+                                <p className="ability-panel-note">
+                                  {tonicIngredients} INGREDIENTS ·{" "}
+                                  {tonicPotion > 0
+                                    ? `${tonicPotion} HP POTION READY`
+                                    : "NO POTION BREWED"}
+                                </p>
+                                <div className="ability-option-grid">
+                                  {([1, 2, 3] as const).map((strength) => (
+                                    <button
+                                      key={strength}
+                                      className="ability-option"
+                                      disabled={
+                                        tonicPotion > 0 ||
+                                        tonicIngredients < strength * 5
+                                      }
+                                      onClick={() => brewTonic(strength)}
+                                    >
+                                      <span>{strength}</span>
+                                      <span>
+                                        <b>+{strength} HP</b>
+                                        <small>
+                                          {strength * 5} INGREDIENTS
+                                        </small>
+                                      </span>
+                                    </button>
+                                  ))}
+                                </div>
+                              </>
+                            )}
+                            {activeCharacter === "runner_velocity" && (
+                              <div
+                                className={`ability-meter velocity-meter ${velocityDisplayPercent >= 100 ? "max" : velocityDisplayPercent >= 50 ? "charged" : velocityDisplayPercent > 0 ? "charging" : ""}`}
+                              >
+                                <div className="ability-meter-label">
+                                  <b>VELOCITY</b>
+                                  <span>{velocityDisplayPercent}%</span>
+                                </div>
+                                <span className="ability-meter-track">
+                                  <i
+                                    className="ability-meter-fill"
+                                    style={{
+                                      width: `${velocityDisplayPercent}%`,
+                                    }}
+                                  />
+                                </span>
+                              </div>
+                            )}
+                            {hasCharacterAbility("medic_halo") && (
+                              <div className="ability-meter">
+                                <div className="ability-meter-label">
+                                  <b>HALO REVIVE</b>
+                                  <span>{haloPartsRef.current}/3</span>
+                                </div>
+                                <div className="ability-pips">
+                                  {[1, 2, 3].map((part) => (
+                                    <i
+                                      key={part}
+                                      className={
+                                        haloPartsRef.current >= part
+                                          ? "filled"
+                                          : ""
+                                      }
+                                    />
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {hasCharacterAbility("runner_relay") && (
+                              <p className="ability-panel-note">
+                                OVERCHARGED HEARTS · {relayChargesRef.current}
+                              </p>
+                            )}
+                            {hasCharacterAbility("medic_seraph") && (
+                              <p className="ability-panel-note">
+                                TELEPORT CHANCE ·{" "}
+                                {seraphTeleportChanceRef.current}%
+                              </p>
+                            )}
+                            {activeCharacter === "misc_broker" && (
+                              <div
+                                className="broker-funds"
+                                data-ability-version={abilityStateVersion}
+                              >
+                                <p className="ability-panel-note">
+                                  BROKER FUNDS · MOVE 1–50% AT EACH WAVE END
+                                </p>
+                                <div className="ability-preview-grid">
+                                  <div className="ability-preview-card">
+                                    <small>GEM FUND</small>
+                                    <b>
+                                      {brokerFundsRef.current.gems.toFixed(2)}
+                                    </b>
+                                  </div>
+                                  <div className="ability-preview-card">
+                                    <small>COIN FUND</small>
+                                    <b>
+                                      {brokerFundsRef.current.coins.toFixed(2)}
+                                    </b>
+                                  </div>
+                                  <div className="ability-preview-card">
+                                    <small>MELON SCORE FUND</small>
+                                    <b>
+                                      {Math.floor(
+                                        brokerFundsRef.current.melons,
+                                      ).toLocaleString()}
+                                    </b>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                            {activeCharacter === "misc_prospector" && (
+                              <p className="ability-panel-note">
+                                {prospectorWarnings.length > 0
+                                  ? `GEM SURVEY · ${prospectorWarnings.map((warning) => `LANE ${warning.lane + 1} IN ${Math.max(0, (warning.spawnAt - Date.now()) / 1000).toFixed(1)}s`).join(" · ")}`
+                                  : "GEM SURVEY · SCANNING FOR THE NEXT GEM"}
+                              </p>
+                            )}
+                            {activeCharacter === "misc_scribe" && (
+                              <p className="ability-panel-note">
+                                SCRIBE CAP ·{" "}
+                                {scribeHazard
+                                  ? `${scribeHazard.toUpperCase()} MAX ${getScribeHazardCap(wave)}`
+                                  : "CHOOSE AFTER THIS WAVE"}
+                              </p>
+                            )}
+                            {activeCharacter === "misc_mimic" && (
+                              <p className="ability-panel-note">
+                                COPIED PASSIVES ·{" "}
+                                {mimicSelectedAbilities.length > 0
+                                  ? mimicSelectedAbilities
+                                      .map(
+                                        (key) => CHARACTER_ABILITIES[key].name,
+                                      )
+                                      .join(" + ")
+                                  : "CHOOSE TWO AT RUN START"}
+                              </p>
+                            )}
+                            {activeCharacter === "misc_muse" && (
+                              <p className="ability-panel-note">
+                                MUSE ·{" "}
+                                {museReward
+                                  ? `${museReward.tier.toUpperCase()} · SCORE +${Math.round(museReward.scoreBonus * 100)}% · HAZARDS -${Math.round(museReward.hazardSlow * 100)}% · DAMAGE -${Math.round(museReward.damageReduction * 100)}%`
+                                  : "RHYTHM BREAK READY"}
+                              </p>
+                            )}
+                            {activeCharacter === "trickster_wildcard" && (
+                              <div data-ability-version={abilityStateVersion}>
+                                <p className="ability-panel-note">
+                                  LUCKY DRAW ·{" "}
+                                  {wildcardEffect?.label ??
+                                    "DRAWING AT WAVE START"}
+                                </p>
+                                <div className="ability-preview-grid">
+                                  <div className="ability-preview-card">
+                                    <span>
+                                      {wildcardCard?.suit === "hearts"
+                                        ? "♥"
+                                        : wildcardCard?.suit === "diamonds"
+                                          ? "♦"
+                                          : wildcardCard?.suit === "clubs"
+                                            ? "♣"
+                                            : wildcardCard?.suit === "spades"
+                                              ? "♠"
+                                              : "★"}
+                                    </span>
+                                    <b>{wildcardCard?.rank ?? "?"}</b>
+                                    <small>CURRENT CARD</small>
+                                  </div>
+                                  <div className="ability-preview-card">
+                                    <b>
+                                      {wildcardStateRef.current
+                                        ? Math.max(
+                                            0,
+                                            54 -
+                                              (wildcardStateRef.current
+                                                .nextIndex %
+                                                54),
+                                          )
+                                        : 54}
+                                    </b>
+                                    <small>CARDS UNTIL SHUFFLE</small>
+                                  </div>
+                                  <div className="ability-preview-card">
+                                    <b>{wildcardIgnoredHitsRef.current}</b>
+                                    <small>IGNORED HITS LEFT</small>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                            {activeCharacter === "trickster_gambit" && (
+                              <div data-ability-version={abilityStateVersion}>
+                                <p className="ability-panel-note">
+                                  COUNTING CARDS · {gambitState.hand.length}/10
+                                  HELD
+                                </p>
+                                <p className="ability-panel-note">
+                                  {gambitRunReward?.label ??
+                                    "FIVE CARDS ARE DRAWN AT EACH WAVE START"}
+                                </p>
+                                <div
+                                  className="gambit-mini-hand"
+                                  aria-label={`Gambit hand: ${gambitState.hand.map((card) => `${card.rank} of ${card.suit}`).join(", ") || "empty"}`}
+                                >
+                                  {gambitState.hand.map(
+                                    (card: StandardCard) => (
+                                      <span
+                                        key={card.id}
+                                        className={`gambit-mini-card ${card.suit}`}
+                                      >
+                                        <b>{card.rank}</b>
+                                        <i aria-hidden="true">
+                                          {card.suit === "hearts"
+                                            ? "♥"
+                                            : card.suit === "diamonds"
+                                              ? "♦"
+                                              : card.suit === "clubs"
+                                                ? "♣"
+                                                : "♠"}
+                                        </i>
+                                      </span>
+                                    ),
+                                  )}
+                                </div>
+                                <p className="gambit-mini-hand-label">
+                                  BEST HAND ·{" "}
+                                  {(
+                                    evaluateGambitHand(gambitState.hand) ??
+                                    "none"
+                                  )
+                                    .replaceAll("-", " ")
+                                    .toUpperCase()}
+                                </p>
+                                <div className="ability-preview-grid">
+                                  <div className="ability-preview-card">
+                                    <small>SCORE</small>
+                                    <b>
+                                      ×
+                                      {activeGambitEffects.scoreMultiplier.toFixed(
+                                        2,
+                                      )}
+                                    </b>
+                                  </div>
+                                  <div className="ability-preview-card">
+                                    <small>DAMAGE TAKEN</small>
+                                    <b>
+                                      {activeGambitEffects.invincible
+                                        ? "INVINCIBLE"
+                                        : `×${activeGambitEffects.damageMultiplier.toFixed(2)}`}
+                                    </b>
+                                  </div>
+                                  <div className="ability-preview-card">
+                                    <small>1V1 SENDS</small>
+                                    <b>
+                                      ×
+                                      {activeGambitEffects.sentObstacleMultiplier.toFixed(
+                                        0,
+                                      )}
+                                    </b>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                            {activeCharacter === "trickster_echo" && (
+                              <div data-ability-version={abilityStateVersion}>
+                                <p className="ability-panel-note">
+                                  THE MIRROR ·{" "}
+                                  {echoQuestState.currentQuest
+                                    ? ECHO_QUESTS[echoQuestState.currentQuest]
+                                        .label
+                                    : "ALL QUESTS COMPLETE"}{" "}
+                                  · {echoQuestState.mirrorShards} SHARD
+                                  {echoQuestState.mirrorShards === 1 ? "" : "S"}
+                                </p>
+                                {echoQuestState.currentQuest && (
+                                  <div className="ability-preview-grid">
+                                    <div className="ability-preview-card">
+                                      <small>QUEST</small>
+                                      <b>
+                                        {
+                                          ECHO_QUESTS[
+                                            echoQuestState.currentQuest
+                                          ].requirementLabel
+                                        }
+                                      </b>
+                                    </div>
+                                    <div className="ability-preview-card">
+                                      <small>LIVE PROGRESS</small>
+                                      <b>
+                                        {echoQuestState.currentQuest ===
+                                        "dreamer-i"
+                                          ? `${Math.min(5, echoProgress.highestWaveReached)}/5 WAVES`
+                                          : echoQuestState.currentQuest ===
+                                              "uplift"
+                                            ? `${Math.min(5, echoProgress.totalHeartsHealed).toFixed(1)}/5 HP HEALED`
+                                            : echoQuestState.currentQuest ===
+                                                "hope"
+                                              ? `${Math.min(10, echoProgress.totalDamageTaken).toFixed(1)}/10 DAMAGE`
+                                              : echoQuestState.currentQuest ===
+                                                  "understanding"
+                                                ? echoProgress.allTrickstersUnlocked
+                                                  ? `${Math.min(5, echoProgress.wavesCompletedAfterUnlockingAllTricksters)}/5 WAVES`
+                                                  : "UNLOCK ALL TRICKSTERS"
+                                                : echoQuestState.currentQuest ===
+                                                    "the-knowing"
+                                                  ? echoProgress.allCharactersUnlocked
+                                                    ? "COMPLETE"
+                                                    : "UNLOCK ALL CHARACTERS"
+                                                  : "READY · ADVANCES NEXT WAVE"}
+                                      </b>
+                                    </div>
+                                  </div>
+                                )}
+                                <p className="ability-panel-note">
+                                  BORROWED PASSIVES ·{" "}
+                                  {echoSelectedAbilities.length > 0
+                                    ? echoSelectedAbilities
+                                        .map(
+                                          (key) =>
+                                            CHARACTER_ABILITIES[key].name,
+                                        )
+                                        .join(" + ")
+                                    : "NONE YET"}
+                                </p>
+                                {echoQuestState.currentQuest === null && (
+                                  <div className="ability-preview-grid">
+                                    <div className="ability-preview-card">
+                                      <small>THE KNOWING</small>
+                                      <b>
+                                        {echoKnowingState.awakened
+                                          ? "AWAKENED"
+                                          : echoKnowingState.chargingSinceMs !==
+                                              null
+                                            ? `${Math.floor(echoChargePercent)}%`
+                                            : "HOLD E 10s"}
+                                      </b>
+                                    </div>
+                                    <div className="ability-preview-card">
+                                      <small>MAX HP</small>
+                                      <b>
+                                        {echoKnowingState.awakened &&
+                                        !isOnlineVersus
+                                          ? "8"
+                                          : "—"}
+                                      </b>
+                                    </div>
+                                    <div className="ability-preview-card">
+                                      <small>DAMAGE TAKEN</small>
+                                      <b>
+                                        {echoKnowingState.awakened &&
+                                        !isOnlineVersus
+                                          ? "×0.20"
+                                          : "—"}
+                                      </b>
+                                    </div>
+                                    <div className="ability-preview-card">
+                                      <small>SCORE</small>
+                                      <b>
+                                        ×
+                                        {echoKnowingBenefits.scoreMultiplier.toFixed(
+                                          2,
+                                        )}
+                                      </b>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            {activeCharacter === "trickster_hex" && (
+                              <div data-ability-version={abilityStateVersion}>
+                                <p className="ability-panel-note">
+                                  VOID REALM · {hexState.damnation} DAMNATION ·{" "}
+                                  {hexState.soulsRemaining} SOUL
+                                  {hexState.soulsRemaining === 1 ? "" : "S"}
+                                </p>
+                                <div className="ability-preview-grid">
+                                  <div className="ability-preview-card">
+                                    <small>SCORE</small>
+                                    <b>
+                                      ×
+                                      {getHexDamnationBenefits(
+                                        hexState.damnation,
+                                      ).scoreMultiplier.toFixed(2)}
+                                    </b>
+                                  </div>
+                                  <div className="ability-preview-card">
+                                    <small>DAMAGE TAKEN</small>
+                                    <b>
+                                      ×
+                                      {getHexDamnationBenefits(
+                                        hexState.damnation,
+                                      ).damageMultiplier.toFixed(3)}
+                                    </b>
+                                  </div>
+                                  <div className="ability-preview-card">
+                                    <small>NEXT UNLOCK</small>
+                                    <b>
+                                      {hexState.damnation < 10
+                                        ? "10 · SCORE"
+                                        : hexState.damnation < 30
+                                          ? "30 · CURRENT"
+                                          : hexState.damnation < 60
+                                            ? "60 · SOULS"
+                                            : hexState.damnation < 100
+                                              ? "100 · HADES"
+                                              : hexState.godMode
+                                                ? "VOID GOD"
+                                                : "ENTER VOID FOR HADES"}
+                                    </b>
+                                  </div>
+                                  <div className="ability-preview-card">
+                                    <small>VOID CUT</small>
+                                    <b>
+                                      {!getHexDamnationBenefits(
+                                        hexState.damnation,
+                                      ).currentUnlocked
+                                        ? "LOCKED · 30"
+                                        : hexVoidCutStateRef.current
+                                              .cooldownUntilMs > Date.now()
+                                          ? `${Math.ceil((hexVoidCutStateRef.current.cooldownUntilMs - Date.now()) / 1000)}s COOLDOWN`
+                                          : `${hexVoidCutStateRef.current.movesSinceCut}/3 MOVES`}
+                                    </b>
+                                  </div>
+                                  <div className="ability-preview-card">
+                                    <small>VOID CHAKRAM</small>
+                                    <b>
+                                      {hexChakramCooldownUntilRef.current >
+                                      Date.now()
+                                        ? `${Math.ceil((hexChakramCooldownUntilRef.current - Date.now()) / 1000)}s COOLDOWN`
+                                        : "READY · R"}
+                                    </b>
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="ability-confirm"
+                                  disabled={
+                                    !hasCharacterAbility("trickster_hex") ||
+                                    paused ||
+                                    wavePause ||
+                                    hexChakramCooldownUntilRef.current >
+                                      Date.now()
+                                  }
+                                  onClick={throwHexChakram}
+                                >
+                                  {hexChakramCooldownUntilRef.current >
+                                  Date.now()
+                                    ? `VOID CHAKRAM · ${Math.ceil((hexChakramCooldownUntilRef.current - Date.now()) / 1000)}s`
+                                    : "THROW VOID CHAKRAM (R)"}
+                                </button>
+                              </div>
+                            )}
+                            {activeCharacter === "runner_comet" && (
+                              <div data-ability-version={abilityStateVersion}>
+                                <p className="ability-panel-note">
+                                  HEATFEAST · PRESS R TO CONSUME UP TO 100 PER
+                                  WAVE
+                                </p>
+                                <div className="ability-preview-grid">
+                                  <div className="ability-preview-card">
+                                    <small>STORED</small>
+                                    <b>{Math.floor(heatfeastState.stored)}</b>
+                                  </div>
+                                  <div className="ability-preview-card">
+                                    <small>CONSUMED</small>
+                                    <b>{Math.floor(heatfeastState.consumed)}</b>
+                                  </div>
+                                  <div className="ability-preview-card">
+                                    <small>THIS WAVE</small>
+                                    <b>
+                                      {Math.floor(
+                                        heatfeastState.trackedWave === wave
+                                          ? heatfeastState.consumedThisWave
+                                          : 0,
+                                      )}
+                                      /100
+                                    </b>
+                                  </div>
+                                </div>
+                                <p className="ability-panel-note">
+                                  UNLOCKS · 50 COIN BOOST · 100 ARMOR · 250 TAX
+                                  · 500 REMOVAL DISCOUNT · 750 SEND DISCOUNT ·
+                                  1000 SPLIT ATTACKS
+                                </p>
+                                <button
+                                  type="button"
+                                  className="ability-confirm"
+                                  disabled={
+                                    heatfeastState.stored <= 0 ||
+                                    (heatfeastState.trackedWave === wave &&
+                                      heatfeastState.consumedThisWave >= 100)
+                                  }
+                                  onClick={consumeCometHeatfeast}
+                                >
+                                  CONSUME HEATFEAST (R)
+                                </button>
+                              </div>
+                            )}
+                            {activeCharacter === "trickster_mirage" && (
+                              <div data-ability-version={abilityStateVersion}>
+                                <p className="ability-panel-note">
+                                  MIRAGE INVASION · YOUR LANE {lane + 1} · RIVAL
+                                  LANE {versusOpponentLane + 1}
+                                </p>
+                                {mirageInvasion && !mirageInvasion.finished && (
+                                  <p className="ability-panel-note">
+                                    ACTIVE ·{" "}
+                                    {Math.max(
+                                      0,
+                                      (mirageInvasion.endsAtMs - Date.now()) /
+                                        1000,
+                                    ).toFixed(1)}
+                                    s · {mirageInvasion.damageDealt} DAMAGE
+                                    DEALT
+                                  </p>
+                                )}
+                                {versusOpponentMirageUntil > Date.now() && (
+                                  <p className="ability-panel-note danger">
+                                    RIVAL MIRAGE INVADING ·{" "}
+                                    {Math.max(
+                                      0,
+                                      (versusOpponentMirageUntil - Date.now()) /
+                                        1000,
+                                    ).toFixed(1)}
+                                    s
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                            {waveForecast.length > 0 && (
+                              <section className="horizon-forecast">
+                                <button
+                                  type="button"
+                                  className="horizon-forecast-toggle"
+                                  aria-expanded={!waveForecastCollapsed}
+                                  aria-controls="horizon-forecast-results"
+                                  onClick={() =>
+                                    setWaveForecastCollapsed((value) => !value)
+                                  }
+                                >
+                                  <span>
+                                    <small>EXACT NEXT 12</small>
+                                    <b>HORIZON FORECAST</b>
+                                  </span>
+                                  <strong aria-hidden="true">
+                                    {waveForecastCollapsed ? "+" : "−"}
+                                  </strong>
+                                </button>
+                                {!waveForecastCollapsed && (
+                                  <div
+                                    id="horizon-forecast-results"
+                                    className="ability-preview-grid"
+                                  >
+                                    {waveForecast.map((entry, index) => (
+                                      <div
+                                        className="ability-preview-card"
+                                        key={`${index}:${entry}`}
+                                      >
+                                        <small>{entry}</small>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </section>
+                            )}
+                          </div>
+                        )}
+                      </aside>
                     )}
-                  </div>
-                </section>
-              </div>
-            )}
-            {pulseGame && (
-              <div className="ability-overlay" role="dialog" aria-modal="true" aria-label="Last Pulse timed key challenge">
-                <section className="ability-panel healer-panel"><header><div><small>{(pulseGame.remaining / 1000).toFixed(1)} SECONDS LEFT</small><b>LAST PULSE · {pulseGame.hits} HITS</b></div></header><div className="ability-panel-body"><p className="ability-panel-note">Press or tap the highlighted key. 10 = 1 HP · 20 = 2 HP · 30 = FULL HP.</p><div className="ability-key-sequence">{(["A", "S", "D", "F"] as const).map((key) => <button key={key} className={`ability-option ${pulseGame.prompt === key ? "selected" : ""}`} onClick={() => { if (pulseGame.prompt !== key) return; setPulseGame((current) => current ? { ...current, hits: current.hits + 1, prompt: (["A", "S", "D", "F"] as const).filter((nextKey) => nextKey !== key)[Math.floor(Math.random() * 3)] } : current); }}><kbd>{key}</kbd></button>)}</div></div></section>
-              </div>
-            )}
-            {museGame && (
-              <div className="ability-overlay muse-rhythm-overlay" role="dialog" aria-modal="true" aria-label="Muse rhythm challenge">
-                <section className="ability-panel muse-rhythm-panel">
-                  <div className="muse-equalizer" aria-hidden="true">
-                    {Array.from({ length: 12 }, (_, index) => <i key={index} />)}
-                  </div>
-                  <header><div><small>{(museGame.remaining / 1000).toFixed(1)} SECONDS LEFT</small><b>RHYTHM BREAK · {museGame.hits}/{MUSE_RHYTHM_MAX_HITS} HITS</b></div></header>
-                  <div className="ability-panel-body">
-                    <p className="ability-panel-note">Press or tap the glowing note. Reach at most {MUSE_RHYTHM_MAX_HITS} hits before the {MUSE_RHYTHM_DURATION_MS / 1000}-second Muse set ends. Accuracy unlocks permanent run buffs.</p>
-                    <div className="ability-key-sequence">
-                      {(["A", "S", "D", "F"] as const).map((key) => (
-                        <button key={key} disabled={museGame.hits >= MUSE_RHYTHM_MAX_HITS} className={`ability-option ${museGame.prompt === key ? "selected" : ""}`} onClick={() => submitMuseInput(key)}>
-                          <kbd>{key}</kbd>
-                        </button>
-                      ))}
-                    </div>
-                    <p className="ability-panel-note">ACCURACY · {museGame.attempts > 0 ? Math.round((museGame.hits / museGame.attempts) * 100) : 0}%</p>
-                  </div>
-                </section>
-              </div>
-            )}
-            {!running && (
-              <div className="overlay">
-                <p>
-                  {waitingForVersusResult
-                    ? "YOUR RUN IS COMPLETE"
-                    : over
-                      ? "RUN OVER"
-                      : "FIVE LANES. NO BRAKES."}
-                </p>
-                <h1>
-                  {waitingForVersusResult
-                    ? "RIVAL STILL RUNNING"
-                    : over && isVersusRun && versusResult
-                    ? versusResult
-                    : over
-                      ? `${score.toLocaleString()} POINTS`
-                      : "DODGE. DASH. SURVIVE."}
-                </h1>
-                {isOnlineVersus &&
-                  (waitingForVersusResult || versusPhase === "finished") && (
-                  <div className="versus-final-scoreboard" role="status">
-                    <span>
-                      <small>YOUR FINAL SCORE</small>
-                      <b>{score.toLocaleString()}</b>
-                    </span>
-                    <strong>VS</strong>
-                    <span>
-                      <small>{versusOpponent}</small>
-                      <b>{versusOpponentScore.toLocaleString()}</b>
-                    </span>
-                    <em>
-                      {waitingForVersusResult
-                        ? `The second runner to finish receives +${ONE_V_ONE_SCORING_RULES.secondDeathBonus}, then the final scores decide the match.`
-                        : `Final scores include the +${ONE_V_ONE_SCORING_RULES.secondDeathBonus} second-finish bonus. Equal scores finish as a draw.`}
-                    </em>
-                  </div>
-                )}
-                {!over && (
-                  <div className="mode-select">
-                    <button
-                      className={mode === "normal" ? "selected" : ""}
-                      onClick={() => setEndlessMode("normal")}
-                    >
-                      <b>NORMAL</b>
-                      <small>
-                        Selected class HP, healing, damage, and score rules
-                        apply
-                      </small>
-                    </button>
-                    <button
-                      className={mode === "hardcore" ? "selected" : ""}
-                      onClick={() => setEndlessMode("hardcore")}
-                    >
-                      <b>HARDCORE</b>
-                      <small>
-                        1 HP · no healing · no Healer/Tank · 1.75× score
-                        before character bonuses
-                      </small>
-                    </button>
-                    <button
-                      className={mode === "impossible" ? "selected" : ""}
-                      onClick={() => setEndlessMode("impossible")}
-                    >
-                      <b>IMPOSSIBLE</b>
-                      <small>
-                        1 HP · no healing · Ace forced · {GAME_MODE_RULES.impossible.scoreMultiplier.toFixed(2)}× total score
-                      </small>
-                    </button>
-                  </div>
-                )}
-                {over && !guest && lastRunXpBreakdown && (
-                  <div
-                    className="run-xp-summary"
-                    aria-label={`${lastRunXpBreakdown.total.toLocaleString()} XP earned this run`}
-                  >
-                    <strong>
-                      +{lastRunXpBreakdown.total.toLocaleString()} XP
-                    </strong>
-                  </div>
-                )}
-                {!waitingForVersusResult && (
-                  <button
-                    onClick={isVersusRun ? backToMenu : () => reset()}
-                  >
-                    {isVersusRun
-                      ? "RETURN TO 1V1 HUB"
-                      : over
-                        ? "RUN AGAIN"
-                        : "START RUN"}{" "}
-                    <span>→</span>
-                  </button>
-                )}
-                {over && !isVersusRun && (
-                  <button className="back-menu" onClick={backToMenu}>
-                    BACK TO MENU
-                  </button>
-                )}
-                {!waitingForVersusResult && (
-                  <small>← → / A D / SWIPE OR TAP A LANE</small>
-                )}
-              </div>
-            )}
-            {versusPhase === "intermission" &&
-              versusIntermissionReady && (
-                <div
-                  className="overlay versus-intermission"
-                  aria-busy={versusCountdown <= 0}
-                >
-                  <p>NEXT WAVE IN</p>
-                  <h1>{versusCountdown}</h1>
-                  <strong>
-                    ATTACK COINS: ◉ {getDisplayedAttackPoints(versusPoints)}
-                  </strong>
-                  <span
-                    className="versus-shop-state"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    {versusCountdown <= 0
-                      ? "STARTING NEXT WAVE…"
-                      : "ARMORY OPEN"}
-                  </span>
-                  <div className="attack-grid">
-                    {VERSUS_ATTACKS.filter((attack) =>
-                      getAvailableAttacks(activeMapId).includes(attack.kind),
-                    ).map((attack) => {
-                      const offer =
-                        activeCharacter === "runner_comet"
-                          ? getCometSendPurchase(
-                              attack.cost,
-                              1,
-                              heatfeastState.consumed,
-                            )
-                          : { price: attack.cost, amount: 1 };
-                      return (
-                        <button
-                          key={attack.kind}
-                          disabled={
-                            !versusIntermissionReady ||
-                            versusCountdown <= 0 ||
-                            versusAttackBusy ||
-                            versusPoints < offer.price
-                          }
-                          onClick={() => void sendVersusAttack(attack.kind)}
-                          aria-label={`Send ${offer.amount} ${attack.label} for ${offer.price} attack coins`}
-                        >
-                          <span aria-hidden="true">{attack.icon}</span>
-                          {attack.label} ×{offer.amount}{" "}
-                          <small>
-                            {offer.price} COINS · {attack.description}
-                          </small>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <small>
-                    Each track coin adds {getAttackPointsForCoin(activeMapId)} attack
-                    points. {activeMapRules.waveAttackReward.kind === "fixed"
-                      ? `Completing the wave adds ${activeMapRules.waveAttackReward.points}.`
-                      : "The mushroom winner gets 14; a tie gives both players 7."}{" "}
-                    Purchased hazards trickle into {versusOpponent}&apos;s next
-                    wave between natural obstacles, with a clear escape route.
-                  </small>
-                  {versusResult && (
+                  {running && hasCharacterAbility("tank_atlas") && (
                     <div
-                      className="versus-message"
+                      className={`ability-timer ${atlasTimerRemaining <= 1000 ? "danger" : ""}`}
+                    >
+                      <small>SWITCH LANES BEFORE SKY CRUSH</small>
+                      <b>{(atlasTimerRemaining / 1000).toFixed(1)}s</b>
+                    </div>
+                  )}
+                  {running &&
+                    hasCharacterAbility("tank_atlas") &&
+                    atlasTimerRemaining <= 1000 && (
+                      <div className="ability-danger-vignette" />
+                    )}
+                  {abilityNotice && (
+                    <div
+                      className="ability-proc"
                       role="status"
                       aria-live="polite"
                     >
-                      {versusResult}
+                      {abilityNotice}
+                    </div>
+                  )}
+                  <div
+                    className={`road road-${activeMapId}`}
+                    onPointerDown={startMobileLaneGesture}
+                    onPointerUp={finishMobileLaneGesture}
+                    onPointerCancel={cancelMobileLaneGesture}
+                  >
+                    {Array.from({ length: activeLaneCount - 1 }, (_, n) => (
+                      <i
+                        className="line lane-divider"
+                        style={{
+                          left: `${((n + 1) / activeLaneCount) * 100}%`,
+                        }}
+                        key={n}
+                      />
+                    ))}
+                    {activeMapId === "factory" && (
+                      <div
+                        className={`factory-conveyor ${factoryConveyor.speedMultiplier > 1 ? "fast" : "slow"}`}
+                        style={{
+                          left: `${(factoryConveyor.lane / activeLaneCount) * 100}%`,
+                          width: `${100 / activeLaneCount}%`,
+                        }}
+                        aria-label={`Conveyor lane ${factoryConveyor.lane + 1} at ${factoryConveyor.speedMultiplier} times speed`}
+                      >
+                        {(factoryConveyor.lane === 0 ||
+                          factoryConveyor.lane === 3) && (
+                          <span>
+                            CONVEYOR ×{factoryConveyor.speedMultiplier}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {activeMapId === "meadow" && (
+                      <div
+                        className="meadow-bonus-lane"
+                        style={{
+                          left: `${(meadowBonusLane / activeLaneCount) * 100}%`,
+                          width: `${100 / activeLaneCount}%`,
+                        }}
+                        aria-label={`Bonus lane ${meadowBonusLane + 1}: 40% more score and double damage`}
+                      >
+                        <span>+40% SCORE · ×2 DAMAGE</span>
+                      </div>
+                    )}
+                    {activeMapId === "factory" &&
+                      (factoryConveyor.lane === 1 ||
+                        factoryConveyor.lane === 2) && (
+                        <div
+                          className={`factory-conveyor-top-label ${factoryConveyor.speedMultiplier > 1 ? "fast" : "slow"}`}
+                          style={{
+                            left: `${((factoryConveyor.lane + 0.5) / activeLaneCount) * 100}%`,
+                          }}
+                        >
+                          CONVEYOR ×{factoryConveyor.speedMultiplier}
+                        </div>
+                      )}
+                    <div className="wave-chip">
+                      WAVE {wave}
+                      <small>
+                        SPEED ×{getWaveSpeedMultiplier(wave).toFixed(2)}
+                      </small>
+                      {mode !== "normal" && (
+                        <small>SCORE ×{modeMultiplier.toFixed(2)}</small>
+                      )}
+                    </div>
+                    {activeCharacter === "runner_flare" &&
+                      flareLaneRef.current !== null &&
+                      flareActiveUntilRef.current > Date.now() && (
+                        <div
+                          className="character-flare-zone"
+                          style={{
+                            left: `${(flareLaneRef.current / activeLaneCount) * 100}%`,
+                            width: `${100 / activeLaneCount}%`,
+                          }}
+                          aria-label={`Signal flare burning lane ${flareLaneRef.current + 1}`}
+                        />
+                      )}
+                    {prospectorWarnings.map((prospectorWarning) => (
+                      <div
+                        key={prospectorWarning.itemId}
+                        className="prospector-lane-warning"
+                        style={{
+                          left: `${(prospectorWarning.lane / activeLaneCount) * 100}%`,
+                          width: `${100 / activeLaneCount}%`,
+                        }}
+                        aria-label={`Prospector gem warning in lane ${prospectorWarning.lane + 1}`}
+                      >
+                        <b>GEM</b>
+                        <small>
+                          {Math.max(
+                            0,
+                            (prospectorWarning.spawnAt - Date.now()) / 1000,
+                          ).toFixed(1)}
+                          s
+                        </small>
+                      </div>
+                    ))}
+                    {items
+                      .filter(
+                        (x) => !x.scheduledAt || x.scheduledAt <= Date.now(),
+                      )
+                      .map((x) => (
+                        <div
+                          key={x.id}
+                          className={`item ${x.kind}${
+                            obstacleCosmetic && isHazardKind(x.kind)
+                              ? ` obstacle-${obstacleCosmetic}`
+                              : ""
+                          }${(x.seededUntilWave ?? 0) >= wave ? " seeded" : ""}${x.deactivated ? " deactivated" : ""}${activeCharacter === "tank_sentinel" && x.kind === sentinelAnalyzedKindRef.current ? " analyzed" : ""}${phantomBloodmoonActive && phantomBloodmoonKindsRef.current.has(x.kind) ? " bloodmoon-friendly" : ""}`}
+                          style={{
+                            left: `${((x.lane + 0.5) / activeLaneCount) * 100}%`,
+                            top: `${x.y}%`,
+                          }}
+                          aria-label={x.kind}
+                          role={
+                            x.kind === "spikes" &&
+                            (activeCharacter === "tank_warden" ||
+                              activeCharacter === "misc_tinker")
+                              ? "button"
+                              : undefined
+                          }
+                          tabIndex={
+                            x.kind === "spikes" &&
+                            (activeCharacter === "tank_warden" ||
+                              activeCharacter === "misc_tinker")
+                              ? 0
+                              : undefined
+                          }
+                          onClick={() => {
+                            if (x.kind === "spikes") interactWithSpike(x.id);
+                          }}
+                          onKeyDown={(event) => {
+                            if (
+                              x.kind === "spikes" &&
+                              (event.key === "Enter" || event.key === " ")
+                            ) {
+                              event.preventDefault();
+                              interactWithSpike(x.id);
+                            }
+                          }}
+                        >
+                          <Obstacle kind={x.kind} />
+                        </div>
+                      ))}
+                    {(activeMapId === "terminal" ||
+                      (mirageInvasion && !mirageInvasion.finished) ||
+                      versusOpponentMirageUntil > Date.now()) && (
+                      <div
+                        className="mirage-rival-marker"
+                        style={{
+                          left: `${((versusOpponentLane + 0.5) / activeLaneCount) * 100}%`,
+                        }}
+                        aria-label={`Rival is in lane ${versusOpponentLane + 1}`}
+                      >
+                        <span>RIVAL</span>
+                        <b>{versusOpponentLane + 1}</b>
+                      </div>
+                    )}
+                    {activeMapId === "terminal" && (
+                      <div
+                        className="runner terminal-rival character-runner_ace"
+                        style={{
+                          left: `${((versusOpponentLane + 0.5) / activeLaneCount) * 100}%`,
+                        }}
+                        aria-label={`Rival in lane ${versusOpponentLane + 1}`}
+                      >
+                        <div className="head" />
+                        <div className="body" />
+                        <i className="arm a1" />
+                        <i className="arm a2" />
+                        <i className="leg g1" />
+                        <i className="leg g2" />
+                      </div>
+                    )}
+                    <div
+                      className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}${mirageInvasion && !mirageInvasion.finished ? " mirage-invading" : ""}${beaconActiveRef.current ? " beacon-active" : ""}${reviveFlyingRef.current ? " flight-active" : ""}${haloPartsRef.current >= 3 ? " halo-ready" : ""}${phantomLord ? " phantom-lord-form" : ""}${echoKnowingState.chargingSinceMs !== null ? " echo-charging" : ""}${echoKnowingState.awakened ? " echo-awakened" : ""}${echoKnowingState.realmUntilMs > Date.now() ? " echo-realm" : ""}${activeCharacter === "runner_velocity" && velocityDisplayPercent > 0 ? (velocityDisplayPercent >= 100 ? " velocity-max" : velocityDisplayPercent >= 50 ? " velocity-charged" : " velocity-charging") : ""}`}
+                      style={{
+                        left: `${((lane + 0.5) / activeLaneCount) * 100}%`,
+                      }}
+                    >
+                      {hasCharacterAbility("medic_halo") &&
+                        haloPartsRef.current > 0 && (
+                          <i
+                            className="runner-halo"
+                            data-pieces={haloPartsRef.current}
+                          />
+                        )}
+                      {beaconActiveRef.current && (
+                        <i className="runner-beacon" />
+                      )}
+                      {reviveFlyingRef.current && (
+                        <i className="flight-wings" />
+                      )}
+                      {activeCharacter === "runner_velocity" &&
+                        velocityDisplayPercent > 0 && (
+                          <i className="velocity-trail" aria-hidden="true" />
+                        )}
+                      <div className="head" />
+                      <div className="body" />
+                      <i className="arm a1" />
+                      <i className="arm a2" />
+                      <i className="leg g1" />
+                      <i className="leg g2" />
+                      <em />
+                    </div>
+                    {activeMapId === "pitch" && isVersusRun && (
+                      <button
+                        type="button"
+                        className={`pitch-katana${katanaActive ? " active" : ""}${renderedKatanaState.broken ? " broken" : ""}`}
+                        data-version={pitchKatanaVersion}
+                        disabled={
+                          !running ||
+                          paused ||
+                          renderedKatanaState.broken ||
+                          katanaCooldownSeconds > 0
+                        }
+                        onClick={triggerPitchKatana}
+                        title={MAP_GUIDES.pitch.rules.join(" ")}
+                        aria-label="Katana: press Q or click for a 0.4-second guard. It reflects non-rock hazards. Missing costs 0.5 HP; rocks break it for the match."
+                      >
+                        <span aria-hidden="true">刀</span>
+                        <b>KATANA · Q</b>
+                        <small>
+                          {renderedKatanaState.broken
+                            ? "BROKEN"
+                            : katanaActive
+                              ? `GUARDING · ${katanaCooldownSeconds.toFixed(1)}s`
+                              : katanaCooldownSeconds > 0
+                                ? `${katanaCooldownSeconds.toFixed(1)}s`
+                                : "0.0s · READY"}
+                        </small>
+                        <em className="pitch-katana-description">
+                          0.4s GUARD · REFLECTS NON-ROCKS · MISS COSTS 0.5 HP
+                        </em>
+                      </button>
+                    )}
+                    {activeMapId === "terminal" && isVersusRun && (
+                      <button
+                        type="button"
+                        className={`pitch-katana terminal-sword${terminalSwordRef.current.durability === 0 ? " broken" : ""}`}
+                        data-version={terminalSwordVersion}
+                        onClick={() => void triggerTerminalSword()}
+                        disabled={
+                          !running ||
+                          paused ||
+                          terminalSwordRef.current.durability === 0 ||
+                          terminalSwordRef.current.cooldownUntil > Date.now()
+                        }
+                        title={MAP_GUIDES.terminal.rules.join(" ")}
+                      >
+                        <span aria-hidden="true">⚔</span>
+                        <b>SWORD · Q</b>
+                        <small>
+                          {terminalSwordRef.current.durability === 0
+                            ? "BROKEN"
+                            : `${terminalSwordRef.current.durability}/4 · ${Math.max(0, (terminalSwordRef.current.cooldownUntil - Date.now()) / 1000).toFixed(1)}s`}
+                        </small>
+                        <em className="pitch-katana-description">
+                          MATCH LANE: RIVAL −1 HP · MISS: YOU −0.5 HP
+                          <br />
+                          EDGE WRAP:{" "}
+                          {terminalWrapWaveRef.current === wave
+                            ? "USED"
+                            : "READY"}
+                        </em>
+                      </button>
+                    )}
+                  </div>
+                  {abilityChoice?.kind === "lifeline-lane" && (
+                    <div
+                      className="ability-overlay"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Choose a Rescue Hook lane"
+                    >
+                      <section className="ability-panel healer-panel">
+                        <header>
+                          <div>
+                            <small>TIME STOPPED</small>
+                            <b>RESCUE HOOK</b>
+                          </div>
+                        </header>
+                        <div className="ability-panel-body">
+                          <p className="ability-panel-note">
+                            Choose any lane except your current lane. This zip
+                            is immune to collisions.
+                          </p>
+                          <div
+                            className="ability-lane-grid"
+                            style={
+                              {
+                                "--lane-count": activeLaneCount,
+                              } as CSSProperties
+                            }
+                          >
+                            {getTrackLanes(activeLaneCount).map(
+                              (targetLane) => (
+                                <button
+                                  key={targetLane}
+                                  className={`ability-option ${targetLane === lane ? "current-lane" : ""}`}
+                                  disabled={targetLane === lane}
+                                  onClick={() => chooseLifelineLane(targetLane)}
+                                >
+                                  <span>{targetLane + 1}</span>
+                                  <b>LANE {targetLane + 1}</b>
+                                </button>
+                              ),
+                            )}
+                          </div>
+                        </div>
+                      </section>
+                    </div>
+                  )}
+                  {abilityChoice?.kind === "pacer-character" && (
+                    <div
+                      className="ability-overlay"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Pass the baton"
+                    >
+                      <section className="ability-panel runner-panel">
+                        <header>
+                          <div>
+                            <small>ONE LAST RELAY</small>
+                            <b>PASS THE BATON</b>
+                          </div>
+                        </header>
+                        <div className="ability-panel-body">
+                          <p className="ability-panel-note">
+                            Continue from this wave as any owned non-Runner
+                            character.
+                          </p>
+                          <div className="ability-option-grid">
+                            {pacerCharacterOptions.map((character) => (
+                              <button
+                                key={character.key}
+                                className="ability-option"
+                                onClick={() =>
+                                  choosePacerCharacter(
+                                    character.key as CharacterKey,
+                                  )
+                                }
+                              >
+                                <span>↗</span>
+                                <span>
+                                  <b>{character.name}</b>
+                                  <small>
+                                    {getCharacterClassKey(
+                                      character.key,
+                                    ).toUpperCase()}{" "}
+                                    · {character.rarity.toUpperCase()} ·{" "}
+                                    {
+                                      CHARACTER_ABILITIES[
+                                        character.key as CharacterKey
+                                      ].name
+                                    }
+                                  </small>
+                                  <em>
+                                    {
+                                      CHARACTER_ABILITIES[
+                                        character.key as CharacterKey
+                                      ].description
+                                    }
+                                  </em>
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </section>
+                    </div>
+                  )}
+                  {abilityChoice?.kind === "oracle-prophecy" && (
+                    <div
+                      className="ability-overlay"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Choose an Oracle prophecy"
+                    >
+                      <section className="ability-panel mythic-panel">
+                        <header>
+                          <div>
+                            <small>{oracleCompleted} COMPLETED</small>
+                            <b>CHOOSE THE NEXT PROPHECY</b>
+                          </div>
+                        </header>
+                        <div className="ability-panel-body">
+                          <p className="ability-panel-note">
+                            Success gives the reward shown plus a permanent 5%
+                            score bonus. Failure costs 1 HP and can be lethal.
+                          </p>
+                          <div className="ability-option-grid">
+                            {oracleChoiceSets.map((choice) => (
+                              <button
+                                key={choice.join("-")}
+                                className="ability-option reward"
+                                onClick={() => chooseOracleProphecy(choice)}
+                              >
+                                <span>✦</span>
+                                <span>
+                                  <b>
+                                    {choice
+                                      .map((value) =>
+                                        value.replace("-", " ").toUpperCase(),
+                                      )
+                                      .join(" + ")}
+                                  </b>
+                                  <small>
+                                    {choice
+                                      .map(
+                                        (value, index) =>
+                                          `${ORACLE_PROPHECY_COPY[value].condition} → ${index === 0 ? ORACLE_PROPHECY_COPY[value].reward : ORACLE_PROPHECY_COPY[value].reducedReward}`,
+                                      )
+                                      .join(" · ")}
+                                  </small>
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </section>
+                    </div>
+                  )}
+                  {abilityChoice?.kind === "oracle-passive" && (
+                    <div
+                      className="ability-overlay"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Choose a Healer passive"
+                    >
+                      <section className="ability-panel mythic-panel">
+                        <header>
+                          <div>
+                            <small>NEAR-DEATH REWARD</small>
+                            <b>TAKE A HEALER PASSIVE</b>
+                          </div>
+                        </header>
+                        <div className="ability-panel-body">
+                          <div className="ability-option-grid">
+                            {abilityChoice.options.map((characterKey) => {
+                              const definition =
+                                getCharacterDefinition(characterKey);
+                              return (
+                                <button
+                                  key={characterKey}
+                                  className="ability-option reward"
+                                  onClick={() =>
+                                    chooseOraclePassive(characterKey)
+                                  }
+                                >
+                                  <span>+</span>
+                                  <span>
+                                    <b>{definition.name}</b>
+                                    <small>
+                                      {CHARACTER_ABILITIES[characterKey].name}
+                                    </small>
+                                    <em>
+                                      {
+                                        CHARACTER_ABILITIES[characterKey]
+                                          .description
+                                      }{" "}
+                                      · KEEP FOR THIS RUN
+                                    </em>
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </section>
+                    </div>
+                  )}
+                  {abilityChoice?.kind === "mimic-passives" && (
+                    <div
+                      className="ability-overlay"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Choose two passives for Mimic"
+                    >
+                      <section className="ability-panel mythic-panel">
+                        <header>
+                          <div>
+                            <small>
+                              {abilityChoice.selected.length}/2 SELECTED
+                            </small>
+                            <b>MIMIC · CHOOSE TWO PASSIVES</b>
+                          </div>
+                        </header>
+                        <div className="ability-panel-body">
+                          <p className="ability-panel-note">
+                            Choose any two Rare-or-lower passive abilities. They
+                            remain active for this{" "}
+                            {isVersusRun ? "1v1 match" : "Endless run"}.
+                          </p>
+                          <div className="ability-option-grid">
+                            {abilityChoice.options.map((characterKey) => {
+                              const definition =
+                                getCharacterDefinition(characterKey);
+                              const selected =
+                                abilityChoice.selected.includes(characterKey);
+                              return (
+                                <button
+                                  key={characterKey}
+                                  className={`ability-option reward ${selected ? "selected" : ""}`}
+                                  onClick={() =>
+                                    toggleMimicPassive(characterKey)
+                                  }
+                                >
+                                  <span>{selected ? "✓" : "+"}</span>
+                                  <span>
+                                    <b>{definition.name}</b>
+                                    <small>
+                                      {CHARACTER_ABILITIES[characterKey].name}
+                                    </small>
+                                    <em>
+                                      {
+                                        CHARACTER_ABILITIES[characterKey]
+                                          .description
+                                      }
+                                    </em>
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <button
+                            className="ability-confirm"
+                            disabled={abilityChoice.selected.length !== 2}
+                            onClick={confirmMimicPassives}
+                          >
+                            USE THESE TWO PASSIVES
+                          </button>
+                        </div>
+                      </section>
+                    </div>
+                  )}
+                  {abilityChoice?.kind === "echo-passives" && (
+                    <div
+                      className="ability-overlay"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Choose two passives for Echo"
+                    >
+                      <section className="ability-panel mythic-panel">
+                        <header>
+                          <div>
+                            <small>
+                              {abilityChoice.selected.length}/2 SELECTED ·{" "}
+                              {ECHO_QUESTS[abilityChoice.quest].label}
+                            </small>
+                            <b>ECHO · CHOOSE TWO PASSIVES</b>
+                          </div>
+                        </header>
+                        <div className="ability-panel-body">
+                          <p className="ability-panel-note">
+                            This Mirror quest is complete. Choose exactly two
+                            eligible passives to keep for this run.
+                          </p>
+                          <div className="ability-option-grid">
+                            {abilityChoice.options.map((characterKey) => {
+                              const definition =
+                                getCharacterDefinition(characterKey);
+                              const selected =
+                                abilityChoice.selected.includes(characterKey);
+                              return (
+                                <button
+                                  key={characterKey}
+                                  className={`ability-option reward ${selected ? "selected" : ""}`}
+                                  onClick={() =>
+                                    toggleEchoPassive(characterKey)
+                                  }
+                                >
+                                  <span>{selected ? "✓" : "+"}</span>
+                                  <span>
+                                    <b>{definition.name}</b>
+                                    <small>
+                                      {CHARACTER_ABILITIES[characterKey].name}
+                                    </small>
+                                    <em>
+                                      {
+                                        CHARACTER_ABILITIES[characterKey]
+                                          .description
+                                      }
+                                    </em>
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <button
+                            className="ability-confirm"
+                            disabled={abilityChoice.selected.length !== 2}
+                            onClick={confirmEchoPassives}
+                          >
+                            LEARN THESE TWO PASSIVES
+                          </button>
+                        </div>
+                      </section>
+                    </div>
+                  )}
+                  {abilityChoice?.kind === "scribe-hazard" && (
+                    <div
+                      className="ability-overlay"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Choose Scribe's capped hazard"
+                    >
+                      <section className="ability-panel mythic-panel">
+                        <header>
+                          <div>
+                            <small>
+                              NEXT WAVE · CAP{" "}
+                              {getScribeHazardCap(abilityChoice.nextWave)}
+                            </small>
+                            <b>SCRIBE · CHOOSE A HAZARD</b>
+                          </div>
+                        </header>
+                        <div className="ability-panel-body">
+                          <p className="ability-panel-note">
+                            The selected hazard can appear no more than this cap
+                            during wave {abilityChoice.nextWave}.
+                          </p>
+                          <div className="ability-option-grid">
+                            {abilityChoice.options.map((hazard) => (
+                              <button
+                                key={hazard}
+                                className="ability-option reward"
+                                onClick={() => chooseScribeHazard(hazard)}
+                              >
+                                <span>⌁</span>
+                                <span>
+                                  <b>{hazard.toUpperCase()}</b>
+                                  <small>
+                                    MAX{" "}
+                                    {getScribeHazardCap(abilityChoice.nextWave)}{" "}
+                                    SPAWN
+                                    {getScribeHazardCap(
+                                      abilityChoice.nextWave,
+                                    ) === 1
+                                      ? ""
+                                      : "S"}
+                                  </small>
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </section>
+                    </div>
+                  )}
+                  {abilityChoice?.kind === "comet-remove" && (
+                    <div
+                      className="ability-overlay"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Remove natural hazards with Comet"
+                    >
+                      <section className="ability-panel mythic-panel">
+                        <header>
+                          <div>
+                            <small>
+                              WAVE {abilityChoice.targetWave} · ATTACK COINS{" "}
+                              {getDisplayedAttackPoints(versusPoints)}
+                            </small>
+                            <b>COMET DEFENSE</b>
+                          </div>
+                          <button
+                            type="button"
+                            className="ability-panel-close"
+                            aria-label="Close Comet defense"
+                            onClick={() => setAbilityChoice(null)}
+                          >
+                            ×
+                          </button>
+                        </header>
+                        <div className="ability-panel-body">
+                          <p className="ability-panel-note">
+                            Remove natural hazards before they enter the next
+                            wave. Rival-sent hazards cannot be removed.
+                          </p>
+                          <div className="ability-option-grid">
+                            {abilityChoice.options.map((hazard) => {
+                              const cost = getCometNaturalRemovalPrice(
+                                hazard as
+                                  | "barrel"
+                                  | "log"
+                                  | "snowflake"
+                                  | "car"
+                                  | "spikes"
+                                  | "rock",
+                                heatfeastState.consumed,
+                              );
+                              const queued =
+                                cometRemovalQueueRef.current.wave ===
+                                abilityChoice.targetWave
+                                  ? (cometRemovalQueueRef.current.counts[
+                                      hazard
+                                    ] ?? 0)
+                                  : 0;
+                              return (
+                                <button
+                                  type="button"
+                                  key={hazard}
+                                  className="ability-option reward"
+                                  disabled={versusPoints < cost}
+                                  onClick={() =>
+                                    void removeCometNaturalHazard(hazard)
+                                  }
+                                >
+                                  <span>−</span>
+                                  <span>
+                                    <b>{hazard.toUpperCase()}</b>
+                                    <small>
+                                      {cost} COINS · {queued} QUEUED
+                                    </small>
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </section>
+                    </div>
+                  )}
+                  {gambitPanelOpen &&
+                    activeCharacter === "trickster_gambit" && (
+                      <div
+                        className="ability-overlay"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="Gambit card hand"
+                      >
+                        <section className="ability-panel gambit-panel">
+                          <header>
+                            <div>
+                              <small>{gambitState.hand.length}/10 CARDS</small>
+                              <b>COUNTING CARDS</b>
+                            </div>
+                            <button
+                              type="button"
+                              className="ability-panel-close"
+                              onClick={closeGambitPanel}
+                              aria-label="Close card hand"
+                            >
+                              ×
+                            </button>
+                          </header>
+                          <div className="ability-panel-body">
+                            <p className="ability-panel-note">
+                              {gambitPendingDrawWaveRef.current > 0
+                                ? `Select at least ${Math.max(1, gambitDiscardRequiredRef.current)} cards to discard so the next five can be drawn.`
+                                : `BEST HAND · ${(evaluateGambitHand(gambitState.hand) ?? "none").replaceAll("-", " ").toUpperCase()}`}
+                            </p>
+                            <div className="gambit-card-grid">
+                              {gambitState.hand.map((card: StandardCard) => {
+                                const selected = gambitSelectedCards.includes(
+                                  card.id,
+                                );
+                                const symbol =
+                                  card.suit === "hearts"
+                                    ? "♥"
+                                    : card.suit === "diamonds"
+                                      ? "♦"
+                                      : card.suit === "clubs"
+                                        ? "♣"
+                                        : "♠";
+                                return (
+                                  <button
+                                    type="button"
+                                    key={card.id}
+                                    className={`gambit-card ${selected ? "selected" : ""} ${card.suit}`}
+                                    onClick={() => toggleGambitCard(card.id)}
+                                  >
+                                    <b>{card.rank}</b>
+                                    <span>{symbol}</span>
+                                    <small>
+                                      {selected ? "DISCARD" : "KEEP"}
+                                    </small>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {gambitRunReward && (
+                              <p className="ability-panel-note">
+                                ACTIVE REWARD · {gambitRunReward.label}
+                              </p>
+                            )}
+                            <button
+                              className="ability-confirm"
+                              disabled={
+                                gambitSelectedCards.length === 0 ||
+                                (gambitPendingDrawWaveRef.current > 0 &&
+                                  gambitSelectedCards.length <
+                                    Math.max(
+                                      1,
+                                      gambitDiscardRequiredRef.current,
+                                    ))
+                              }
+                              onClick={() => void confirmGambitDiscard()}
+                            >
+                              DISCARD {gambitSelectedCards.length || "SELECTED"}
+                            </button>
+                          </div>
+                        </section>
+                      </div>
+                    )}
+                  {hexVoid && activeCharacter === "trickster_hex" && (
+                    <div
+                      className="ability-overlay hex-void-overlay"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Hex Void Realm"
+                    >
+                      <section className="ability-panel mythic-panel hex-void-panel">
+                        <header>
+                          <div>
+                            <small>
+                              {(hexVoid.remaining / 1000).toFixed(1)} SECONDS ·
+                              WAVE CLOCK PAUSED
+                            </small>
+                            <b>
+                              {hexVoid.encounter === "hades"
+                                ? "HADES · VOID BOSS"
+                                : "THE VOID REALM"}
+                            </b>
+                          </div>
+                        </header>
+                        <div className="ability-panel-body">
+                          {hexVoid.encounter === "damned" ? (
+                            <>
+                              <p className="ability-panel-note">
+                                Collect up to {HEX_DAMNATION_PER_VOID_CAP}{" "}
+                                Damned before the realm closes. Each one
+                                permanently adds 1 Damnation this run.
+                              </p>
+                              <button
+                                type="button"
+                                className="void-target damned-target"
+                                disabled={
+                                  hexVoid.collected >=
+                                  HEX_DAMNATION_PER_VOID_CAP
+                                }
+                                onClick={collectVoidTarget}
+                              >
+                                <span aria-hidden="true">◆</span>
+                                <b>
+                                  {hexVoid.collected >=
+                                  HEX_DAMNATION_PER_VOID_CAP
+                                    ? "VOID LIMIT REACHED"
+                                    : "COLLECT DAMNED"}
+                                </b>
+                                <small>
+                                  {hexVoid.collected}/
+                                  {HEX_DAMNATION_PER_VOID_CAP} COLLECTED ·{" "}
+                                  {hexState.damnation} TOTAL DAMNATION
+                                </small>
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <p className="ability-panel-note">
+                                Match {HEX_HADES_REQUIRED_DODGES} runes before
+                                the realm closes. Hades attacks every{" "}
+                                {HEX_HADES_DODGE_INTERVAL_MS / 1000} seconds;{" "}
+                                {HEX_HADES_MAX_MISSES} misses end the fight.
+                              </p>
+                              <div className="void-target hades-target">
+                                <span aria-hidden="true">♆</span>
+                                <b>
+                                  {hexVoid.hadesDodges >=
+                                  HEX_HADES_REQUIRED_DODGES
+                                    ? "HADES EXPOSED"
+                                    : `DODGE · ${hexVoid.hadesPrompt}`}
+                                </b>
+                                <small>
+                                  {hexVoid.hadesDodges}/
+                                  {HEX_HADES_REQUIRED_DODGES} DODGES ·{" "}
+                                  {hexVoid.hadesMisses}/{HEX_HADES_MAX_MISSES}{" "}
+                                  MISSES
+                                </small>
+                              </div>
+                              <div className="ability-key-sequence">
+                                {HEX_HADES_RUNES.map((rune) => (
+                                  <button
+                                    type="button"
+                                    key={rune}
+                                    className={`ability-option ${hexVoid.hadesPrompt === rune ? "selected" : ""}`}
+                                    disabled={
+                                      hexVoid.hadesDodges >=
+                                        HEX_HADES_REQUIRED_DODGES ||
+                                      Date.now() < hexVoid.hadesNextDodgeAt
+                                    }
+                                    onClick={() => submitHexHadesInput(rune)}
+                                  >
+                                    <kbd>{rune}</kbd>
+                                  </button>
+                                ))}
+                              </div>
+                              <button
+                                className="ability-confirm"
+                                disabled={
+                                  hexVoid.hadesDodges <
+                                  HEX_HADES_REQUIRED_DODGES
+                                }
+                                onClick={defeatHexHades}
+                              >
+                                DESTROY THE VOID REALM
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </section>
+                    </div>
+                  )}
+                  {pulseGame && (
+                    <div
+                      className="ability-overlay"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Last Pulse timed key challenge"
+                    >
+                      <section className="ability-panel healer-panel">
+                        <header>
+                          <div>
+                            <small>
+                              {(pulseGame.remaining / 1000).toFixed(1)} SECONDS
+                              LEFT
+                            </small>
+                            <b>LAST PULSE · {pulseGame.hits} HITS</b>
+                          </div>
+                        </header>
+                        <div className="ability-panel-body">
+                          <p className="ability-panel-note">
+                            Press or tap the highlighted key. 10 = 1 HP · 20 = 2
+                            HP · 30 = FULL HP.
+                          </p>
+                          <div className="ability-key-sequence">
+                            {(["A", "S", "D", "F"] as const).map((key) => (
+                              <button
+                                key={key}
+                                className={`ability-option ${pulseGame.prompt === key ? "selected" : ""}`}
+                                onClick={() => {
+                                  if (pulseGame.prompt !== key) return;
+                                  setPulseGame((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          hits: current.hits + 1,
+                                          prompt: (
+                                            ["A", "S", "D", "F"] as const
+                                          ).filter(
+                                            (nextKey) => nextKey !== key,
+                                          )[Math.floor(Math.random() * 3)],
+                                        }
+                                      : current,
+                                  );
+                                }}
+                              >
+                                <kbd>{key}</kbd>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </section>
+                    </div>
+                  )}
+                  {museGame && (
+                    <div
+                      className="ability-overlay muse-rhythm-overlay"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Muse rhythm challenge"
+                    >
+                      <section className="ability-panel muse-rhythm-panel">
+                        <div className="muse-equalizer" aria-hidden="true">
+                          {Array.from({ length: 12 }, (_, index) => (
+                            <i key={index} />
+                          ))}
+                        </div>
+                        <header>
+                          <div>
+                            <small>
+                              {(museGame.remaining / 1000).toFixed(1)} SECONDS
+                              LEFT
+                            </small>
+                            <b>
+                              RHYTHM BREAK · {museGame.hits}/
+                              {MUSE_RHYTHM_MAX_HITS} HITS
+                            </b>
+                          </div>
+                        </header>
+                        <div className="ability-panel-body">
+                          <p className="ability-panel-note">
+                            Press or tap the glowing note. Reach at most{" "}
+                            {MUSE_RHYTHM_MAX_HITS} hits before the{" "}
+                            {MUSE_RHYTHM_DURATION_MS / 1000}-second Muse set
+                            ends. Accuracy unlocks permanent run buffs.
+                          </p>
+                          <div className="ability-key-sequence">
+                            {(["A", "S", "D", "F"] as const).map((key) => (
+                              <button
+                                key={key}
+                                disabled={museGame.hits >= MUSE_RHYTHM_MAX_HITS}
+                                className={`ability-option ${museGame.prompt === key ? "selected" : ""}`}
+                                onClick={() => submitMuseInput(key)}
+                              >
+                                <kbd>{key}</kbd>
+                              </button>
+                            ))}
+                          </div>
+                          <p className="ability-panel-note">
+                            ACCURACY ·{" "}
+                            {museGame.attempts > 0
+                              ? Math.round(
+                                  (museGame.hits / museGame.attempts) * 100,
+                                )
+                              : 0}
+                            %
+                          </p>
+                        </div>
+                      </section>
+                    </div>
+                  )}
+                  {!running && (
+                    <div className="overlay">
+                      <p>
+                        {waitingForVersusResult
+                          ? "YOUR RUN IS COMPLETE"
+                          : over
+                            ? "RUN OVER"
+                            : "FIVE LANES. NO BRAKES."}
+                      </p>
+                      <h1>
+                        {waitingForVersusResult
+                          ? "RIVAL STILL RUNNING"
+                          : over && isVersusRun && versusResult
+                            ? versusResult
+                            : over
+                              ? `${score.toLocaleString()} POINTS`
+                              : "DODGE. DASH. SURVIVE."}
+                      </h1>
+                      {isOnlineVersus &&
+                        (waitingForVersusResult ||
+                          versusPhase === "finished") && (
+                          <div
+                            className="versus-final-scoreboard"
+                            role="status"
+                          >
+                            <span>
+                              <small>YOUR FINAL SCORE</small>
+                              <b>{score.toLocaleString()}</b>
+                            </span>
+                            <strong>VS</strong>
+                            <span>
+                              <small>{versusOpponent}</small>
+                              <b>{versusOpponentScore.toLocaleString()}</b>
+                            </span>
+                            <em>
+                              {waitingForVersusResult
+                                ? `The second runner to finish receives +${ONE_V_ONE_SCORING_RULES.secondDeathBonus}, then the final scores decide the match.`
+                                : `Final scores include the +${ONE_V_ONE_SCORING_RULES.secondDeathBonus} second-finish bonus. Equal scores finish as a draw.`}
+                            </em>
+                          </div>
+                        )}
+                      {!over && (
+                        <div className="mode-select">
+                          <button
+                            className={mode === "normal" ? "selected" : ""}
+                            onClick={() => setEndlessMode("normal")}
+                          >
+                            <b>NORMAL</b>
+                            <small>
+                              Selected class HP, healing, damage, and score
+                              rules apply
+                            </small>
+                          </button>
+                          <button
+                            className={mode === "hardcore" ? "selected" : ""}
+                            onClick={() => setEndlessMode("hardcore")}
+                          >
+                            <b>HARDCORE</b>
+                            <small>
+                              Ace only · 1 HP · no healing · 1.75× score before
+                              Ace’s score bonus
+                            </small>
+                          </button>
+                        </div>
+                      )}
+                      {over && !guest && lastRunXpBreakdown && (
+                        <div
+                          className="run-xp-summary"
+                          aria-label={`${lastRunXpBreakdown.total.toLocaleString()} XP earned this run`}
+                        >
+                          <strong>
+                            +{lastRunXpBreakdown.total.toLocaleString()} XP
+                          </strong>
+                        </div>
+                      )}
+                      {!waitingForVersusResult && (
+                        <button
+                          onClick={isVersusRun ? backToMenu : () => reset()}
+                        >
+                          {isVersusRun
+                            ? "RETURN TO 1V1 HUB"
+                            : over
+                              ? "RUN AGAIN"
+                              : "START RUN"}{" "}
+                          <span>→</span>
+                        </button>
+                      )}
+                      {over && !isVersusRun && (
+                        <button className="back-menu" onClick={backToMenu}>
+                          BACK TO MENU
+                        </button>
+                      )}
+                      {!waitingForVersusResult && (
+                        <small>← → / A D / SWIPE OR TAP A LANE</small>
+                      )}
+                    </div>
+                  )}
+                  {versusPhase === "intermission" &&
+                    versusIntermissionReady && (
+                      <div
+                        className="overlay versus-intermission"
+                        aria-busy={versusCountdown <= 0}
+                      >
+                        <p>NEXT WAVE IN</p>
+                        <h1>{versusCountdown}</h1>
+                        <strong>
+                          ATTACK COINS: ◉{" "}
+                          {getDisplayedAttackPoints(versusPoints)}
+                        </strong>
+                        <span
+                          className="versus-shop-state"
+                          role="status"
+                          aria-live="polite"
+                        >
+                          {versusCountdown <= 0
+                            ? "STARTING NEXT WAVE…"
+                            : "ARMORY OPEN"}
+                        </span>
+                        <div className="attack-grid">
+                          {VERSUS_ATTACKS.filter((attack) =>
+                            getAvailableAttacks(activeMapId).includes(
+                              attack.kind,
+                            ),
+                          ).map((attack) => {
+                            const offer =
+                              activeCharacter === "runner_comet"
+                                ? getCometSendPurchase(
+                                    attack.cost,
+                                    1,
+                                    heatfeastState.consumed,
+                                  )
+                                : { price: attack.cost, amount: 1 };
+                            return (
+                              <button
+                                key={attack.kind}
+                                disabled={
+                                  !versusIntermissionReady ||
+                                  versusCountdown <= 0 ||
+                                  versusAttackBusy ||
+                                  versusPoints < offer.price
+                                }
+                                onClick={() =>
+                                  void sendVersusAttack(attack.kind)
+                                }
+                                aria-label={`Send ${offer.amount} ${attack.label} for ${offer.price} attack coins`}
+                              >
+                                <span aria-hidden="true">{attack.icon}</span>
+                                {attack.label} ×{offer.amount}{" "}
+                                <small>
+                                  {offer.price} COINS · {attack.description}
+                                </small>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <small>
+                          Each track coin adds{" "}
+                          {getAttackPointsForCoin(activeMapId)} attack points.{" "}
+                          {activeMapRules.waveAttackReward.kind === "fixed"
+                            ? `Completing the wave adds ${activeMapRules.waveAttackReward.points}.`
+                            : "The mushroom winner gets 14; a tie gives both players 7."}{" "}
+                          Purchased hazards trickle into {versusOpponent}&apos;s
+                          next wave between natural obstacles, with a clear
+                          escape route.
+                        </small>
+                        {versusResult && (
+                          <div
+                            className="versus-message"
+                            role="status"
+                            aria-live="polite"
+                          >
+                            {versusResult}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  {running && paused && pauseMenuOpen && !isOnlineVersus && (
+                    <div
+                      className="overlay compact pause-overlay"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Pause menu"
+                    >
+                      <section className="pause-menu">
+                        <p>RUN PAUSED</p>
+                        <h1>PAUSED</h1>
+                        <div className="soundtrack-picker">
+                          <h2>SOUNDTRACK</h2>
+                          <div className="soundtrack-grid">
+                            {SOUNDTRACKS.map((track) => (
+                              <button
+                                key={track.id}
+                                className={
+                                  soundtrack === track.id ? "selected" : ""
+                                }
+                                onClick={() => chooseSoundtrack(track.id)}
+                                aria-pressed={soundtrack === track.id}
+                              >
+                                <span aria-hidden="true">{track.icon}</span>
+                                <b>{track.name}</b>
+                                <small>{track.description}</small>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="audio-controls">
+                          <label>
+                            <span>
+                              <b>MUSIC</b>
+                              <output>
+                                {musicVolume === 0
+                                  ? "MUTED"
+                                  : `${Math.round(musicVolume * 100)}%`}
+                              </output>
+                            </span>
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={musicVolume}
+                              onInput={(event) =>
+                                changeMusicVolume(
+                                  Number(event.currentTarget.value),
+                                )
+                              }
+                              aria-label="Music volume"
+                            />
+                          </label>
+                          <label>
+                            <span>
+                              <b>SFX</b>
+                              <output>
+                                {sfxVolume === 0
+                                  ? "MUTED"
+                                  : `${Math.round(sfxVolume * 100)}%`}
+                              </output>
+                            </span>
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={sfxVolume}
+                              onInput={(event) =>
+                                changeSfxVolume(
+                                  Number(event.currentTarget.value),
+                                )
+                              }
+                              aria-label="SFX volume"
+                            />
+                          </label>
+                        </div>
+                        <div className="pause-actions">
+                          <button onClick={resumeFromPause}>
+                            KEEP RUNNING
+                          </button>
+                          <button
+                            className="pause-home"
+                            onClick={returnHomeFromPause}
+                          >
+                            RETURN HOME
+                          </button>
+                        </div>
+                      </section>
                     </div>
                   )}
                 </div>
-              )}
-            {running && paused && pauseMenuOpen && !isOnlineVersus && (
-              <div
-                className="overlay compact pause-overlay"
-                role="dialog"
-                aria-modal="true"
-                aria-label="Pause menu"
-              >
-                <section className="pause-menu">
-                  <p>RUN PAUSED</p>
-                  <h1>PAUSED</h1>
-                  <div className="soundtrack-picker">
-                    <h2>SOUNDTRACK</h2>
-                    <div className="soundtrack-grid">
-                      {SOUNDTRACKS.map((track) => (
-                        <button
-                          key={track.id}
-                          className={soundtrack === track.id ? "selected" : ""}
-                          onClick={() => chooseSoundtrack(track.id)}
-                          aria-pressed={soundtrack === track.id}
+                <footer>
+                  <button onClick={() => move(-1)} aria-label="Move left">
+                    ←
+                  </button>
+                  <p>
+                    <b>SWITCH LANES</b>
+                    <small>Use arrows, A / D, swipe, or tap a lane</small>
+                  </p>
+                  <button onClick={() => move(1)} aria-label="Move right">
+                    →
+                  </button>
+                  <div
+                    className={`health ${mode !== "normal" ? "glass" : ""}`}
+                    aria-label={`${getDisplayedHearts(hearts)} displayed hearts`}
+                  >
+                    {Array.from(
+                      { length: Math.ceil(maxHearts) },
+                      (_, n) => n,
+                    ).map((n) => {
+                      const displayedHearts = getDisplayedHearts(hearts);
+                      const visibleHeartCount = Math.ceil(displayedHearts);
+                      const visibleOvercharges = Math.min(
+                        relayChargesRef.current,
+                        visibleHeartCount,
+                      );
+                      const overcharged =
+                        hasCharacterAbility("runner_relay") &&
+                        n >= visibleHeartCount - visibleOvercharges &&
+                        n < visibleHeartCount;
+                      const fillClass =
+                        displayedHearts - n >= 1
+                          ? ""
+                          : displayedHearts - n > 0
+                            ? "partial"
+                            : "lost";
+                      return (
+                        <span
+                          key={n}
+                          className={`heart-slot${overcharged ? " overcharged" : ""}`}
                         >
-                          <span aria-hidden="true">{track.icon}</span>
-                          <b>{track.name}</b>
-                          <small>{track.description}</small>
-                        </button>
-                      ))}
-                    </div>
+                          <span className={`heart-glyph ${fillClass}`}>♥</span>
+                          {overcharged && <i aria-hidden="true">↯</i>}
+                        </span>
+                      );
+                    })}
                   </div>
-                  <div className="audio-controls">
-                    <label>
-                      <span>
-                        <b>MUSIC</b>
-                        <output>
-                          {musicVolume === 0
-                            ? "MUTED"
-                            : `${Math.round(musicVolume * 100)}%`}
-                        </output>
-                      </span>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={musicVolume}
-                        onInput={(event) =>
-                          changeMusicVolume(Number(event.currentTarget.value))
-                        }
-                        aria-label="Music volume"
-                      />
-                    </label>
-                    <label>
-                      <span>
-                        <b>SFX</b>
-                        <output>
-                          {sfxVolume === 0
-                            ? "MUTED"
-                            : `${Math.round(sfxVolume * 100)}%`}
-                        </output>
-                      </span>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={sfxVolume}
-                        onInput={(event) =>
-                          changeSfxVolume(Number(event.currentTarget.value))
-                        }
-                        aria-label="SFX volume"
-                      />
-                    </label>
-                  </div>
-                  <div className="pause-actions">
-                    <button onClick={resumeFromPause}>KEEP RUNNING</button>
-                    <button className="pause-home" onClick={returnHomeFromPause}>
-                      RETURN HOME
-                    </button>
-                  </div>
-                </section>
-              </div>
+                  <button
+                    className="pause"
+                    disabled={
+                      !running || isOnlineVersus || (paused && !pauseMenuOpen)
+                    }
+                    onClick={toggleManualPause}
+                    aria-label={pauseMenuOpen ? "Resume" : "Pause"}
+                  >
+                    {isOnlineVersus ? "⚔" : pauseMenuOpen ? "▶" : "Ⅱ"}
+                  </button>
+                </footer>
+              </>
             )}
-          </div>
-          <footer>
-            <button onClick={() => move(-1)} aria-label="Move left">
-              ←
-            </button>
-            <p>
-              <b>SWITCH LANES</b>
-              <small>Use arrows, A / D, swipe, or tap a lane</small>
-            </p>
-            <button onClick={() => move(1)} aria-label="Move right">
-              →
-            </button>
-            <div
-              className={`health ${mode !== "normal" ? "glass" : ""}`}
-              aria-label={`${getDisplayedHearts(hearts)} displayed hearts`}
-            >
-              {Array.from({ length: Math.ceil(maxHearts) }, (_, n) => n).map(
-                (n) => {
-                  const displayedHearts = getDisplayedHearts(hearts);
-                  const visibleHeartCount = Math.ceil(displayedHearts);
-                  const visibleOvercharges = Math.min(
-                    relayChargesRef.current,
-                    visibleHeartCount,
-                  );
-                  const overcharged =
-                    hasCharacterAbility("runner_relay") &&
-                    n >= visibleHeartCount - visibleOvercharges &&
-                    n < visibleHeartCount;
-                  const fillClass =
-                    displayedHearts - n >= 1
-                      ? ""
-                      : displayedHearts - n > 0
-                        ? "partial"
-                        : "lost";
-                  return (
-                    <span
-                      key={n}
-                      className={`heart-slot${overcharged ? " overcharged" : ""}`}
-                    >
-                      <span className={`heart-glyph ${fillClass}`}>♥</span>
-                      {overcharged && <i aria-hidden="true">↯</i>}
-                    </span>
-                  );
-                },
-              )}
-            </div>
-            <button
-              className="pause"
-              disabled={
-                !running ||
-                isOnlineVersus ||
-                (paused && !pauseMenuOpen)
-              }
-              onClick={toggleManualPause}
-              aria-label={pauseMenuOpen ? "Resume" : "Pause"}
-            >
-              {isOnlineVersus ? "⚔" : pauseMenuOpen ? "▶" : "Ⅱ"}
-            </button>
-          </footer>
-            </>
-          )}
-        </section>}
+          </section>
+        )}
         {updateLogOpen && (
           <div className="report-backdrop update-log-backdrop">
             <section
@@ -15646,9 +16832,14 @@ function SkywayGame() {
               </header>
               <div className="update-log-list">
                 {UPDATE_LOG.map((entry, index) => (
-                  <article key={entry.id} className={index === 0 ? "latest" : ""}>
+                  <article
+                    key={entry.id}
+                    className={index === 0 ? "latest" : ""}
+                  >
                     <header>
-                      <span>{String(UPDATE_LOG.length - index).padStart(2, "0")}</span>
+                      <span>
+                        {String(UPDATE_LOG.length - index).padStart(2, "0")}
+                      </span>
                       <div>
                         <h3>{entry.title}</h3>
                         <time dateTime={entry.publishedAt}>
@@ -15848,7 +17039,8 @@ function SkywayGame() {
                         <div className="appeal-pending" role="status">
                           <b>APPEAL PENDING</b>
                           <span>
-                            Sent {new Date(
+                            Sent{" "}
+                            {new Date(
                               myBanAppeal.appeal.created_at,
                             ).toLocaleString()}
                           </span>
@@ -15857,7 +17049,8 @@ function SkywayGame() {
                       ) : myBanAppeal && !myBanAppeal.can_appeal ? (
                         <div className="appeal-denied" role="status">
                           <b>
-                            APPEAL {myBanAppeal.appeal?.status?.toUpperCase() ??
+                            APPEAL{" "}
+                            {myBanAppeal.appeal?.status?.toUpperCase() ??
                               "SENT"}
                           </b>
                           {myBanAppeal.appeal?.admin_note && (
@@ -15987,10 +17180,7 @@ function SkywayGame() {
                         ),
                       }));
                     return (
-                      <article
-                        key={option}
-                        className={`extract-box ${option}`}
-                      >
+                      <article key={option} className={`extract-box ${option}`}>
                         <b>{box.name}</b>
                         <small className="box-mix">{box.mix}</small>
                         <small className="box-odds-label">
@@ -16230,7 +17420,10 @@ function SkywayGame() {
                       </div>
                       <strong>♦ {gems} BALANCE</strong>
                     </header>
-                    <div className="direct-unlock-prices" aria-label="Direct unlock prices">
+                    <div
+                      className="direct-unlock-prices"
+                      aria-label="Direct unlock prices"
+                    >
                       {(Object.keys(DIRECT_UNLOCK_COSTS) as Rarity[]).map(
                         (rarity) => (
                           <span key={rarity} className={rarity}>
@@ -16254,8 +17447,11 @@ function SkywayGame() {
                           >
                             {lockedCatalogItems.map((item) => (
                               <option key={item.item_key} value={item.item_key}>
-                                {(item.display_name ?? item.item_key).toUpperCase()} ·{" "}
-                                {item.item_type.toUpperCase()} · {item.rarity.toUpperCase()} · ♦{" "}
+                                {(
+                                  item.display_name ?? item.item_key
+                                ).toUpperCase()}{" "}
+                                · {item.item_type.toUpperCase()} ·{" "}
+                                {item.rarity.toUpperCase()} · ♦{" "}
                                 {DIRECT_UNLOCK_COSTS[item.rarity]}
                               </option>
                             ))}
@@ -16268,7 +17464,8 @@ function SkywayGame() {
                           type="button"
                           disabled={
                             directPurchaseBusy ||
-                            gems < DIRECT_UNLOCK_COSTS[directPurchaseItem.rarity]
+                            gems <
+                              DIRECT_UNLOCK_COSTS[directPurchaseItem.rarity]
                           }
                           onClick={() => void purchaseCatalogItem()}
                         >
@@ -16450,17 +17647,14 @@ function SkywayGame() {
                             <>
                               <b>
                                 {includedCharacter.name} is the included default
-                                character + weapon kit.
+                                character.
                               </b>{" "}
-                              Other {label.toLowerCase()} character + weapon
-                              kits stay locked until they are extracted from a
-                              box.
+                              Other characters stay locked until unlocked.
                             </>
                           ) : (
                             <>
                               <b>{label} has no included default character.</b>{" "}
-                              Every character + weapon kit in this section must
-                              be extracted from a box.
+                              Every character in this section must be unlocked.
                             </>
                           )}
                         </p>
@@ -16516,7 +17710,6 @@ function SkywayGame() {
                                 </span>
                                 <span className="inventory-character-name">
                                   <b>{character.name}</b>
-                                  <small>{character.weapon}</small>
                                   <em>
                                     {
                                       CHARACTER_ABILITIES[
@@ -16527,7 +17720,7 @@ function SkywayGame() {
                                       ? " · SELECT · PASSIVE BELOW"
                                       : available
                                         ? " · TEST ACCESS · PASSIVE BELOW"
-                                      : " · PREVIEW PASSIVE BELOW"}
+                                        : " · PREVIEW PASSIVE BELOW"}
                                   </em>
                                 </span>
                                 <small
@@ -16562,23 +17755,17 @@ function SkywayGame() {
                                     ? `${label} LOADOUT`
                                     : focusedCharacterAvailable
                                       ? "ADMIN TEST ACCESS"
-                                    : "LOCKED PREVIEW"}
+                                      : "LOCKED PREVIEW"}
                                 </small>
                                 <h4>{focusedCharacter.name}</h4>
-                                <p>{focusedCharacter.weapon}</p>
                               </div>
                               <button
                                 className="equip-character"
                                 disabled={
                                   !focusedCharacterAvailable ||
                                   running ||
-                                  (!effectiveCharacterTestMode &&
-                                    mode === "impossible" &&
-                                    focusedCharacter.key !== "runner_ace") ||
-                                  (!effectiveCharacterTestMode &&
-                                    mode === "hardcore" &&
-                                    (classKey === "medic" ||
-                                      classKey === "tank"))
+                                  (mode === "hardcore" &&
+                                    focusedCharacter.key !== "runner_ace")
                                 }
                                 onClick={() =>
                                   void equipInventoryCharacter(
@@ -16611,46 +17798,10 @@ function SkywayGame() {
                                   ))}
                               </ul>
                             </section>
-                            <details className="inventory-subsection character-weapon-subsection">
-                              <summary className="inventory-subsection-heading">
-                                <span>
-                                  <b>WEAPON EFFECT</b>
-                                  <small>{focusedWeaponScoreLabel}</small>
-                                </span>
-                              </summary>
-                              <article className="weapon-showcase standalone-weapon-showcase">
-                                <span
-                                  className={`weapon-showcase-icon character-${focusedCharacter.key}`}
-                                  aria-hidden="true"
-                                />
-                                <div>
-                                  <small>
-                                    {focusedCharacterOwned
-                                      ? "WEAPON BONUS ACTIVE"
-                                      : focusedCharacterAvailable
-                                        ? "TEST WEAPON BONUS ACTIVE"
-                                      : "LOCKED WEAPON BONUS"}
-                                  </small>
-                                  <b>{focusedCharacter.weapon}</b>
-                                  <p>
-                                    {focusedWeaponScoreLabel}.{" "}
-                                    {isStarterCharacter(focusedCharacter.key)
-                                      ? `Included with starter ${focusedCharacter.name}.`
-                                      : focusedCharacterOwned
-                                        ? `Unlocked together with ${focusedCharacter.name}.`
-                                        : focusedCharacterAvailable
-                                          ? `Available temporarily while Admin Test Mode is on.`
-                                        : `Extract ${focusedCharacter.name} from a box to unlock both the character and this weapon.`}
-                                  </p>
-                                </div>
-                              </article>
-                            </details>
                             <details className="inventory-subsection character-cosmetics-subsection">
                               <summary className="inventory-subsection-heading">
                                 <span>
-                                  <b>
-                                    UNIVERSAL CHARACTER COSMETICS
-                                  </b>
+                                  <b>UNIVERSAL CHARACTER COSMETICS</b>
                                   <small>
                                     Equip any owned look while previewing
                                     {` ${focusedCharacter.name}`}. The same
@@ -16672,9 +17823,7 @@ function SkywayGame() {
                                   <b>default runner</b>
                                   <small>
                                     INCLUDED
-                                    {playerCosmetic === ""
-                                      ? " · EQUIPPED"
-                                      : ""}
+                                    {playerCosmetic === "" ? " · EQUIPPED" : ""}
                                   </small>
                                 </button>
                                 {ownedPlayerCosmetics.length === 0 ? (
@@ -16695,7 +17844,9 @@ function SkywayGame() {
                                       onClick={() => void equipCosmetic(item)}
                                     >
                                       <span className="cosmetic-swatch">✦</span>
-                                      <b>{item.item_key.replaceAll("_", " ")}</b>
+                                      <b>
+                                        {item.item_key.replaceAll("_", " ")}
+                                      </b>
                                       <small>
                                         {item.rarity}
                                         {playerCosmetic === item.item_key
@@ -16972,7 +18123,9 @@ function SkywayGame() {
                             </div>
                             <div>
                               <dt>SUBMITTED</dt>
-                              <dd>{new Date(appeal.created_at).toLocaleString()}</dd>
+                              <dd>
+                                {new Date(appeal.created_at).toLocaleString()}
+                              </dd>
                             </div>
                           </dl>
                           {appeal.ban_note && (
@@ -16989,7 +18142,8 @@ function SkywayGame() {
                           adminRole === "main" ? (
                             <div className="appeal-review">
                               <label>
-                                RESPONSE NOTE <span>OPTIONAL · SHOWN TO PLAYER</span>
+                                RESPONSE NOTE{" "}
+                                <span>OPTIONAL · SHOWN TO PLAYER</span>
                                 <textarea
                                   value={adminAppealNotes[appeal.id] ?? ""}
                                   onChange={(event) =>
@@ -17027,7 +18181,8 @@ function SkywayGame() {
                             </div>
                           ) : (
                             <footer>
-                              Reviewed {appeal.reviewed_at
+                              Reviewed{" "}
+                              {appeal.reviewed_at
                                 ? new Date(appeal.reviewed_at).toLocaleString()
                                 : "—"}
                               {appeal.reviewed_by_username ||

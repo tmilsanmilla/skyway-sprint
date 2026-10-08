@@ -13,6 +13,47 @@ export interface UpdateLogEntry {
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
+    id: "2026-10-08-update-17",
+    publishedAt: "2026-10-08T19:03:01-04:00",
+    title: "UPDATE 17: LEVELS AND PHOTONS",
+    changes: [
+      "Everyone begins at level 0 with 0 XP. Endless score earns XP; the first level needs 200 XP, then each next level needs 100 more.",
+      "Photon Fury unlocks at level 15 for 100 Gems. Ranked unlocks independently at level 25 for 100 Gems.",
+      "Impossible is removed. Hardcore uses Ace only.",
+      "Photon Fury uses points, not score. Earn at least 4 points for a reward; 7 points earns 10 Photons.",
+    ],
+  },
+  {
+    id: "2026-10-06-remove-inventory-flairs",
+    publishedAt: "2026-10-06T21:56:58-04:00",
+    title: "SIMPLER CHARACTER LOADOUTS",
+    changes: [
+      "Removed Inventory flairs, their equipment menu, and their extra gameplay bonuses.",
+      "Characters keep their abilities and looks. Map weapons and the Photon Lightsaber are unchanged.",
+    ],
+  },
+  {
+    id: "2026-10-06-new-progression-and-photons",
+    publishedAt: "2026-10-06T20:34:54-04:00",
+    title: "A FRESH LEVEL JOURNEY",
+    changes: [
+      "Everyone starts again at level 0. Endless score earns XP, with 200 XP for the first level and 100 more needed for each next level.",
+      "Photon Fury unlocks at level 15 for 100 Gems. Ranked unlocks separately at level 25 for 100 Gems.",
+      "Removed Impossible. Hardcore now always uses Ace, with one heart and no healing.",
+      "Photon Fury now rewards points only: at least 3 points are needed, and 5 points earn 19 Photons. Removed its score counter.",
+    ],
+  },
+  {
+    id: "2026-10-04-photon-look-and-guide",
+    publishedAt: "2026-10-04T17:51:41-04:00",
+    title: "A MORE FAMILIAR PHOTON FURY",
+    changes: [
+      "Photon Fury now uses Skyway's familiar pixel characters, obstacles, scenery, and menus, with a small laser accent.",
+      "Lightsaber and character ability buttons sit below the course without covering lanes.",
+      "Simplified How to Play to explain movement, blocking with the Lightsaber, and earning Photons.",
+    ],
+  },
+  {
     id: "2026-10-04-sign-in-access",
     publishedAt: "2026-10-04T17:26:36-04:00",
     title: "SIGN-IN ACCESS FIX",
@@ -20,6 +61,38 @@ export const UPDATE_LOG: readonly UpdateLogEntry[] = [
       "Fixed a cached-session error that could leave signed-in players stuck on Could Not Verify.",
       "Try Again now rebuilds your sign-in connection instead of repeating the failed access check.",
       "Restored admin tools without changing anyone's admin role, and fixed player lookup after the Neon move.",
+    ],
+  },
+  {
+    id: "2026-10-03-photon-strategic",
+    publishedAt: "2026-10-03T19:15:52-04:00",
+    title: "PHOTON FURY: STRATEGIC",
+    changes: [
+      "Added Bluff: 5 HP and softer spikes, with a delayed, shorter Lightsaber guard.",
+      "Added Magnet: collect Warpstones for 3 points and a random teleport—but touching one while guarding ends your run.",
+      "Added Bear: alternate normal play with announced Chaos stages that bring faster hazards, double damage, triple reflection points, and a half-heart heal afterward.",
+      "Added Wrench: turn a hazard in your lane into a barrel with E, and use a longer Lightsaber guard with a chance to earn a bonus point.",
+    ],
+  },
+  {
+    id: "2026-10-03-photon-rush",
+    publishedAt: "2026-10-03T18:42:49-04:00",
+    title: "PHOTON FURY: RUSH",
+    changes: [
+      "Added Wizard: wrap between the outside lanes with no cooldown, and missed Lightsaber swings cost no HP.",
+      "Added Burner: 30% faster obstacles and double reflection points, with a shorter guard, a 2-second Lightsaber cooldown, and a 0.05-second delay on each turn.",
+      "Photon Fury now shows reflection points separately from your saved Photons.",
+    ],
+  },
+  {
+    id: "2026-10-03-photon-characters",
+    publishedAt: "2026-10-03T18:40:04-04:00",
+    title: "PHOTON FURY CHARACTERS",
+    changes: [
+      "Unlocking Photon Fury includes Magician, Tick, Trumpet, and Saxophone in its separate inventory.",
+      "Magician earns a bonus point every 40 active seconds. Tick has a longer guard, while Trumpet starts with 5 HP and 12 Lightsaber durability.",
+      "Saxophone can heal half a heart with E every 25 seconds while its Lightsaber is intact.",
+      "The standard Lightsaber cooldown is now 1.5 seconds. Each character shows its own guard time, cooldown, health, and durability.",
     ],
   },
   {
