@@ -23,6 +23,7 @@ import {
 } from "./progression-rules";
 import { EXTRACTION_BOXES, DIRECT_UNLOCK_COSTS, directUnlockCost, canOpenBox, affordableBoxQuantity, type ExtractionOption, type PullProfile } from "./extraction-rules";
 import { ExtractionBoxCards } from "./extraction-box-cards";
+import { LevelProgress } from "./level-progress";
 import { DuelHub, MatchSetupPanel, type SetupView } from "./duel-menus";
 import { activeRotatingMode, nextRotationAt, melonBaseScore, type DuelMode, type RotatingMode } from "./update-19-rules";
 import { Obstacle } from "./obstacle-sprite";
@@ -436,26 +437,6 @@ type PlayerProgression = {
   ranked_purchased: boolean;
   progression_version: number;
   xp_awarded?: number;
-};
-type RunXpBreakdown = {
-  total: number;
-  score: number;
-  gems: number;
-  gem_count: number;
-};
-const normalizeRunXpBreakdown = (value: unknown): RunXpBreakdown | null => {
-  if (!value || typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
-  const read = (key: keyof RunXpBreakdown) => {
-    const amount = Number(record[key]);
-    return Number.isFinite(amount) ? Math.max(0, Math.floor(amount)) : 0;
-  };
-  return {
-    total: read("total"),
-    score: read("score"),
-    gems: read("gems"),
-    gem_count: read("gem_count"),
-  };
 };
 type VersusAttackKind = AttackId;
 type PendingVersusAttack = {
@@ -2476,9 +2457,7 @@ function SkywayGame() {
   const [playerProgression, setPlayerProgression] = useState<PlayerProgression>(
       createEmptyPlayerProgression,
     ),
-    [progressionRunVersion, setProgressionRunVersion] = useState(0),
-    [lastRunXpBreakdown, setLastRunXpBreakdown] =
-      useState<RunXpBreakdown | null>(null);
+    [progressionRunVersion, setProgressionRunVersion] = useState(0);
   const [endlessMode, setEndlessMode] = useState<GameMode>("normal");
   const [rankedUnlockBusy, setRankedUnlockBusy] = useState(false);
   const [mainView, setMainView] = useState<MainView>("endless"),
@@ -3280,11 +3259,6 @@ function SkywayGame() {
         const { data, error } = result;
         if (!error) {
           applyProgressionPayload(data, awardUserId);
-          setLastRunXpBreakdown(
-            normalizeRunXpBreakdown(
-              (data as { xp_breakdown?: unknown } | null)?.xp_breakdown,
-            ),
-          );
           const savedHighScore = Number(
             (data as { high_score?: unknown } | null)?.high_score,
           );
@@ -4424,7 +4398,7 @@ function SkywayGame() {
         )
           return;
         if (!runId) {
-          showAbilityNotice("ACCOUNT XP CONNECTION ERROR · TRY AGAIN", 1800);
+          showAbilityNotice("ACCOUNT PROGRESS CONNECTION ERROR · TRY AGAIN", 1800);
           return;
         }
       } else {
@@ -4469,7 +4443,6 @@ function SkywayGame() {
       deferredAttackGroupsRef.current = [];
       setDeferredAttackGroups([]);
       ambientHazardStreakRef.current = { kind: null, count: 0 };
-      setLastRunXpBreakdown(null);
       setLane(runCenterLane);
       state.current.lane = runCenterLane;
       itemsSnapshotRef.current = [];
@@ -4593,7 +4566,6 @@ function SkywayGame() {
     queuedAttackTokenIdsRef.current.clear();
     deferredAttackGroupsRef.current = [];
     setDeferredAttackGroups([]);
-    setLastRunXpBreakdown(null);
     runIsTestModeRef.current = false;
     setRunIsTestMode(false);
     setRunning(false);
@@ -7558,7 +7530,6 @@ function SkywayGame() {
     runIsTestModeRef.current = adminTestModeActive;
     setRunIsTestMode(adminTestModeActive);
     resetVersusClientSync();
-    setLastRunXpBreakdown(null);
     progressionStartIntentRef.current += 1;
     progressionRunIdRef.current = matchId;
     progressionAwardedRunIdRef.current = null;
@@ -11854,7 +11825,6 @@ function SkywayGame() {
     setScore(0);
     waveProgressRef.current = 0;
     setWaveProgress(0);
-    setLastRunXpBreakdown(null);
     setSettingsOpen(false);
     setAdminOpen(false);
     setShopOpen(false);
@@ -13552,45 +13522,7 @@ function SkywayGame() {
 
         {showPlayerLevel && (
           <div className="report-utility-bar">
-            <div
-              className="player-level-card"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-              aria-label={`Level ${playerProgression.level}, ${playerProgression.xp} of ${playerProgression.xp_required} XP`}
-            >
-              <span className="player-level-number">
-                <small>LEVEL</small>
-                <b>{playerProgression.level}</b>
-              </span>
-              <span className="player-xp-meter">
-                <span>
-                  <b>XP</b>
-                  <small>
-                    {playerProgression.xp.toLocaleString()} /{" "}
-                    {playerProgression.xp_required.toLocaleString()}
-                  </small>
-                </span>
-                <i aria-hidden="true">
-                  <u
-                    style={{
-                      width: `${Math.min(
-                        100,
-                        (playerProgression.xp / playerProgression.xp_required) *
-                          100,
-                      )}%`,
-                    }}
-                  />
-                </i>
-                <em>
-                  {playerProgression.ranked_unlocked
-                    ? "RANKED 1V1 UNLOCKED"
-                    : playerProgression.ranked_purchased
-                      ? "RANKED · REACH LEVEL 25"
-                      : "RANKED · LEVEL 25 + 100 GEMS"}
-                </em>
-              </span>
-            </div>
+            <LevelProgress level={playerProgression.level} xp={playerProgression.xp} required={playerProgression.xp_required} />
           </div>
         )}
         <section className="mode-actions" aria-label="Game modes">
@@ -15731,16 +15663,6 @@ function SkywayGame() {
                               Ace’s score bonus
                             </small>
                           </button>
-                        </div>
-                      )}
-                      {over && !guest && lastRunXpBreakdown && (
-                        <div
-                          className="run-xp-summary"
-                          aria-label={`${lastRunXpBreakdown.total.toLocaleString()} XP earned this run`}
-                        >
-                          <strong>
-                            +{lastRunXpBreakdown.total.toLocaleString()} XP
-                          </strong>
                         </div>
                       )}
                       {!waitingForVersusResult && (

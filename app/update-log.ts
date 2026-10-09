@@ -13,6 +13,15 @@ export interface UpdateLogEntry {
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
+    id: "2026-10-09-simpler-levels",
+    publishedAt: "2026-10-09T16:00:18-04:00",
+    title: "SIMPLER LEVELS",
+    changes: [
+      "Your level now shows a broad progress bar without XP numbers or a run-end XP popup. Endless still earns progress as before.",
+      "Everyone restarts at level 0. Gems, characters, cosmetics, scores, and paid mode unlocks are kept.",
+    ],
+  },
+  {
     id: "2026-10-08-update-19",
     publishedAt: "2026-10-08T19:59:07-04:00",
     title: "UPDATE 19: DAILY DUELS",

@@ -39,6 +39,25 @@ Test Mode exclusions, score validation, and account isolation remain in place.
 The reward is zero below four points, otherwise `(points - 4)^2 + 1` Photons.
 Both changes are saved visibly in **XP and Unlocks MISC** and **Photon Fury MISC**.
 
+## Current level display and reset
+
+`progression.sql` is the current canonical **XP and Unlocks MISC** query,
+superseding the historical Update 17 progression migration. It keeps the same
+XP curve and award formula, resets all players to level 0 / 0 XP once for
+version `20261009`, and prevents runs started before that reset from restoring
+old XP. Reapplying it does not erase progress earned after the reset.
+Accounts, balances, inventory, scores, completed-run receipt IDs, and paid mode
+unlocks are preserved. Only the level and a progress bar in broad fifths are
+shown to players; exact XP remains server-side progression data.
+
+Applied through the Neon SQL Editor on 2026-10-09 at 20:00 UTC. The transaction
+verified that all 8 player rows were reset and protected player data was
+unchanged. `VACUUM (ANALYZE) public.player_stats;` completed separately after
+commit. This makes dead-tuple space reusable; it does not promise an immediate
+decrease in Neon's account-level storage display. `progression.test.sql` is a
+rollback-only test for fresh awards, the old-run fence, replay prevention, and
+access controls; never commit its fixture changes.
+
 ## Update 18 coordinated shop release
 
 `update-18-extraction-shop.sql` must ship with the matching Update 18 client.

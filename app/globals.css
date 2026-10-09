@@ -485,21 +485,16 @@
 .player-level-number small,.player-level-number b{display:block}
 .player-level-number small{font-size:7px;font-weight:1000;letter-spacing:1.2px}
 .player-level-number b{font-size:22px;font-style:italic;line-height:.95}
-.player-xp-meter{display:grid;align-content:center;padding:5px 9px}
-.player-xp-meter>span{display:flex;align-items:baseline;justify-content:space-between;gap:9px}
-.player-xp-meter b{font-size:12px;font-style:italic;letter-spacing:1px}
-.player-xp-meter small{font-size:10px;font-weight:1000;letter-spacing:.5px}
-.player-xp-meter>i{display:block;height:8px;margin-top:3px;border:2px solid var(--ink);background:#d8d1bd;overflow:hidden}
-.player-xp-meter>i>u{display:block;height:100%;background:linear-gradient(90deg,#3167c7,#58d6ef);text-decoration:none;transition:width .25s ease}
-.player-xp-meter>em{display:block;margin-top:3px;color:#3167c7;font-size:7px;font-style:normal;font-weight:1000;letter-spacing:.7px;text-align:right}
-.run-xp-summary{display:grid;gap:4px;width:min(520px,100%);margin:-12px 0 18px;padding:10px 13px;border:3px solid var(--ink);background:#dbe9ff;box-shadow:4px 4px 0 var(--ink);font-family:"Courier New",monospace}.run-xp-summary strong{color:#3167c7;font-size:20px;font-style:italic}
+.player-level-meter{display:grid;align-content:center;padding:10px 12px}
+.player-level-meter>i{display:block;width:100%;height:18px;border:3px solid var(--ink);background:#d8d1bd;overflow:hidden}
+.player-level-meter>i>u{display:block;height:100%;background:#3167c7;text-decoration:none;transition:width .25s ease}
 .versus-mode-picker{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 15px 0}
 .versus-mode-picker>button{display:grid;gap:4px;min-height:54px;padding:9px;border:3px solid var(--ink);background:white;color:var(--ink);box-shadow:3px 3px 0 var(--ink);font-family:"Courier New",monospace;cursor:pointer}
 .versus-mode-picker>button.selected{background:#3167c7;color:white}
 .versus-mode-picker>button:disabled{opacity:.48;cursor:not-allowed}
 .versus-mode-picker b{font-size:12px;font-style:italic;letter-spacing:1px}
 .versus-mode-picker small{font-size:7px;font-weight:1000;line-height:1.35;letter-spacing:.5px}
-@media(max-width:600px){.report-utility-bar{gap:6px}.player-level-card{grid-template-columns:42px minmax(148px,1fr);min-width:202px;min-height:46px}.player-level-number small{font-size:6px;letter-spacing:.5px}.player-level-number b{font-size:18px}.player-xp-meter{padding:4px 6px}.player-xp-meter b{font-size:9px}.player-xp-meter small{font-size:8px}.player-xp-meter>i{height:7px;margin-top:2px}.player-xp-meter>em{margin-top:2px;font-size:6px;letter-spacing:0}.versus-mode-picker{padding:9px 10px 0}.versus-mode-picker>button{padding:7px}}
+@media(max-width:600px){.report-utility-bar{gap:6px}.player-level-card{grid-template-columns:42px minmax(148px,1fr);min-width:202px;min-height:46px}.player-level-number small{font-size:6px;letter-spacing:.5px}.player-level-number b{font-size:18px}.player-level-meter{padding:8px}.player-level-meter>i{height:16px}.versus-mode-picker{padding:9px 10px 0}.versus-mode-picker>button{padding:7px}}
 .game-layout.has-player-level.view-endless .game-card{height:min(753px,calc(100dvh - 276px))}
 .game-layout.has-player-level.view-versus .game-card{height:min(738px,calc(100dvh - 192px))}
 

@@ -1,10 +1,16 @@
-export const PROGRESSION_VERSION = 20261008;
+export const PROGRESSION_VERSION = 20261009;
 export const MODE_UNLOCKS = {
   photon: { level: 15, gems: 100 },
   ranked: { level: 25, gems: 100 },
 } as const;
 export type EndlessMode = "normal" | "hardcore";
 export const HARDCORE_SCORE_MULTIPLIER = 2;
+
+/** Five broad visual steps; never expose precise XP totals or percentages. */
+export const broadLevelProgress = (xp: number, required: number) => {
+  if (!Number.isFinite(xp) || !Number.isFinite(required) || required <= 0) return 0;
+  return Math.min(100, Math.max(0, Math.floor((xp / required) * 5) * 20));
+};
 
 const wholeNonnegative = (value: number) => Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 export const cumulativeXpForLevel = (level: number) => {
