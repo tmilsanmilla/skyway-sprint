@@ -13,6 +13,15 @@ export interface UpdateLogEntry {
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
+    id: "2026-10-09-run-start-access",
+    publishedAt: "2026-10-09T21:35:17-04:00",
+    title: "RUN START FIX",
+    changes: [
+      "Fixed the account progress connection error that blocked signed-in players from starting Endless runs.",
+      "Restored run tracking, Gem collection, and result saves without resetting player data.",
+    ],
+  },
+  {
     id: "2026-10-09-simpler-levels",
     publishedAt: "2026-10-09T16:00:18-04:00",
     title: "SIMPLER LEVELS",

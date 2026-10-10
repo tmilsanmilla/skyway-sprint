@@ -58,6 +58,16 @@ decrease in Neon's account-level storage display. `progression.test.sql` is a
 rollback-only test for fresh awards, the old-run fence, replay prevention, and
 access controls; never commit its fixture changes.
 
+The current query also explicitly grants authenticated players the seven
+guarded run-lifecycle RPCs (start, Endless/1v1 heartbeat, Gem claim, streak
+reset, and both completion endpoints). These imported functions had no
+authenticated execution permission, which blocked signed-in run starts.
+Anonymous execution, direct run/stat writes, private reward helpers, and
+admin access are not granted. `run-access.test.sql` checks these live ACLs
+and exact function bodies with session-local identity fixtures, including
+cross-account rejection and duplicate reward prevention. It always rolls
+back, and does not replace production authentication.
+
 ## Update 18 coordinated shop release
 
 `update-18-extraction-shop.sql` must ship with the matching Update 18 client.

@@ -2,6 +2,11 @@
 -- No fixture balance, score, run or level survives the final ROLLBACK.
 do $$declare f text;n text;begin
   if exists(select 1 from public.player_stats where level<>0 or xp_in_level<>0 or lifetime_xp<>0 or progression_version<>20261009) then raise exception 'Reset did not zero all progression';end if;
+  foreach n in array array['public.start_progression_run()','public.sync_progression_run(uuid,integer,boolean)','public.sync_1v1_progression(uuid,integer,boolean)','public.claim_player_gem(uuid,text)','public.reset_endless_gem_streak(uuid)','public.award_completed_run(uuid,bigint,text)','public.award_completed_run_v2(uuid,bigint,text)'] loop
+    if not has_function_privilege('authenticated',n,'execute') then raise exception 'Signed-in run permission missing: %',n;end if;
+    if has_function_privilege('anon',n,'execute') or has_function_privilege('anonymous',n,'execute') then raise exception 'Anonymous run access allowed: %',n;end if;
+  end loop;
+  if has_table_privilege('authenticated','public.player_progression_runs','insert') or has_table_privilege('authenticated','public.player_stats','update') then raise exception 'Direct run/stats writes are exposed';end if;
   foreach n in array array['public.get_player_progression()','app_private.award_completed_run_v2_live(uuid,bigint,text)','public.award_completed_run_v2(uuid,bigint,text)'] loop
     f:=pg_get_functiondef(n::regprocedure);
     f:=replace(f,'FUNCTION public.get_player_progression(','FUNCTION pg_temp.get_progression(');

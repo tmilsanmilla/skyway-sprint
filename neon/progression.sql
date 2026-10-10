@@ -82,5 +82,23 @@ revoke all on function app_private.cumulative_xp_for_level(integer),app_private.
   from public,anon,anonymous,authenticated;
 revoke all on function public.get_player_progression(),public.unlock_ranked_1v1() from public,anon,anonymous;
 grant execute on function public.get_player_progression(),public.unlock_ranked_1v1() to authenticated;
+-- Starting, tracking and completing a run use separate RPC permissions.
+-- Every existing implementation validates auth.uid() and its own run/match.
+revoke all on function public.start_progression_run(),
+  public.sync_progression_run(uuid,integer,boolean),
+  public.sync_1v1_progression(uuid,integer,boolean),
+  public.claim_player_gem(uuid,text),
+  public.reset_endless_gem_streak(uuid),
+  public.award_completed_run(uuid,bigint,text),
+  public.award_completed_run_v2(uuid,bigint,text)
+  from public,anon,anonymous;
+grant execute on function public.start_progression_run(),
+  public.sync_progression_run(uuid,integer,boolean),
+  public.sync_1v1_progression(uuid,integer,boolean),
+  public.claim_player_gem(uuid,text),
+  public.reset_endless_gem_streak(uuid),
+  public.award_completed_run(uuid,bigint,text),
+  public.award_completed_run_v2(uuid,bigint,text)
+  to authenticated;
 notify pgrst,'reload schema';
 commit;
