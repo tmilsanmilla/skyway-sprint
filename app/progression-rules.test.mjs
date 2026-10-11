@@ -60,7 +60,7 @@ test("Update 17 erases prior XP once, including snapshots, but retains run valid
 test("Photon UI has no score counter and server awards the same points-only reward", () => {
   const view=readFileSync(new URL("./photon-fury.tsx",import.meta.url),"utf8");
   assert.doesNotMatch(view,/photonScore|SCORE/);
-  assert.match(view,/photonTotalPoints\(run\)/);
+  assert.match(view,/photonRunReward\(run\)/);
   const sql=readFileSync(new URL("../neon/update-17-photon-points.sql",import.meta.url),"utf8");
   assert.match(sql,/floor\(p_points\)>=4.*\(floor\(p_points\)-4\)\^2\+1/);
   assert.match(sql,/r.finished_at is not null/);

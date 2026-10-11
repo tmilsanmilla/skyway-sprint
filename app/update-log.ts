@@ -5,7 +5,7 @@ export interface UpdateLogEntry {
   readonly changes: readonly string[];
 }
 
-export const LATEST_UPDATE_VERSION = "2.0";
+export const LATEST_UPDATE_VERSION = "2.1";
 export const VISIBLE_UPDATE_LIMIT = 10;
 
 /**
@@ -15,6 +15,16 @@ export const VISIBLE_UPDATE_LIMIT = 10;
  * what players will notice rather than database, deployment, or code details.
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
+  {
+    id: "2026-10-10-photon-starter-speed",
+    publishedAt: "2026-10-10T21:05:15-04:00",
+    title: "SIMPLER PHOTONS + 1× START",
+    changes: [
+      "Photon Fury's run counter and results show earned Photons without separate reflection or point totals.",
+      "Magician is Photon Fury's only included starter. Other characters require their own unlock.",
+      "Endless and 1v1 start at 1× speed and still speed up by 0.25× each wave.",
+    ],
+  },
   {
     id: "2026-10-10-update-2-0",
     publishedAt: "2026-10-10T20:58:22-04:00",

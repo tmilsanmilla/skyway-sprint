@@ -7,7 +7,7 @@ export const PHOTON_RULES = {
 export const PHOTON_CATEGORIES = ["traditional", "rush", "strategic", "wild"] as const;
 export type PhotonCategory = typeof PHOTON_CATEGORIES[number];
 export type PhotonCharacterKey = "photon_magician" | "photon_tick" | "photon_trumpet" | "photon_saxophone" | "photon_wizard" | "photon_burner" | "photon_bluff" | "photon_magnet" | "photon_bear" | "photon_wrench" | "photon_oyster";
-export const PHOTON_STARTERS: readonly PhotonCharacterKey[] = ["photon_magician", "photon_tick", "photon_trumpet", "photon_saxophone", "photon_wizard", "photon_burner", "photon_bluff", "photon_magnet", "photon_bear", "photon_wrench"];
+export const PHOTON_STARTERS: readonly PhotonCharacterKey[] = ["photon_magician"];
 type PhotonCharacter = {
   name: string; category: PhotonCategory; description: string;
   maxHp: number; durability: number; guardSeconds: number; cooldownSeconds: number;
@@ -103,6 +103,13 @@ export const PHOTON_CHARACTERS: Record<PhotonCharacterKey, PhotonCharacter> = {
 };
 export const isPhotonCharacterKey = (key: unknown): key is PhotonCharacterKey =>
   typeof key === "string" && Object.prototype.hasOwnProperty.call(PHOTON_CHARACTERS, key);
+/** Only Magician is included; every other available character needs a server-confirmed unlock. */
+export const getOwnedPhotonCharacters = (unlocked: boolean, keys: unknown): PhotonCharacterKey[] =>
+  unlocked ? Array.from(new Set<PhotonCharacterKey>([
+    ...PHOTON_STARTERS, ...(Array.isArray(keys) ? keys.filter(isPhotonCharacterKey) : []),
+  ])) : [];
+export const resolveOwnedPhotonCharacter = (selected: unknown, owned: readonly PhotonCharacterKey[]): PhotonCharacterKey =>
+  isPhotonCharacterKey(selected) && owned.includes(selected) ? selected : "photon_magician";
 export const getPhotonCharacter = (key: PhotonCharacterKey): PhotonCharacter => {
   if (!isPhotonCharacterKey(key)) throw new Error("Choose a Photon Fury character.");
   return PHOTON_CHARACTERS[key];

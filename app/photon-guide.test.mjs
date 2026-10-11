@@ -35,3 +35,12 @@ test("both modes share obstacle art, while Photon keeps its own lane-aligned run
   assert.match(footer, /heart-glyph/);
   assert.match(footer, /PHOTON_GUIDE.steps/);
 });
+
+test("Photon run counters and results show Photons, not reflections or points", () => {
+  const view = readFileSync(new URL("./photon-fury.tsx", import.meta.url), "utf8");
+  assert.match(view, /className="photon-results">\s*<b>\{photonRunReward\(run\)\} PHOTONS<\/b>\s*<\/div>/);
+  assert.match(view, /className="photon-hud"><b>\{photonRunReward\(run\)\} PHOTONS<\/b>/);
+  assert.doesNotMatch(view, /\{run\.reflections\} REFLECTIONS|\{photonTotalPoints\(run\)\} POINTS|INCLUDES.*MAGICIAN POINTS/);
+  assert.match(view, /p_reflections: current\.reflections/);
+  assert.match(view, /resolveOwnedPhotonCharacter\(data\?\.selected_character_key, keys\)/);
+});

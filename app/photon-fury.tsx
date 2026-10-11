@@ -7,9 +7,9 @@ import { Obstacle } from "./obstacle-sprite";
 import { PHOTON_GUIDE } from "./photon-guide";
 import {
   activatePhotonSaber, advancePhotonRun, createPhotonRun, getPhotonCharacter,
-  healPhoton, isPhotonCharacterKey, movePhoton, photonBonusPoints,
-  photonRunReward, photonTotalPoints, photonObstacleSpeed, photonControlsLocked, wireTwistPhoton, PHOTON_CATEGORIES,
-  PHOTON_CHARACTERS, PHOTON_STARTERS, type PhotonCharacterKey, type PhotonRun,
+  healPhoton, isPhotonCharacterKey, movePhoton, getOwnedPhotonCharacters, resolveOwnedPhotonCharacter,
+  photonRunReward, photonObstacleSpeed, photonControlsLocked, wireTwistPhoton, PHOTON_CATEGORIES,
+  PHOTON_CHARACTERS, type PhotonCharacterKey, type PhotonRun,
 } from "./photon-fury-rules";
 
 type Props = {
@@ -60,10 +60,9 @@ export function PhotonFury({ userId, level, gems, testMode, soundtrack, onGems }
         const available = Boolean(data?.unlocked);
         setUnlocked(available);
         setBalance(Number(data?.photons) || 0);
-        const keys: PhotonCharacterKey[] = Array.isArray(data?.character_keys)
-          ? data.character_keys.filter(isPhotonCharacterKey) : [];
-        setOwned(available ? Array.from(new Set<PhotonCharacterKey>([...PHOTON_STARTERS, ...keys])) : []);
-        if (isPhotonCharacterKey(data?.selected_character_key)) setSelected(data.selected_character_key);
+        const keys = getOwnedPhotonCharacters(available, data?.character_keys);
+        setOwned(keys);
+        setSelected(resolveOwnedPhotonCharacter(data?.selected_character_key, keys));
       }
     });
     return () => { active = false; };
@@ -188,7 +187,7 @@ export function PhotonFury({ userId, level, gems, testMode, soundtrack, onGems }
     setBusy(false);
     if (error) setStatus(rpcError(error.message));
     else {
-      setUnlocked(true); setOwned(keys => Array.from(new Set<PhotonCharacterKey>([...PHOTON_STARTERS, ...keys])));
+      setUnlocked(true); setOwned(keys => getOwnedPhotonCharacters(true, keys));
       onGems(Number(data?.total_gems) || 0); setStatus("PHOTON FURY UNLOCKED");
     }
   };
@@ -204,7 +203,6 @@ export function PhotonFury({ userId, level, gems, testMode, soundtrack, onGems }
   const selectedDefinition = getPhotonCharacter(selected);
   const cooldown = Math.max(0, run.cooldownUntil - run.elapsed);
   const healCooldown = Math.max(0, run.healCooldownUntil - run.elapsed);
-  const bonus = photonBonusPoints(run);
   const controlsLocked = photonControlsLocked(run);
   const saberDelay = Math.max(0,(run.saberStartsAt ?? 0)-run.elapsed);
   const wireCooldown = Math.max(0,run.wireCooldownUntil-run.elapsed);
@@ -242,7 +240,6 @@ export function PhotonFury({ userId, level, gems, testMode, soundtrack, onGems }
         <div className="photon-equipped"><div className="photon-portrait"><PhotonAvatar character={selected}/></div><div><b>{selectedDefinition.name.toUpperCase()}</b><p>{selectedDefinition.description}</p><button onClick={() => setInventory(true)}>CHOOSE CHARACTER</button></div></div>
         <p>{PHOTON_GUIDE.introduction}</p>
         {run.elapsed > 0 && <div className="photon-results">
-          <b>{run.reflections} REFLECTIONS</b><b>{photonTotalPoints(run)} POINTS</b>{bonus > 0 && <b>INCLUDES {bonus} MAGICIAN POINTS</b>}
           <b>{photonRunReward(run)} PHOTONS</b>
         </div>}
         {unlocked || testMode ? <button disabled={busy || savePending || (!testMode && !owned.includes(selected))} onClick={() => void start()}>{busy ? "SAVING…" : "START RUN"}</button> : <>
@@ -251,7 +248,7 @@ export function PhotonFury({ userId, level, gems, testMode, soundtrack, onGems }
         </>}
         {savePending && <button disabled={busy} onClick={() => void finish()}>SAVE RUN</button>}
       </div> : <>
-        <div className="photon-hud"><b>{photonTotalPoints(run)} POINTS</b><span>{current.name.toUpperCase()}</span><span>{photonObstacleSpeed(run).toFixed(2)}× SPEED</span></div>
+        <div className="photon-hud"><b>{photonRunReward(run)} PHOTONS</b><span>{current.name.toUpperCase()}</span><span>{photonObstacleSpeed(run).toFixed(2)}× SPEED</span></div>
         {current.invertedControls && <div className="photon-inverted-controls" role="status">CONTROLS REVERSED · LEFT MOVES RIGHT · RIGHT MOVES LEFT</div>}
         {run.characterKey === "photon_bear" && <div className="photon-stage-meter">{run.stage === "chaos" ? "CHAOS" : "NORMAL"} · {Math.max(0,run.stageEndsAt-run.elapsed).toFixed(1)}s{run.stage === "chaos" ? " · 3× POINTS / 2× DAMAGE" : " UNTIL CHAOS"}</div>}
         <div className="playfield photon-playfield">

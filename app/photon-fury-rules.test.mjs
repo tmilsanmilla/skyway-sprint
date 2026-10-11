@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { activatePhotonSaber, advancePhotonRun, createPhotonRun, movePhoton, photonReward, photonSpeed, photonObstacleSpeed, photonPoints, photonTotalPoints, pickPhotonHazard, PHOTON_WEIGHTS, MAGNET_WEIGHTS, multiplyBonuses, addTurnDelays, PHOTON_CATEGORIES, PHOTON_CHARACTERS, PHOTON_STARTERS, isPhotonCharacterKey, getPhotonCharacter, healPhoton, photonBonusPoints, photonRunReward, photonControlsLocked, wireTwistPhoton } from './photon-fury-rules.ts';
+import { activatePhotonSaber, advancePhotonRun, createPhotonRun, movePhoton, photonReward, photonSpeed, photonObstacleSpeed, photonPoints, photonTotalPoints, pickPhotonHazard, PHOTON_WEIGHTS, MAGNET_WEIGHTS, multiplyBonuses, addTurnDelays, PHOTON_CATEGORIES, PHOTON_CHARACTERS, PHOTON_STARTERS, isPhotonCharacterKey, getPhotonCharacter, getOwnedPhotonCharacters, resolveOwnedPhotonCharacter, healPhoton, photonBonusPoints, photonRunReward, photonControlsLocked, wireTwistPhoton } from './photon-fury-rules.ts';
+const CHARACTER_KEYS = Object.keys(PHOTON_CHARACTERS);
 import { activatePitchKatana, createPitchKatanaState, resolvePitchKatanaCollision, settlePitchKatanaWindow } from './arena-map-rules.ts';
 import { MAP_IDS } from './arena-map-rules.ts';
 test('bonuses multiply but turn delays add', () => {
@@ -83,16 +84,33 @@ test('Katana unwields on one reflection and cannot reflect a second hazard', () 
   assert.equal(resolvePitchKatanaCollision(blocked.state,'barrel',1101).kind,'inactive');
   assert.equal(settlePitchKatanaWindow(blocked.state,1500).selfDamage,0);
 });
-test('Photon has its own four categories and ten available starter characters', () => {
+test('Photon keeps its four categories but Magician is the only starter', () => {
   assert.deepEqual(PHOTON_CATEGORIES,['traditional','rush','strategic','wild']);
-  assert.equal(PHOTON_STARTERS.length,10);
-  assert.equal(PHOTON_STARTERS.filter(key=>getPhotonCharacter(key).category==='traditional').length,4);
-  assert.deepEqual(PHOTON_STARTERS.filter(key=>getPhotonCharacter(key).category==='rush'),['photon_wizard','photon_burner']);
+  assert.deepEqual(PHOTON_STARTERS,['photon_magician']);
+  assert.equal(CHARACTER_KEYS.length,11);
   assert.equal(isPhotonCharacterKey('runner_ace'),false);
   assert.equal(isPhotonCharacterKey('medic_seraph'),false);
   assert.throws(()=>createPhotonRun('runner_ace'),/Photon Fury character/);
-  assert.deepEqual(PHOTON_STARTERS.filter(key=>getPhotonCharacter(key).category==='strategic'),['photon_bluff','photon_magnet','photon_bear','photon_wrench']);
   assert.deepEqual(Object.values(PHOTON_CHARACTERS).map(c=>c.cooldownSeconds),[1.5,1.2,1.2,.2,1.5,2,1.5,1.5,1.5,3.5,1.5]);
+});
+test('Photon ownership includes only Magician and explicit server unlocks, never stale selections', () => {
+  assert.deepEqual(getOwnedPhotonCharacters(false,['photon_tick']),[]);
+  assert.deepEqual(getOwnedPhotonCharacters(true,null),['photon_magician']);
+  const owned=getOwnedPhotonCharacters(true,['photon_tick','photon_tick','runner_ace',null]);
+  assert.deepEqual(owned,['photon_magician','photon_tick']);
+  assert.equal(resolveOwnedPhotonCharacter('photon_tick',owned),'photon_tick');
+  assert.equal(resolveOwnedPhotonCharacter('photon_trumpet',owned),'photon_magician');
+  assert.equal(resolveOwnedPhotonCharacter(null,owned),'photon_magician');
+});
+test('Neon profile, equip and run start enforce the same private ownership rule without deleting data', () => {
+  const sql=readFileSync(new URL('../neon/photon-starter.sql',import.meta.url),'utf8');
+  assert.match(sql,/p_character_key='photon_magician' or exists/);
+  assert.match(sql,/item_type='character' and item_key=p_character_key/);
+  assert.match(sql,/user_id=p_user_id/);
+  assert.match(sql,/where p\.unlocked_at is not null and app_private\.owns_photon_character\(u,character_key\)/);
+  assert.equal((sql.match(/if not app_private\.owns_photon_character\(u,k\) then raise exception 'Character locked'/g)||[]).length,2);
+  assert.match(sql,/revoke all on function app_private\.owns_photon_character\(uuid,text\) from public,anon,anonymous,authenticated/);
+  assert.doesNotMatch(sql,/delete from|drop table|set photons=|set total_gems=/);
 });
 test('Oyster is Wild, has baseline HP and saber, and slows every hazard by exactly eight percent', () => {
   const c=getPhotonCharacter('photon_oyster');
@@ -116,7 +134,7 @@ test('Oyster reverses every directional input once, clamps at both edges, and ig
   const leftEdge={...run,lane:0}; assert.equal(movePhoton(leftEdge,1,1),leftEdge);
   const paused={...run,chaosCountdown:3}; assert.equal(movePhoton(paused,-1,1),paused);
   const dead={...run,hp:0}; assert.equal(movePhoton(dead,-1,1),dead);
-  for(const key of PHOTON_STARTERS) {
+  for(const key of CHARACTER_KEYS.filter(key=>key!=='photon_oyster')) {
     const ordinary=createPhotonRun(key);
     assert.equal(getPhotonCharacter(key).invertedControls,false);
     const moved=movePhoton(ordinary,-1,1);
@@ -159,7 +177,7 @@ test('merged Neon setup fits the visible query limit and matches every character
       assert.match(sql,/commit;\s*$/);
     }
     const rows=Array.from(sql.matchAll(/\('(photon_[a-z]+)'(?:::text)?,([^)]*)\)/g));
-    assert.deepEqual(rows.map(row=>row[1]),PHOTON_STARTERS);
+    assert.deepEqual(rows.map(row=>row[1]),CHARACTER_KEYS.filter(key=>key!=='photon_oyster'));
     for(const [,key,columns] of rows) {
       const c=getPhotonCharacter(key);
       const values=columns.split(',').map(value=>value.trim()==='null'?null:Number(value.replace(/::numeric/g,'')));
@@ -199,7 +217,7 @@ test('Tick alone guards for .5 seconds and has a 1.2-second post-block cooldown'
   assert.equal(run.guardUntil,0);
 });
 test('each character miss uses its own cooldown and damage rule', () => {
-  for(const key of PHOTON_STARTERS) {
+  for(const key of CHARACTER_KEYS) {
     const config=getPhotonCharacter(key);
     let run=activatePhotonSaber({...createPhotonRun(key),nextSpawnAt:999});
     for(let i=0;i<22;i++) run=advancePhotonRun(run,.05);
@@ -431,7 +449,7 @@ test('Saxophone cannot heal with a broken saber, when dead, or above max HP', ()
   const run=createPhotonRun('photon_saxophone');
   for(const modified of [{...run,hp:2,durability:0},{...run,hp:0},run]) assert.equal(healPhoton(modified),modified);
   assert.equal(healPhoton({...run,hp:3.5}).hp,4);
-  for(const key of PHOTON_STARTERS.filter(key=>key!=='photon_saxophone')) {
+  for(const key of CHARACTER_KEYS.filter(key=>key!=='photon_saxophone')) {
     const injured={...createPhotonRun(key),hp:2}; assert.equal(healPhoton(injured),injured);
   }
 });

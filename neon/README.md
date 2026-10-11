@@ -36,6 +36,19 @@ The repair was applied directly to Neon on 2026-10-11 UTC (October 10 in
 America/New_York). Leaving cancels only the caller's queue entry, or forfeits
 their active match; it cannot end an unrelated player's match.
 
+`photon-starter.sql` makes Magician the only included Photon Fury character.
+The profile, equip and run-start endpoints honor explicit character unlocks
+instead of treating the full rules catalog as owned. Stale, unowned selections
+fall back to Magician. No accounts, balances, run receipts or unlock rows are
+deleted, and public endpoint permissions are unchanged. The Photon HUD and
+results show only earned Photons; raw reflection/point counts remain internal
+for the unchanged reward calculation. Endless and 1v1 start at 1× base speed
+and still add 0.25× each wave.
+Applied directly to Neon on 2026-10-11 UTC. The rollback-only
+`photon-starter.test.sql` checks locked-character rejection, explicit ownership,
+stale selections and guest isolation. Photon profiles and inventory checksums
+were unchanged after application.
+
 Apply `remove-inventory-flairs.sql` to retire Inventory flairs and their bonuses.
 Character unlocks, character abilities, cosmetics, account data, and map weapons
 are preserved. Former weapon selections are inert compatibility data, not active

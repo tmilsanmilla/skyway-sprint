@@ -42,10 +42,11 @@ test("late network arrivals are spread through the remaining wave", () => {
   );
 });
 
-test("wave speed starts at 2x and rises by 0.25x", () => {
-  assert.equal(getWaveSpeedMultiplier(1), 2);
-  assert.equal(getWaveSpeedMultiplier(2), 2.25);
-  assert.equal(getWaveSpeedMultiplier(5), 3);
+test("Endless and 1v1 wave speed starts at 1x and rises by 0.25x", () => {
+  assert.equal(getWaveSpeedMultiplier(1), 1);
+  assert.equal(getWaveSpeedMultiplier(2), 1.25);
+  assert.equal(getWaveSpeedMultiplier(5), 2);
+  for (const wave of [0, -1, NaN, Infinity]) assert.equal(getWaveSpeedMultiplier(wave), 1);
 });
 
 test("late attacks can trickle in after a visible vertical gap", () => {
