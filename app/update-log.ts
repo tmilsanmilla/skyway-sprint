@@ -5,6 +5,9 @@ export interface UpdateLogEntry {
   readonly changes: readonly string[];
 }
 
+export const LATEST_UPDATE_VERSION = "2.0";
+export const VISIBLE_UPDATE_LIMIT = 10;
+
 /**
  * Player-facing release history, newest first.
  *
@@ -12,6 +15,24 @@ export interface UpdateLogEntry {
  * what players will notice rather than database, deployment, or code details.
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
+  {
+    id: "2026-10-10-update-2-0",
+    publishedAt: "2026-10-10T20:58:22-04:00",
+    title: "CLEARER UPDATE LOG",
+    changes: [
+      "The Update Log now shows only the latest 10 updates, newest first.",
+      "Update numbers now use decimals: the latest is 2.0, followed by 1.9, 1.8, and earlier updates.",
+    ],
+  },
+  {
+    id: "2026-10-10-character-switching",
+    publishedAt: "2026-10-10T20:58:21-04:00",
+    title: "CHARACTER SWITCHING + LEAVING 1V1",
+    changes: [
+      "You can equip your unlocked characters and cosmetics again. Endless and 1v1 character choices stay separate.",
+      "Leave a 1v1 from match setup or the Leave 1v1 button during play. Leaving an active match forfeits it; cancelling a search no longer restarts it.",
+    ],
+  },
   {
     id: "2026-10-09-run-start-access",
     publishedAt: "2026-10-09T21:35:17-04:00",
@@ -33,7 +54,7 @@ export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
     id: "2026-10-08-update-19",
     publishedAt: "2026-10-08T19:59:07-04:00",
-    title: "UPDATE 19: DAILY DUELS",
+    title: "DAILY DUELS",
     changes: [
       "Game Modes unlocks at level 5 and rotates daily between RNG and Hardcore Duel. RNG assigns temporary characters; Hardcore Duel is Ace-only with one heart and no healing.",
       "Ban one of four random maps in 10 seconds, see the map reveal, then choose your character by class in 15 seconds. Both ready starts the match early.",
@@ -45,7 +66,7 @@ export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
     id: "2026-10-08-update-18",
     publishedAt: "2026-10-08T19:19:13-04:00",
-    title: "UPDATE 18: EXTRACTION SHOP",
+    title: "EXTRACTION SHOP",
     changes: [
       "Normal Boxes cost 11 Gems for 10 pulls. Rare Boxes unlock at level 10 for 19 Gems; Legendary Boxes unlock at level 20 for 27 Gems.",
       "Each box shows its pull mix and odds. Only Legendary pulls can give Mythics. Duplicates no longer refund Gems.",
@@ -56,7 +77,7 @@ export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
     id: "2026-10-08-update-17",
     publishedAt: "2026-10-08T19:03:01-04:00",
-    title: "UPDATE 17: LEVELS AND PHOTONS",
+    title: "LEVELS AND PHOTONS",
     changes: [
       "Everyone begins at level 0 with 0 XP. Endless score earns XP; the first level needs 200 XP, then each next level needs 100 more.",
       "Photon Fury unlocks at level 15 for 100 Gems. Ranked unlocks independently at level 25 for 100 Gems.",
@@ -281,6 +302,17 @@ export const UPDATE_LOG: readonly UpdateLogEntry[] = [
     ],
   },
 ] as const;
+
+/** Keep the source archive, but show only the ten most recent releases. */
+export const getRecentUpdates = (
+  entries: readonly UpdateLogEntry[] = UPDATE_LOG,
+): readonly (UpdateLogEntry & { readonly version: string })[] => {
+  const latestVersionTenths = Math.round(Number(LATEST_UPDATE_VERSION) * 10);
+  return entries.slice(0, VISIBLE_UPDATE_LIMIT).map((entry, index) => ({
+    ...entry,
+    version: ((latestVersionTenths - index) / 10).toFixed(1),
+  }));
+};
 
 export const validateUpdateLog = (
   entries: readonly UpdateLogEntry[] = UPDATE_LOG,

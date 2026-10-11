@@ -24,6 +24,18 @@ lookup readers to managed Neon Auth field names. Neither repair resets accounts
 or grants anyone an admin role. The combined repair is saved in the Neon SQL
 Editor as **Sign-in MISC**.
 
+`character-selection-access.sql` restores the existing signed-in
+`set_loadout(text,text)` and `leave_1v1()` endpoints after checking their
+own-account, item-ownership and own-match guards. It does not grant direct table writes, anonymous access,
+private helpers, or admin roles. Apply it directly to Neon, not merely as an
+editor copy. `character-selection.test.sql` tests exact live equip/duel
+functions with temporary identity fixtures, and always rolls back.
+The client keeps saved Endless selections separate from server-confirmed
+1v1 choices and saves a character plus its class in one atomic request.
+The repair was applied directly to Neon on 2026-10-11 UTC (October 10 in
+America/New_York). Leaving cancels only the caller's queue entry, or forfeits
+their active match; it cannot end an unrelated player's match.
+
 Apply `remove-inventory-flairs.sql` to retire Inventory flairs and their bonuses.
 Character unlocks, character abilities, cosmetics, account data, and map weapons
 are preserved. Former weapon selections are inert compatibility data, not active

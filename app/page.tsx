@@ -11,7 +11,7 @@ import {
 import { audioEngine, type Soundtrack } from "./audio-engine";
 import { AdminPlayerEditor } from "./admin-player-editor";
 import { isMigrationMaintenanceMode } from "./migration-maintenance";
-import { UPDATE_LOG } from "./update-log";
+import { getRecentUpdates } from "./update-log";
 import { PhotonFury } from "./photon-fury";
 import {
   cumulativeXpForLevel,
@@ -1889,6 +1889,7 @@ function SkywayGame() {
     [directPurchaseBusy, setDirectPurchaseBusy] = useState(false),
     [inventoryOpen, setInventoryOpen] = useState(false),
     [inventoryStatus, setInventoryStatus] = useState(""),
+    [characterEquipBusy, setCharacterEquipBusy] = useState(false),
     [extractBusy, setExtractBusy] = useState(false),
     [extractQuantities, setExtractQuantities] = useState<
       Record<ExtractionOption, number>
@@ -2493,6 +2494,7 @@ function SkywayGame() {
       null,
     ),
     [versusSyncRetry, setVersusSyncRetry] = useState(0);
+  const versusLeavingRef = useRef(false);
   const [characterSelectionEndsAt, setCharacterSelectionEndsAt] = useState<
     number | null
   >(null);
@@ -2921,6 +2923,7 @@ function SkywayGame() {
     waveProgress,
   ]);
   const [selectedCharacter, setSelectedCharacter] = useState("runner_ace"),
+    [versusCharacter, setVersusCharacter] = useState("runner_ace"),
     [inventoryCharacter, setInventoryCharacter] = useState<{
       classKey: keyof typeof CLASS_CHARACTERS;
       characterKey: string;
@@ -2960,9 +2963,12 @@ function SkywayGame() {
       }),
     [effectiveCharacterTestMode, isAdmin, unlocks, isOnlineVersus, versusMode],
   );
-  const selectedCharacterAvailable = canUseCharacter(selectedCharacter);
+  // Match choices are separate from the account's saved Endless loadout.
+  // Inventory/auth refreshes must not overwrite a confirmed 1v1 pick.
+  const scopedCharacter = isVersusRun ? versusCharacter : selectedCharacter;
+  const selectedCharacterAvailable = canUseCharacter(scopedCharacter);
   const availableCharacter = selectedCharacterAvailable
-    ? selectedCharacter
+    ? scopedCharacter
     : "runner_ace";
   const availableClass = getCharacterClassKey(availableCharacter);
   const classBlockedByGameMode =
@@ -4556,6 +4562,7 @@ function SkywayGame() {
     ],
   );
   const resetGameToMenu = () => {
+    setRunCharacterOverride(null);
     cancelPendingProgressionStart();
     progressionStartIntentRef.current += 1;
     progressionRunIdRef.current = null;
@@ -7202,7 +7209,10 @@ function SkywayGame() {
     const matchFinished = matchStatus === "finished";
     const matchCancelled = matchStatus === "cancelled";
 
-    setSelectedCharacter(characterKey);
+    setVersusCharacter(characterKey);
+    // A temporary Pacer/Mimic form from another run must not override the
+    // server-confirmed character selected for this match.
+    if (!preserveRunState) setRunCharacterOverride(null);
     setVersusServerMaxHearts(restoredMaxHearts);
     if (!preserveRunState) {
       const restoredLane =
@@ -7712,6 +7722,8 @@ function SkywayGame() {
   };
 
   const clearVersusLocalSession = () => {
+    setVersusCharacter("runner_ace");
+    setRunCharacterOverride(null);
     setMatchSetup(null);
     rngAssignedCharacterRef.current = null;
     setCharacterSelectionEndsAt(null);
@@ -7755,6 +7767,8 @@ function SkywayGame() {
     setPitchKatanaVersion((value) => value + 1);
   };
   const leaveVersusSession = async () => {
+    if (versusLeavingRef.current) return false;
+    const leavingUserId = userIdRef.current;
     const wasSearching = versusSearchingRef.current;
     const activeMatchId = versusMatchRef.current;
     const storedSession = readActiveVersusSession();
@@ -7770,33 +7784,38 @@ function SkywayGame() {
     versusReconnectIntentRef.current += 1;
     versusReconnectPendingRef.current = false;
     invalidateVersusSearch();
+    versusLeavingRef.current = true;
     setVersusLeaving(shouldTellServer);
     if (!shouldTellServer) {
       clearVersusLocalSession();
+      versusLeavingRef.current = false;
       return true;
     }
     try {
       const { error } = await supabase.rpc("leave_1v1");
+      if (userIdRef.current !== leavingUserId) return false;
       if (error) {
         setVersusResult(error.message);
         if (wasSearching && !activeMatchId) {
-          versusSearchingRef.current = false;
-          setVersusPhase("idle");
-          void findVersusMatch(true);
+          // Keep Cancel available for a retry. Never rejoin a search the
+          // player explicitly tried to leave.
+          versusSearchingRef.current = true;
+          setVersusPhase("searching");
         }
         return false;
       }
       clearVersusLocalSession();
       return true;
     } catch {
+      if (userIdRef.current !== leavingUserId) return false;
       setVersusResult("COULD NOT LEAVE 1V1 CLEANLY · TRY AGAIN");
       if (wasSearching && !activeMatchId) {
-        versusSearchingRef.current = false;
-        setVersusPhase("idle");
-        void findVersusMatch(true);
+        versusSearchingRef.current = true;
+        setVersusPhase("searching");
       }
       return false;
     } finally {
+      versusLeavingRef.current = false;
       setVersusLeaving(false);
     }
   };
@@ -12269,9 +12288,9 @@ function SkywayGame() {
     }
   };
   const equipInventoryCharacter = async (
-    classKey: keyof typeof CLASS_CHARACTERS,
     characterKey: string,
   ) => {
+    if (characterEquipBusy) return;
     if (running) {
       setInventoryStatus("Character changes are only available before a run.");
       return;
@@ -12291,33 +12310,36 @@ function SkywayGame() {
       return;
     }
     if (guest) {
+      setRunCharacterOverride(null);
       setSelectedCharacter(characterKey);
       setInventoryStatus("Starter equipped for this guest session.");
       return;
     }
+    const equipUserId = userIdRef.current;
+    if (!equipUserId) return;
+    setCharacterEquipBusy(true);
     setInventoryStatus("Equipping character…");
-    const { error: classError } = await supabase.rpc("set_loadout", {
-      p_slot: "class",
-      p_item: classKey,
-    });
-    if (classError) {
-      setInventoryStatus(classError.message);
-      return;
+    try {
+      // The character endpoint sets both character and class atomically.
+      // Two separate requests could leave a different class starter selected.
+      const { error } = await supabase.rpc("set_loadout", {
+        p_slot: "character",
+        p_item: characterKey,
+      });
+      if (userIdRef.current !== equipUserId) return;
+      if (error) {
+        setInventoryStatus(error.message);
+        return;
+      }
+      setRunCharacterOverride(null);
+      setSelectedCharacter(characterKey);
+      setInventoryStatus(`${getCharacterDefinition(characterKey).name} equipped.`);
+    } catch {
+      if (userIdRef.current === equipUserId)
+        setInventoryStatus("Could not save your character. Please try again.");
+    } finally {
+      setCharacterEquipBusy(false);
     }
-    const { error: characterError } = await supabase.rpc("set_loadout", {
-      p_slot: "character",
-      p_item: characterKey,
-    });
-    if (characterError) {
-      setInventoryStatus(characterError.message);
-      return;
-    }
-    setSelectedCharacter(characterKey);
-    setInventoryStatus(
-      owned
-        ? `${characterKey.replaceAll("_", " ").toUpperCase()} equipped.`
-        : `${characterKey.replaceAll("_", " ").toUpperCase()} equipped for Admin Test Mode only.`,
-    );
   };
   const equipCosmetic = async (item: Unlock) => {
     if (guest) {
@@ -13720,11 +13742,11 @@ function SkywayGame() {
                 arenas={MAP_IDS.map(key => ({ key, ...MAP_GUIDES[key] }))}
                 characters={CHARACTER_ROSTER.filter(c => isCharacterOwned(unlocks, c.key) && isCharacterClassAllowed(versusMap, getCharacterClassKey(c.key)) && (versusMode !== "ranked" || c.rarity !== "mythic")).map(c => ({ key: c.key, name: c.name, rarity: c.rarity, classKey: getCharacterClassKey(c.key), description: CHARACTER_ABILITIES[c.key].description }))}
                 selfName={username || "YOU"} rivalName={versusOpponent}
-                selfCharacter={getCharacterDefinition(selectedCharacter).name}
+                selfCharacter={getCharacterDefinition(versusCharacter).name}
                 rivalCharacter={getCharacterDefinition(versusOpponentCharacter ?? "runner_ace").name}
-                selected={selectedCharacter} busy={characterPickBusy} status={versusResult}
+                selected={versusCharacter} busy={characterPickBusy || versusLeaving} status={versusResult}
                 onBan={key => void submitMatchChoice("ban", key)} onPick={key => void submitMatchChoice("character", key)}
-                onLeave={() => void leaveVersusSession().then(left => { if (left) resetGameToMenu(); })}
+                onLeave={backToMenu}
               />
             ) : (mainView === "versus" || mainView === "modes") && playScope === "single" ? (
               <DuelHub special={mainView === "modes"} mode={versusMode} activeMode={rotatingMode}
@@ -13772,6 +13794,15 @@ function SkywayGame() {
                     <span>
                       {guest ? "GUEST RUNNER" : username || userEmail}
                     </span>
+                    {isOnlineVersus && (
+                      <button
+                        className="versus-leave-button"
+                        disabled={versusLeaving}
+                        onClick={backToMenu}
+                      >
+                        {versusLeaving ? "LEAVING…" : "LEAVE 1V1 · FORFEIT"}
+                      </button>
+                    )}
                   </div>
                 </header>
                 <div
@@ -15940,18 +15971,16 @@ function SkywayGame() {
               <header className="update-log-heading">
                 <p>WHAT CHANGED</p>
                 <h2 id="update-log-title">UPDATE LOG</h2>
-                <small>Newest updates appear first.</small>
+                <small>The latest 10 updates, newest first.</small>
               </header>
               <div className="update-log-list">
-                {UPDATE_LOG.map((entry, index) => (
+                {getRecentUpdates().map((entry, index) => (
                   <article
                     key={entry.id}
                     className={index === 0 ? "latest" : ""}
                   >
                     <header>
-                      <span>
-                        {String(UPDATE_LOG.length - index).padStart(2, "0")}
-                      </span>
+                      <span>{entry.version}</span>
                       <div>
                         <h3>{entry.title}</h3>
                         <time dateTime={entry.publishedAt}>
@@ -16691,18 +16720,18 @@ function SkywayGame() {
                                 className="equip-character"
                                 disabled={
                                   !focusedCharacterAvailable ||
+                                  characterEquipBusy ||
                                   running ||
                                   (mode === "hardcore" &&
                                     focusedCharacter.key !== "runner_ace")
                                 }
                                 onClick={() =>
                                   void equipInventoryCharacter(
-                                    classKey,
                                     focusedCharacter.key,
                                   )
                                 }
                               >
-                                {activeClass === classKey &&
+                                {characterEquipBusy ? "EQUIPPING…" : activeClass === classKey &&
                                 activeCharacter === focusedCharacter.key
                                   ? "EQUIPPED"
                                   : !focusedCharacterAvailable
