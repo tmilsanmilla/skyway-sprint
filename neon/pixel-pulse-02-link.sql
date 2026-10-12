@@ -36,7 +36,8 @@ begin
  if p.user_id is not null and p.username<>p_username then raise exception 'Shared usernames are immutable. Contact Pixel Pulse support.';end if;
  insert into app_private.pixel_links(issuer,subject,user_id,username,email,email_verified) values(v_issuer,p_subject,u,p_username,e,p_verified)
  on conflict(issuer,subject) do update set email=excluded.email,email_verified=excluded.email_verified;
- update neon_auth."user" set name=p_username,email=e,"emailVerified"=p_verified,"updatedAt"=clock_timestamp() where id=u;
+ update neon_auth."user" set name=p_username,email=e,
+  "emailVerified"=case when lower(btrim(email))=e then "emailVerified" or p_verified else p_verified end,"updatedAt"=clock_timestamp() where id=u;
  insert into public.player_profiles(user_id,username,username_changed_at) values(u,p_username,clock_timestamp())
  on conflict(user_id) do update set username=excluded.username,username_changed_at=case when public.player_profiles.username<>excluded.username then excluded.username_changed_at else public.player_profiles.username_changed_at end;
  delete from app_private.pixel_sessions where expires_at<clock_timestamp();

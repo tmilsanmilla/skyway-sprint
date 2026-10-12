@@ -16237,6 +16237,14 @@ function SkywayGame() {
                 </div>
               )}
 
+              {isPixelPulseAvailable && !pixelLinked && (
+                <a
+                  className="settings-action pixel-link-note"
+                  href="/connect/pixel-pulse?mode=link"
+                >
+                  LINK PIXEL PULSE (HIGHLY RECOMMENDED)
+                </a>
+              )}
               {pixelLinked ? (
                 <div className="pixel-linked-settings">
                   <b>PIXEL PULSE · {username}</b>
@@ -16293,14 +16301,6 @@ function SkywayGame() {
               )}
               {!usernameRequired && (
                 <>
-                  {isPixelPulseAvailable && !pixelLinked && (
-                    <a
-                      className="settings-action pixel-link-note"
-                      href="/connect/pixel-pulse?mode=link"
-                    >
-                      LINK PIXEL PULSE (HIGHLY RECOMMENDED)
-                    </a>
-                  )}
                   {pixelLinked ? null : editPassword ? (
                     <form onSubmit={changePassword}>
                       <label>

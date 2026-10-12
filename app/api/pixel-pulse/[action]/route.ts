@@ -54,7 +54,7 @@ async function route(request: Request, context: Context) {
       });
     }
     if (action === "status" && request.method === "GET")
-      return json({ enabled: pixelEnabled() });
+      return json({ enabled: pixelEnabled() && process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED === "true" });
     if (!["start", "callback", "session", "token", "signout"].includes(action))
       return json({ error: "Not found." }, 404);
     if (
@@ -66,6 +66,10 @@ async function route(request: Request, context: Context) {
     if (["callback", "session"].includes(action) && request.method !== "GET")
       return json({ error: "Method not allowed." }, 405);
     if (action === "session") {
+      const raw = (await cookies()).get(pixelCookieName(PIXEL_COOKIE))?.value;
+      if (!raw || !/^[A-Za-z0-9_-]{43}$/.test(raw)) return json({ session: null });
+      const quota = await consumePreAuthNetworkQuota(request);
+      if (quota !== "allowed") return json({ error: "Session checks are temporarily unavailable. Try again shortly." }, quota === "rate_limited" ? 429 : 503);
       const live = await getPixelSession();
       if (!live) return json({ session: null });
       const token = await pixelAccessToken(live);
@@ -99,8 +103,11 @@ async function route(request: Request, context: Context) {
     if (action === "signout") {
       const jar = await cookies(),
         raw = jar.get(pixelCookieName(PIXEL_COOKIE))?.value;
-      if (raw && neonServerSql)
+      if (raw && /^[A-Za-z0-9_-]{43}$/.test(raw) && neonServerSql) {
+        const quota = await consumePreAuthNetworkQuota(request);
+        if (quota !== "allowed") return json({ error: "Sign-out checks are temporarily unavailable. Try again shortly." }, quota === "rate_limited" ? 429 : 503);
         await neonServerSql`select app_private.pixel_session_revoke(${pixelHash(raw)}::text)`;
+      }
       const response = json({ ok: true });
       response.cookies.set(
         pixelCookieName(PIXEL_COOKIE),
@@ -123,6 +130,8 @@ async function route(request: Request, context: Context) {
         503,
       );
     if (action === "token") {
+      const quota = await consumePreAuthNetworkQuota(request);
+      if (quota !== "allowed") return json({ error: "Session checks are temporarily unavailable. Try again shortly." }, quota === "rate_limited" ? 429 : 503);
       const live = await getPixelSession();
       return live
         ? json({ token: await pixelAccessToken(live), user_id: live.user_id })
@@ -141,6 +150,7 @@ async function route(request: Request, context: Context) {
       );
     const configuration = await pixelConfiguration();
     if (action === "start") {
+      if (process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED !== "true") return json({ error: "Pixel Pulse linking is still being verified. Existing Skyway sign-in remains available." }, 503);
       const text = await request.text();
       if (text.length > 2048) return json({ error: "Invalid request." }, 413);
       const body = JSON.parse(text || "{}");
