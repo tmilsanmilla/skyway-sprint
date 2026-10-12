@@ -15,11 +15,12 @@ const {privateKey,publicKey}=await generateKeyPair('EdDSA');const hash=s=>create
 const name='mh_'+randomBytes(6).toString('hex'),email=name+'@example.invalid',subject=randomUUID();let nativeId;
 const base={sub:subject,name,preferred_username:name,email,email_verified:true,profile_version:0,credential_version:0,ticket_version:1,purpose:'pixel-pulse-account-management'};
 const fp=`select md5(coalesce(string_agg(to_jsonb(t)::text,'|' order by user_id),'empty')) as hash from player_stats t`;
-let proofCalls=0;
+let proofCalls=0,statusCalls=0;
 async function atomic(query,args){await db.query('savepoint rpc');try{const result=await db.query(query,args);await db.query('release savepoint rpc');return result;}catch(error){await db.query('rollback to savepoint rpc');await db.query('release savepoint rpc');throw error;}}
 const deps={enabled:true,quota:async()=> 'allowed',verify:(token,op)=>verifyPixelManagementTicket(token,op,async()=>publicKey),
- status:async p=>(await db.query('select app_private.pixel_account_status($1,$2,$3) as result',[p.subject,p.email,p.emailVerified])).rows[0].result,
+ status:async p=>{statusCalls++;return(await db.query('select app_private.pixel_account_status($1,$2,$3) as result',[p.subject,p.email,p.emailVerified])).rows[0].result;},
  takeTicket:async(jti,exp)=>(await db.query('select app_private.pixel_ticket_take($1,$2) as ok',[hash(jti),new Date(exp*1000)])).rows[0].ok,
+ retire:async p=>(await atomic('select app_private.pixel_retire_credentials($1,$2) as result',[p.subject,p.credentialVersion])).rows[0].result,
  sync:async p=>(await atomic('select app_private.pixel_sync_identity($1,$2,$3,$4,$5,$6) as result',[p.subject,p.username,p.email,p.emailVerified,p.profileVersion,p.credentialVersion])).rows[0].result,
  nativeProof:async(mail,password)=>{proofCalls++;assert.equal(mail,email);if(password!=='fixture-only-password')throw new Error('Wrong fixture password');return nativeId;},
  bind:async(p,op,user)=>(await atomic('select app_private.pixel_management_bind($1,$2,$3,$4,$5,$6,$7,$8,$9) as result',[p.subject,p.username,p.email,p.emailVerified,p.profileVersion,p.credentialVersion,op,user,hash(randomBytes(32))])).rows[0].result};
@@ -43,6 +44,13 @@ try{
  const link=await call('link',{}, {existingPassword:'fixture-only-password',user_id:randomUUID()});assert.equal(link.status,200);assert.equal(link.body.localAccountId,nativeId);assert.equal(link.body.message,'Linking successful');
  const replay=await call('link',{}, {existingPassword:'fixture-only-password'},link.token);assert.equal(replay.status,409);
  const synced=await call('sync',{name:name+' space',preferred_username:name+' space',profile_version:1,credential_version:1});assert.equal(synced.status,200);assert.equal(synced.body.profileVersion,1);assert.equal(synced.body.credentialVersion,1);
+ assert.equal(synced.body.synced,true);
+ const sessionHash=hash(randomBytes(32));await db.query('select app_private.pixel_bind_account_v2($1,$2,$3,true,null,$4,\'sign-in\',1,1,true)',[subject,name+' space',email,sessionHash]);
+ const partial=await call('sync',{name:name+' space',preferred_username:name+' space',email:name+'other@example.invalid',email_verified:false,profile_version:2,credential_version:2});
+ assert.equal(partial.status,409);assert.equal(partial.body.state,'linked');assert.equal(partial.body.synced,false);assert.equal(partial.body.securityApplied,true);assert.equal(partial.body.credentialVersion,2);assert.equal(partial.body.profileVersion,1);
+ assert.equal((await db.query('select app_private.pixel_session_get($1) as session',[sessionHash])).rows[0].session,null);
+ assert.equal((await db.query('select email from neon_auth."user" where id=$1',[nativeId])).rows[0].email,email);
+ const callsBefore=statusCalls;const unknown=await call('sync',{sub:randomUUID(),email_verified:false,credential_version:99});assert.equal(unknown.status,403);assert.equal(unknown.body.state,'verification_required');assert.equal(statusCalls,callsBefore);assert.equal(unknown.body.localAccountId,undefined);
  const stale=await call('sync');assert.equal(stale.status,409);
  const collision=await call('create');assert.equal(collision.status,409);
  const freshSubject=randomUUID(),freshName=name+'x';const fresh=await call('create',{sub:freshSubject,name:freshName,preferred_username:freshName,email:freshName+'@example.invalid'});assert.equal(fresh.status,200);assert.notEqual(fresh.body.localAccountId,nativeId);

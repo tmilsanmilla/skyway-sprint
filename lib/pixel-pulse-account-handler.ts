@@ -12,6 +12,7 @@ export type PixelAccountDependencies = {
   verify: (token: string, operation: PixelManagementOperation) => ReturnType<typeof verifyPixelManagementTicket>;
   status: (profile: PixelProfile) => Promise<PixelAccountReply>;
   takeTicket: (jti: string, expiresAt: number) => Promise<boolean>;
+  retire: (profile: PixelProfile) => Promise<PixelAccountReply | null>;
   sync: (profile: PixelProfile) => Promise<PixelAccountReply>;
   nativeProof: (email: string, password: string) => Promise<string>;
   bind: (profile: PixelProfile, operation: "link" | "create", nativeUser: string | null) => Promise<PixelAccountReply>;
@@ -53,7 +54,16 @@ export async function handlePixelAccount(request: Request, deps: PixelAccountDep
   try {
     if (body.operation === "status") return json(await deps.status(p));
     if (!await deps.takeTicket(ticket.jti, ticket.expiresAt)) return json({ error: "This account ticket expired or was already used." }, 409);
-    if (body.operation === "sync") return json(await deps.sync(p));
+    if (body.operation === "sync") {
+      const security = await deps.retire(p);
+      if (!security) return json({ state: p.emailVerified ? "conflict" : "verification_required", synced: false }, p.emailVerified ? 409 : 403);
+      try { return json({ ...await deps.sync(p), synced: true }); }
+      catch (error) {
+        const message = error instanceof Error && /^(This Pixel Pulse|This shared username|Your shared email|Choose a different shared|Verify your new email|Link the existing administrator)/.test(error.message)
+          ? error.message : "The profile update is pending. Old Pixel sessions have been expired.";
+        return json({ ...security, synced: false, securityApplied: true, error: message }, 409);
+      }
+    }
     if (!p.emailVerified) return json({ state: "verification_required" }, 403);
     let nativeUser: string | null = null;
     if (body.operation === "link") {

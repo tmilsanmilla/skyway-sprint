@@ -69,6 +69,12 @@ begin
  if app_private.pixel_session_get(repeat('1',64)) is not null then raise exception 'Old credential-version session survived';end if;
  failed:=false;begin perform app_private.pixel_bind_account_v2(s,n||' spaced',n||'new@example.invalid',true,null,repeat('6',64),'sign-in',2,0,true);exception when others then failed:=true;end;
  if not failed or app_private.pixel_session_get(repeat('6',64)) is not null then raise exception 'Missing/stale credential epoch created a fresh session';end if;
+ perform app_private.pixel_bind_account_v2(s,n||' spaced',n||'new@example.invalid',true,null,repeat('7',64),'sign-in',2,1,true);
+ r:=app_private.pixel_retire_credentials(s,2);
+ if (r->>'credentialVersion')::int<>2 or app_private.pixel_session_get(repeat('7',64)) is not null then raise exception 'Owned credential retirement did not expire old sessions';end if;
+ failed:=false;begin perform app_private.pixel_sync_identity(s,n||' spaced',n||'unverified@example.invalid',false,3,2);exception when others then failed:=true;end;
+ if not failed or (select credential_version from app_private.pixel_links where subject=s)<>2 or (select email from neon_auth."user" where id=native)<>n||'new@example.invalid' then raise exception 'Blocked profile rolled back security retirement or changed native email';end if;
+ if app_private.pixel_retire_credentials(gen_random_uuid(),99) is not null then raise exception 'Unknown subject was mapped during security retirement';end if;
  failed:=false;begin perform app_private.pixel_management_bind(s,n||' spaced',n||'new@example.invalid',true,2,1,'create',null,repeat('2',64));exception when others then failed:=true;end;
  if not failed then raise exception 'Create made a duplicate of a linked account';end if;
  if app_private.pixel_account_status(other,n||'new@example.invalid',true)->>'state'<>'conflict' then raise exception 'Email belonging to another subject was linkable';end if;
@@ -78,6 +84,6 @@ begin
  if (select count(*) from public.player_unlocks where user_id=fresh and item_type='character')<>4 then raise exception 'Management creation unlocked the catalog';end if;
  if not app_private.pixel_ticket_take(repeat('4',64),clock_timestamp()+interval '60 seconds') or app_private.pixel_ticket_take(repeat('4',64),clock_timestamp()+interval '60 seconds') then raise exception 'Mutation ticket replay guard failed';end if;
  if app_private.pixel_ticket_take(repeat('5',64),clock_timestamp()-interval '1 second') then raise exception 'Expired ticket was accepted';end if;
- if has_function_privilege('authenticated','app_private.pixel_sync_identity(uuid,text,text,boolean,bigint,bigint)','execute') or has_table_privilege('anonymous','app_private.pixel_management_tickets','select') then raise exception 'Management privileges escaped the backend';end if;
+ if has_function_privilege('authenticated','app_private.pixel_retire_credentials(uuid,bigint)','execute') or has_function_privilege('authenticated','app_private.pixel_sync_identity(uuid,text,text,boolean,bigint,bigint)','execute') or has_table_privilege('anonymous','app_private.pixel_management_tickets','select') then raise exception 'Management privileges escaped the backend';end if;
 end $management$;
 select 'Pixel identity, proof linking, retries, starters, currencies and access controls passed' as verification;

@@ -4,6 +4,22 @@ begin;
 alter table public.player_profiles drop constraint if exists username_format;
 alter table public.player_profiles add constraint username_format check(username~'^[A-Za-z0-9_ ]{3,25}$');
 
+-- Security effects are independent of profile/email conflicts. The HTTP caller
+-- commits this guarded RPC before attempting a separate full-profile sync.
+create or replace function app_private.pixel_retire_credentials(s uuid,cv bigint)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare p app_private.pixel_links;
+begin
+ if s is null or cv is null or cv not between 0 and 9007199254740991 then raise exception 'Invalid Pixel Pulse credential version';end if;
+ perform pg_advisory_xact_lock(hashtextextended('skyway-pixel:'||s::text,0));
+ select * into p from app_private.pixel_links where issuer='https://pixel-pulse-websites.vercel.app/api/sso' and subject=s for update;
+ if p.user_id is null then return null;end if;
+ if cv<p.credential_version then raise exception 'This Pixel Pulse credential version is older than the saved version';end if;
+ update app_private.pixel_links set credential_version=cv where issuer=p.issuer and subject=s;
+ delete from app_private.pixel_sessions where issuer=p.issuer and subject=s and credential_version<cv;
+ return jsonb_build_object('state','linked','localAccountId',p.user_id,'profileVersion',p.profile_version,'credentialVersion',cv);
+end $$;
+
 create or replace function app_private.pixel_sync_identity(s uuid,n text,e text,v boolean,pv bigint,cv bigint)
 returns jsonb language plpgsql security definer set search_path='' as $$
 declare p app_private.pixel_links;canonical text:=lower(btrim(regexp_replace(n,'[[:space:]]+',' ','g')));mail text:=lower(btrim(e));
@@ -141,8 +157,8 @@ create or replace function public.get_my_pixel_identity()
 returns jsonb language sql stable security definer set search_path='' as $$
  select jsonb_build_object('linked',true,'username',username,'profileVersion',profile_version,'credentialVersion',credential_version) from app_private.pixel_links where user_id=auth.uid();
 $$;
-revoke all on function app_private.pixel_bind_account(uuid,text,text,boolean,uuid,text,text),app_private.pixel_bind_account_v2(uuid,text,text,boolean,uuid,text,text,bigint,bigint,boolean),app_private.pixel_sync_identity(uuid,text,text,boolean,bigint,bigint),app_private.pixel_account_status(uuid,text,boolean),app_private.pixel_management_bind(uuid,text,text,boolean,bigint,bigint,text,uuid,text),app_private.enforce_pixel_username(),app_private.enforce_pixel_auth_profile() from public,anon,anonymous,authenticated;
-grant execute on function app_private.pixel_bind_account(uuid,text,text,boolean,uuid,text,text),app_private.pixel_bind_account_v2(uuid,text,text,boolean,uuid,text,text,bigint,bigint,boolean),app_private.pixel_sync_identity(uuid,text,text,boolean,bigint,bigint),app_private.pixel_account_status(uuid,text,boolean),app_private.pixel_management_bind(uuid,text,text,boolean,bigint,bigint,text,uuid,text) to skyway_server_api;
+revoke all on function app_private.pixel_retire_credentials(uuid,bigint),app_private.pixel_bind_account(uuid,text,text,boolean,uuid,text,text),app_private.pixel_bind_account_v2(uuid,text,text,boolean,uuid,text,text,bigint,bigint,boolean),app_private.pixel_sync_identity(uuid,text,text,boolean,bigint,bigint),app_private.pixel_account_status(uuid,text,boolean),app_private.pixel_management_bind(uuid,text,text,boolean,bigint,bigint,text,uuid,text),app_private.enforce_pixel_username(),app_private.enforce_pixel_auth_profile() from public,anon,anonymous,authenticated;
+grant execute on function app_private.pixel_retire_credentials(uuid,bigint),app_private.pixel_bind_account(uuid,text,text,boolean,uuid,text,text),app_private.pixel_bind_account_v2(uuid,text,text,boolean,uuid,text,text,bigint,bigint,boolean),app_private.pixel_sync_identity(uuid,text,text,boolean,bigint,bigint),app_private.pixel_account_status(uuid,text,boolean),app_private.pixel_management_bind(uuid,text,text,boolean,bigint,bigint,text,uuid,text) to skyway_server_api;
 revoke all on function public.get_my_pixel_identity() from public,anon,anonymous;
 grant execute on function public.get_my_pixel_identity() to authenticated;
 notify pgrst,'reload schema';

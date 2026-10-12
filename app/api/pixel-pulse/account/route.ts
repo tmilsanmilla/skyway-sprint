@@ -24,6 +24,10 @@ export async function POST(request: Request) {
       const [row] = await sql!`select app_private.pixel_ticket_take(${pixelHash(jti)}::text,${new Date(expiresAt * 1000).toISOString()}::timestamptz) as accepted`;
       return row?.accepted === true;
     },
+    retire: async p => {
+      const [row] = await sql!`select app_private.pixel_retire_credentials(${p.subject}::uuid,${p.credentialVersion}::bigint) as result`;
+      return row.result as PixelAccountReply | null;
+    },
     sync: async p => {
       const [row] = await sql!`select app_private.pixel_sync_identity(${p.subject}::uuid,${p.username}::text,${p.email}::text,${p.emailVerified}::boolean,${p.profileVersion}::bigint,${p.credentialVersion}::bigint) as result`;
       return row.result as PixelAccountReply;

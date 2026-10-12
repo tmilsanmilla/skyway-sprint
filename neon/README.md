@@ -99,6 +99,15 @@ all four operations, read-only status, verified-only lookup, mandatory native
 proof, ignored client IDs, no duplicate Create, persisted versions, stale writes
 and replay rejection. This is not a production central-ticket/HTTP assertion.
 The staged single-button screen passed a 390-pixel mobile overflow check.
+Security retirement is a separate immutable-sub RPC committed before profile
+sync and returning OAuth binding. A higher credential epoch expires owned old
+Pixel sessions even when a colliding or unverified profile/email cannot be saved.
+The partial response keeps the actual `linked` ID and saved profile version,
+acknowledges the applied credential version, and returns HTTP 409 with
+`synced=false`/`securityApplied=true`; it never claims the profile synced.
+Unknown unverified subjects return `verification_required` without an email
+lookup. Lower epochs never create a new session. These cases pass rollback-only
+SQL and full Request/Response fixture tests, not a production BFF assertion.
 The new endpoint and primary-button/profile UI are **not live** until the
 scheduled release passes real HTTP and browser checks; the hub remains Connecting.
 
