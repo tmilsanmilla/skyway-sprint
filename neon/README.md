@@ -1,5 +1,40 @@
 # Skyway Sprint on Neon
 
+## Pixel Pulse shared sign-in
+
+`pixel-pulse-01-sessions.sql` and `pixel-pulse-02-link.sql` add a separate,
+private Pixel Pulse sign-in bridge without replacing managed Neon passwords or
+sessions. Existing accounts must prove ownership with a native Skyway session
+before linking, even when their emails match. The mapped game UUID, inventory,
+scores, balances, bans and administrator roles are preserved. New Pixel users
+receive the normal four starter characters, not the full catalog. Central
+administrator roles are never imported. Linked usernames are canonical and
+cannot be changed independently on Skyway.
+
+The client uses public authorization-code OIDC with state, nonce and S256 PKCE.
+Passwords stay on Pixel Pulse (or Skyway for one-time existing-account proof).
+Private local cookies contain random tokens; only hashes are stored in Neon,
+with a seven-day maximum and explicit sign-out revocation. The game issues
+120-second, fixed `authenticated` database tokens for the mapped game UUID.
+Register Skyway's dedicated public verification key for this Neon branch only,
+using the Skyway audience and the existing managed Data API configuration.
+Pixel tokens include both the native Neon audience and Skyway audience; native
+tokens, role claims and database/RLS settings remain unchanged. Test both token classes,
+cross-account isolation and denied private-schema access before enabling it.
+
+Required deployment settings: `PIXEL_PULSE_GAME_SIGNING_KEY` (private RSA JWK,
+server secret), `PIXEL_PULSE_ENABLED=true`, and
+`NEXT_PUBLIC_PIXEL_PULSE_ENABLED=true`. Do not enable the flags until the
+registered callback, actual database migrations and both API token classes
+pass. Production callback is
+`https://skyway-sprint.vercel.app/api/pixel-pulse/callback`, client
+`skyway-sprint`. Central Link/Create entry is `/connect/pixel-pulse`.
+No Saved SQL Editor copies or account resets are needed.
+
+`scripts/test-pixel-db.mjs` is rollback-only. It accepts a
+`SKYWAY_TEST_DATABASE_URL` or uses the existing Neon CLI login; set
+`NEON_CLI_PATH` when invoking the CLI through Node. Never commit credentials.
+
 Skyway Sprint uses managed Neon Auth (Neon's managed Better Auth), Neon Data
 API for browser database calls, and Cloudflare for live 1v1 signaling. Supabase
 is retained only as a rollback copy and is not used by the migrated runtime.

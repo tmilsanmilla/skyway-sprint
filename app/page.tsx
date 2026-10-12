@@ -21,11 +21,25 @@ import {
   MODE_UNLOCKS,
   type EndlessMode,
 } from "./progression-rules";
-import { EXTRACTION_BOXES, DIRECT_UNLOCK_COSTS, directUnlockCost, canOpenBox, affordableBoxQuantity, type ExtractionOption, type PullProfile } from "./extraction-rules";
+import {
+  EXTRACTION_BOXES,
+  DIRECT_UNLOCK_COSTS,
+  directUnlockCost,
+  canOpenBox,
+  affordableBoxQuantity,
+  type ExtractionOption,
+  type PullProfile,
+} from "./extraction-rules";
 import { ExtractionBoxCards } from "./extraction-box-cards";
 import { LevelProgress } from "./level-progress";
 import { DuelHub, MatchSetupPanel, type SetupView } from "./duel-menus";
-import { activeRotatingMode, nextRotationAt, melonBaseScore, type DuelMode, type RotatingMode } from "./update-19-rules";
+import {
+  activeRotatingMode,
+  nextRotationAt,
+  melonBaseScore,
+  type DuelMode,
+  type RotatingMode,
+} from "./update-19-rules";
 import { Obstacle } from "./obstacle-sprite";
 import { addTurnDelays } from "./photon-fury-rules";
 import {
@@ -43,6 +57,8 @@ import {
   checkGuestDeviceAccess,
   completeManagedPasswordReset,
   ensureNeonCompatibleSession,
+  continueWithPixelPulse,
+  isPixelPulseAvailable,
   getDataAccessToken,
   isNeonDataEnabled,
   revokeDataSessionForSignOut,
@@ -53,10 +69,8 @@ import {
 } from "./skyway-client";
 import {
   getEffectiveCharacterTestMode,
-
   isAdminTestModeActive,
   isCharacterAvailable,
-
 } from "./admin-test-mode-rules";
 import {
   ECHO_QUESTS,
@@ -156,9 +170,6 @@ import {
   CURRENT_RULES,
   GROVE_RULES,
   MAP_IDS,
-
-
-
   PITCH_KATANA_RULES,
   VOLCANO_RULES,
   activatePitchKatana,
@@ -177,12 +188,10 @@ import {
   resetPitchKatanaAtWaveEnd,
   resolveCurrentInteraction,
   resolvePitchKatanaCollision,
-
   settlePitchKatanaWindow,
   type AttackId,
   type FactoryConveyorState,
   type MapId,
-
   type PitchKatanaState,
   type PurchasableAttackId,
 } from "./arena-map-rules";
@@ -1838,6 +1847,7 @@ export default function Home() {
 }
 
 function SkywayGame() {
+  const [pixelLinked, setPixelLinked] = useState(false);
   const [meadowBonusLane, setMeadowBonusLane] = useState(0);
   const meadowBonusLaneRef = useRef(0);
   const vortexGravityRef = useRef({ blockedDirection: 0, until: 0 });
@@ -2401,7 +2411,6 @@ function SkywayGame() {
     [isAdmin, setIsAdmin] = useState(false),
     [adminRole, setAdminRole] = useState<string | null>(null),
     [adminTestModeEnabled, setAdminTestModeEnabled] = useState(false),
-
     [adminTab, setAdminTab] = useState<
       "reports" | "admins" | "players" | "appeals"
     >("reports"),
@@ -2440,6 +2449,14 @@ function SkywayGame() {
     const params = new URLSearchParams(window.location.search);
     const token = params.get("token")?.trim();
     const recoveryError = params.get("error")?.trim();
+    const pixelError = params.get("pixel_error")?.trim();
+    if (pixelError) {
+      setAuthMode("signin");
+      setAuthMessage(pixelError);
+      window.history.replaceState({}, "", window.location.pathname);
+    } else if (params.has("pixel_connected")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
     if (token) {
       setGuest(false);
       setAuthMode("signin");
@@ -2465,7 +2482,6 @@ function SkywayGame() {
     [playScope, setPlayScope] = useState<PlayScope>("single"),
     [versusMode, setVersusMode] = useState<VersusMode>("casual"),
     [versusMap, setVersusMap] = useState<MapId>("classic"),
-
     [versusPhase, setVersusPhase] = useState<VersusPhase>("idle"),
     [versusOpponent, setVersusOpponent] = useState("WAITING…"),
     [versusOpponentCharacter, setVersusOpponentCharacter] =
@@ -2501,7 +2517,9 @@ function SkywayGame() {
   const [characterPickBusy, setCharacterPickBusy] = useState(false);
   const [matchSetup, setMatchSetup] = useState<SetupView | null>(null);
   const rngAssignedCharacterRef = useRef<string | null>(null);
-  const [rotatingMode, setRotatingMode] = useState<RotatingMode>(() => activeRotatingMode());
+  const [rotatingMode, setRotatingMode] = useState<RotatingMode>(() =>
+    activeRotatingMode(),
+  );
   const [rotationAt, setRotationAt] = useState(() => nextRotationAt());
   useEffect(() => {
     if (mainView !== "modes") return;
@@ -2511,21 +2529,29 @@ function SkywayGame() {
       if (!owner || guest) return;
       const { data, error } = await supabase.rpc("get_rotating_mode");
       if (cancelled || owner !== userIdRef.current || error) return;
-      if (data?.active_mode === "rng" || data?.active_mode === "hardcore_duel") {
+      if (
+        data?.active_mode === "rng" ||
+        data?.active_mode === "hardcore_duel"
+      ) {
         setRotatingMode(data.active_mode);
-        if (!versusMatchRef.current && !versusSearchingRef.current) setVersusMode(data.active_mode);
+        if (!versusMatchRef.current && !versusSearchingRef.current)
+          setVersusMode(data.active_mode);
       }
       const at = Date.parse(data?.next_rotation_at ?? "");
       if (Number.isFinite(at)) setRotationAt(at);
     };
     void refresh();
     const timer = window.setInterval(() => void refresh(), 30_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [mainView, guest]);
   const [weaponClock, setWeaponClock] = useState(0);
   useEffect(() => {
     if (
-      !matchSetup && !characterSelectionEndsAt &&
+      !matchSetup &&
+      !characterSelectionEndsAt &&
       !(
         playScope !== "single" &&
         (versusMap === "pitch" || versusMap === "terminal")
@@ -2825,30 +2851,46 @@ function SkywayGame() {
   const isBotPractice = playScope === "practice";
   const isVersusRun = playScope !== "single";
   const hardcoreDuel = isVersusRun && versusMode === "hardcore_duel";
-  const mode: GameMode = isVersusRun ? hardcoreDuel ? "hardcore" : "normal" : mainView === "endless" ? endlessMode : "normal";
+  const mode: GameMode = isVersusRun
+    ? hardcoreDuel
+      ? "hardcore"
+      : "normal"
+    : mainView === "endless"
+      ? endlessMode
+      : "normal";
   // Hardcore Duel doubles the final score on the server, after the finisher bonus.
   const modeRules = GAME_MODE_RULES[isVersusRun ? "normal" : mode];
   const activeMapId: MapId = isVersusRun ? versusMap : "classic";
   const activeMapRules = getMapRules(activeMapId);
   const activeLaneCount = activeMapRules.laneCount;
   const activeCenterLane = Math.floor(activeLaneCount / 2);
-  const healingEnabled = !hardcoreDuel && activeMapRules.health.healingMultiplier > 0;
+  const healingEnabled =
+    !hardcoreDuel && activeMapRules.health.healingMultiplier > 0;
   const activeMapGuide = MAP_GUIDES[activeMapId];
   const soundedCurrentsRef = useRef(new Set<number>());
   useEffect(() => {
     if (!running || paused || wavePause || activeMapId !== "skyway") return;
     void audioEngine.playSfx("highwayTraffic");
-    const timer = window.setInterval(() => void audioEngine.playSfx("highwayTraffic"), 4_000);
+    const timer = window.setInterval(
+      () => void audioEngine.playSfx("highwayTraffic"),
+      4_000,
+    );
     return () => window.clearInterval(timer);
   }, [running, paused, wavePause, activeMapId]);
   useEffect(() => {
     if (!running || paused) return;
-    const live = new Set(items.map(item => item.id));
-    for (const id of soundedCurrentsRef.current) if (!live.has(id)) soundedCurrentsRef.current.delete(id);
-    for (const item of items) if (item.kind === "current" && item.y >= 0 && !soundedCurrentsRef.current.has(item.id)) {
-      soundedCurrentsRef.current.add(item.id);
-      void audioEngine.playSfx("currentWind");
-    }
+    const live = new Set(items.map((item) => item.id));
+    for (const id of soundedCurrentsRef.current)
+      if (!live.has(id)) soundedCurrentsRef.current.delete(id);
+    for (const item of items)
+      if (
+        item.kind === "current" &&
+        item.y >= 0 &&
+        !soundedCurrentsRef.current.has(item.id)
+      ) {
+        soundedCurrentsRef.current.add(item.id);
+        void audioEngine.playSfx("currentWind");
+      }
   }, [items, running, paused]);
   useEffect(() => {
     if (!running || paused || wavePause || versusPhase !== "playing") return;
@@ -2957,7 +2999,10 @@ function SkywayGame() {
   };
   const canUseCharacter = useCallback(
     (characterKey?: string | null) =>
-      (isOnlineVersus && versusMode === "rng" && characterKey === rngAssignedCharacterRef.current) || isCharacterAvailable(isCharacterOwned(unlocks, characterKey), {
+      (isOnlineVersus &&
+        versusMode === "rng" &&
+        characterKey === rngAssignedCharacterRef.current) ||
+      isCharacterAvailable(isCharacterOwned(unlocks, characterKey), {
         isAdmin,
         testModeEnabled: effectiveCharacterTestMode,
       }),
@@ -4404,7 +4449,10 @@ function SkywayGame() {
         )
           return;
         if (!runId) {
-          showAbilityNotice("ACCOUNT PROGRESS CONNECTION ERROR · TRY AGAIN", 1800);
+          showAbilityNotice(
+            "ACCOUNT PROGRESS CONNECTION ERROR · TRY AGAIN",
+            1800,
+          );
           return;
         }
       } else {
@@ -4903,7 +4951,8 @@ function SkywayGame() {
         }
         applyTerminalSnapshot(data as VersusStatePayload);
         void audioEngine.playSfx(data?.sword_hit ? "swordHit" : "swordMiss");
-        if (terminalSwordRef.current.durability <= 0) void audioEngine.playSfx("swordBreak");
+        if (terminalSwordRef.current.durability <= 0)
+          void audioEngine.playSfx("swordBreak");
         showAbilityNotice(
           data?.sword_hit
             ? "SWORD HIT · RIVAL −1 HP"
@@ -7105,7 +7154,9 @@ function SkywayGame() {
     freshMatch = false,
   ) => {
     const hydrationIntent = ++versusHydrationIntentRef.current;
-    const { data, error } = await supabase.rpc("get_1v1_state", { p_match_id: matchId });
+    const { data, error } = await supabase.rpc("get_1v1_state", {
+      p_match_id: matchId,
+    });
     if (versusMatchRef.current !== matchId) return false;
     if (versusHydrationIntentRef.current !== hydrationIntent) return true;
     if (error || !data) {
@@ -7117,9 +7168,14 @@ function SkywayGame() {
     // Retired Test Mode cannot start new runs; old in-flight test runs stay unranked.
     const restoredRunTestMode = snapshot.self?.test_mode === true;
     const restoredMode = snapshot.match?.mode ?? "casual";
-    rngAssignedCharacterRef.current = restoredMode === "rng" ? snapshot.self?.character_key ?? null : null;
+    rngAssignedCharacterRef.current =
+      restoredMode === "rng" ? (snapshot.self?.character_key ?? null) : null;
     setVersusMode(restoredMode);
-    setMainView(restoredMode === "rng" || restoredMode === "hardcore_duel" ? "modes" : "versus");
+    setMainView(
+      restoredMode === "rng" || restoredMode === "hardcore_duel"
+        ? "modes"
+        : "versus",
+    );
     runIsTestModeRef.current = restoredRunTestMode;
     setRunIsTestMode(restoredRunTestMode);
     const restoredMap = normalizeMapId(snapshot.match?.map_key);
@@ -7133,7 +7189,8 @@ function SkywayGame() {
     );
     const restoredCandidate =
       isCharacterAvailable(
-        restoredMode === "rng" || isCharacterOwned(unlocks, validatedCharacter.characterKey),
+        restoredMode === "rng" ||
+          isCharacterOwned(unlocks, validatedCharacter.characterKey),
         {
           isAdmin,
           testModeEnabled: restoredRunTestMode,
@@ -7204,7 +7261,10 @@ function SkywayGame() {
           )
         : null;
     const matchStatus = snapshot.match?.status ?? "playing";
-    if (matchStatus !== "countdown") { setCharacterSelectionEndsAt(null); setMatchSetup(null); }
+    if (matchStatus !== "countdown") {
+      setCharacterSelectionEndsAt(null);
+      setMatchSetup(null);
+    }
     const selfEliminated = snapshot.self?.status === "eliminated";
     const matchFinished = matchStatus === "finished";
     const matchCancelled = matchStatus === "cancelled";
@@ -7441,8 +7501,15 @@ function SkywayGame() {
       setPaused(true);
       const setupPhase = snapshot.match?.setup_phase;
       setMatchSetup({
-        phase: setupPhase === "ban" || setupPhase === "announce" ? setupPhase : "character",
-        deadline: parseServerTime(snapshot.match?.setup_deadline ?? snapshot.match?.character_selection_ends_at, Date.now() + 15_000),
+        phase:
+          setupPhase === "ban" || setupPhase === "announce"
+            ? setupPhase
+            : "character",
+        deadline: parseServerTime(
+          snapshot.match?.setup_deadline ??
+            snapshot.match?.character_selection_ends_at,
+          Date.now() + 15_000,
+        ),
         candidates: snapshot.match?.map_candidates ?? [],
         ownBan: snapshot.match?.own_map_ban ?? null,
         revealedBans: snapshot.match?.revealed_bans ?? [],
@@ -7646,13 +7713,20 @@ function SkywayGame() {
     if (!matchId || characterPickBusy) return;
     setCharacterPickBusy(true);
     try {
-      const { error } = await supabase.rpc(kind === "ban" ? "ban_1v1_map" : "choose_1v1_character",
-        kind === "ban" ? { p_match_id: matchId, p_map_key: key } : { p_match_id: matchId, p_character_key: key });
+      const { error } = await supabase.rpc(
+        kind === "ban" ? "ban_1v1_map" : "choose_1v1_character",
+        kind === "ban"
+          ? { p_match_id: matchId, p_map_key: key }
+          : { p_match_id: matchId, p_character_key: key },
+      );
       if (versusMatchRef.current !== matchId) return;
       if (error) setVersusResult(error.message);
       else await hydrateVersusState(matchId, kind === "ban");
-    } catch { setVersusResult("COULD NOT SAVE YOUR CHOICE · TRY AGAIN"); }
-    finally { setCharacterPickBusy(false); }
+    } catch {
+      setVersusResult("COULD NOT SAVE YOUR CHOICE · TRY AGAIN");
+    } finally {
+      setCharacterPickBusy(false);
+    }
   };
   const findVersusMatch = async (preserveResult = false) => {
     if (guest) {
@@ -7660,13 +7734,20 @@ function SkywayGame() {
       return;
     }
     const effectiveVersusMode = versusMode;
-    if (effectiveVersusMode === "ranked" && !playerProgression.ranked_unlocked) {
+    if (
+      effectiveVersusMode === "ranked" &&
+      !playerProgression.ranked_unlocked
+    ) {
       setVersusResult("RANKED REQUIRES LEVEL 25 AND A ONE-TIME 100-GEM UNLOCK");
       return;
     }
-    if ((effectiveVersusMode === "rng" || effectiveVersusMode === "hardcore_duel") &&
-        (playerProgression.level < 5 || effectiveVersusMode !== rotatingMode)) {
-      setVersusResult("REACH LEVEL 5 AND CHOOSE TODAY’S ACTIVE MODE"); return;
+    if (
+      (effectiveVersusMode === "rng" ||
+        effectiveVersusMode === "hardcore_duel") &&
+      (playerProgression.level < 5 || effectiveVersusMode !== rotatingMode)
+    ) {
+      setVersusResult("REACH LEVEL 5 AND CHOOSE TODAY’S ACTIVE MODE");
+      return;
     }
     if (versusSearchingRef.current || versusLeaving || versusMatchRef.current)
       return;
@@ -7697,7 +7778,8 @@ function SkywayGame() {
         return;
       }
       if (data?.match_id) {
-        if (["casual", "ranked", "rng", "hardcore_duel"].includes(data.mode)) setVersusMode(data.mode);
+        if (["casual", "ranked", "rng", "hardcore_duel"].includes(data.mode))
+          setVersusMode(data.mode);
         versusSearchingRef.current = false;
         if (versusPollTimerRef.current) {
           clearTimeout(versusPollTimerRef.current);
@@ -7828,7 +7910,11 @@ function SkywayGame() {
     if (nextView === mainView && !versusLeaving) return;
     setPauseMenuOpen(false);
     setCharacterSelectionEndsAt(null);
-    if ((nextView === "versus" || nextView === "modes") && !isVersusRun && !versusSearchingRef.current) {
+    if (
+      (nextView === "versus" || nextView === "modes") &&
+      !isVersusRun &&
+      !versusSearchingRef.current
+    ) {
       cancelPendingProgressionStart();
       progressionStartIntentRef.current += 1;
       progressionRunIdRef.current = null;
@@ -7855,7 +7941,11 @@ function SkywayGame() {
       void leaveVersusSession().then((left) => {
         if (!left) return;
         resetGameToMenu();
-        setMainView(versusMode === "rng" || versusMode === "hardcore_duel" ? "modes" : "versus");
+        setMainView(
+          versusMode === "rng" || versusMode === "hardcore_duel"
+            ? "modes"
+            : "versus",
+        );
         if (versusMode === "ranked") void loadVersusLeaderboard();
       });
     } else {
@@ -8316,7 +8406,9 @@ function SkywayGame() {
       )
         characterSpeedMultiplier *= 1.5;
       const obstacleSpeedMultiplier =
-        currentSpeedMultiplier * characterSpeedMultiplier * (hardcoreDuel ? 1.1 : 1);
+        currentSpeedMultiplier *
+        characterSpeedMultiplier *
+        (hardcoreDuel ? 1.1 : 1);
       if (activeMapId === "volcano") {
         const previousStationaryMs = volcanoStationaryMsRef.current;
         const nextStationaryMs = previousStationaryMs + dt;
@@ -8894,7 +8986,8 @@ function SkywayGame() {
               activeMapId === "terminal" &&
               (n.kind === "rock" || n.kind === "spikes")
             ) {
-              if (terminalSwordRef.current.durability === 1) void audioEngine.playSfx("swordBreak");
+              if (terminalSwordRef.current.durability === 1)
+                void audioEngine.playSfx("swordBreak");
               terminalSwordRef.current = {
                 ...terminalSwordRef.current,
                 durability: Math.max(
@@ -9408,7 +9501,10 @@ function SkywayGame() {
               showAbilityNotice("CURRENT · FORCED LANE PUSH", 850);
               return [];
             } else if (n.kind === "snowflake") {
-              if (hardcoreDuel) { applyDirectMapDamage(1, "SNOWFLAKE HIT"); return []; }
+              if (hardcoreDuel) {
+                applyDirectMapDamage(1, "SNOWFLAKE HIT");
+                return [];
+              }
               if (activeCharacter === "trickster_phantom") {
                 if (wave % 5 === 0) {
                   state.current.hearts = Math.min(
@@ -11378,6 +11474,7 @@ function SkywayGame() {
           { data: owned },
           { data: loadout },
           { data: progression },
+          { data: pixelIdentity },
         ] = await Promise.all([
           supabase
             .from("player_stats")
@@ -11401,6 +11498,9 @@ function SkywayGame() {
             .eq("user_id", user.id)
             .maybeSingle(),
           supabase.rpc("get_player_progression"),
+          isPixelPulseAvailable
+            ? supabase.rpc("get_my_pixel_identity")
+            : Promise.resolve({ data: null }),
         ]);
         if (
           userIdRef.current !== sessionUserId ||
@@ -11426,6 +11526,12 @@ function SkywayGame() {
           setUsernameInput(profile.username);
           setUsernameRequired(false);
         } else setUsernameRequired(true);
+        setPixelLinked(
+          Boolean(
+            pixelIdentity?.linked ||
+            user.app_metadata?.provider === "pixel-pulse",
+          ),
+        );
         setIsAdmin(Boolean(admin));
         setAdminRole(role);
         const restoredTestMode = false;
@@ -11445,6 +11551,7 @@ function SkywayGame() {
         setEnvironmentCosmetic(safeLoadout.environmentCosmetic);
         applyProgressionPayload(progression, sessionUserId);
       } else {
+        setPixelLinked(false);
         setPlayerAccess(null);
         setPlayerAccessError("");
         setPlayerAccessChecking(false);
@@ -12266,9 +12373,21 @@ function SkywayGame() {
       gemsRef.current = nextGems;
       setGems(nextGems);
       setExtractQuantities((current) => ({
-        normal: Math.max(1, Math.min(current.normal, affordableBoxQuantity("normal", nextGems))),
-        rare: Math.max(1, Math.min(current.rare, affordableBoxQuantity("rare", nextGems))),
-        legendary: Math.max(1, Math.min(current.legendary, affordableBoxQuantity("legendary", nextGems))),
+        normal: Math.max(
+          1,
+          Math.min(current.normal, affordableBoxQuantity("normal", nextGems)),
+        ),
+        rare: Math.max(
+          1,
+          Math.min(current.rare, affordableBoxQuantity("rare", nextGems)),
+        ),
+        legendary: Math.max(
+          1,
+          Math.min(
+            current.legendary,
+            affordableBoxQuantity("legendary", nextGems),
+          ),
+        ),
       }));
       const newCount = results.filter((item) => item.is_new).length;
       const duplicateCount = results.length - newCount;
@@ -12287,9 +12406,7 @@ function SkywayGame() {
       setExtractAnimation("idle");
     }
   };
-  const equipInventoryCharacter = async (
-    characterKey: string,
-  ) => {
+  const equipInventoryCharacter = async (characterKey: string) => {
     if (characterEquipBusy) return;
     if (running) {
       setInventoryStatus("Character changes are only available before a run.");
@@ -12333,7 +12450,9 @@ function SkywayGame() {
       }
       setRunCharacterOverride(null);
       setSelectedCharacter(characterKey);
-      setInventoryStatus(`${getCharacterDefinition(characterKey).name} equipped.`);
+      setInventoryStatus(
+        `${getCharacterDefinition(characterKey).name} equipped.`,
+      );
     } catch {
       if (userIdRef.current === equipUserId)
         setInventoryStatus("Could not save your character. Please try again.");
@@ -12407,7 +12526,9 @@ function SkywayGame() {
     }
     const cost = directUnlockCost(item.rarity, item.item_type);
     if (cost === null) {
-      setInventoryStatus("Only Common, Uncommon, and Rare items can be directly unlocked.");
+      setInventoryStatus(
+        "Only Common, Uncommon, and Rare items can be directly unlocked.",
+      );
       return;
     }
     if (gemsRef.current < cost) {
@@ -12508,7 +12629,9 @@ function SkywayGame() {
     lockedCatalogItems.find((item) => item.item_key === directPurchaseKey) ??
     lockedCatalogItems[0] ??
     null;
-  const directPurchaseCost = directPurchaseItem ? directUnlockCost(directPurchaseItem.rarity, directPurchaseItem.item_type) : null;
+  const directPurchaseCost = directPurchaseItem
+    ? directUnlockCost(directPurchaseItem.rarity, directPurchaseItem.item_type)
+    : null;
   const directPurchaseCharacter =
     directPurchaseItem?.item_type === "character" &&
     Object.prototype.hasOwnProperty.call(
@@ -13472,8 +13595,8 @@ function SkywayGame() {
                   </button>
                   <small className="google-recovery-note">
                     Recovery email missing? Choose the Google account with the
-                    same email as your Skyway account. Your existing
-                    stats and inventory stay connected.
+                    same email as your Skyway account. Your existing stats and
+                    inventory stay connected.
                   </small>
                 </>
               )}
@@ -13495,6 +13618,39 @@ function SkywayGame() {
                   ? "New runner? Create an account"
                   : "Already registered? Sign in"}
               </button>
+              {isPixelPulseAvailable && (
+                <>
+                  <button
+                    className="pixel-auth-button"
+                    type="button"
+                    disabled={authBusy}
+                    onClick={() => {
+                      setAuthBusy(true);
+                      setAuthMessage("Opening Pixel Pulse…");
+                      void continueWithPixelPulse(
+                        authMode === "signup" ? "create" : "sign-in",
+                      ).catch((error) => {
+                        setAuthBusy(false);
+                        setAuthMessage(error.message);
+                      });
+                    }}
+                  >
+                    CONTINUE WITH PIXEL PULSE
+                  </button>
+                  <a
+                    className="pixel-link-note"
+                    href="/connect/pixel-pulse?mode=link"
+                  >
+                    Already have both accounts? Link account (highly
+                    recommended)
+                  </a>
+                  <small className="pixel-link-note">
+                    Signed into Pixel Pulse already? Continue without entering
+                    your password again. Use one username across connected
+                    websites.
+                  </small>
+                </>
+              )}
             </>
           )}
           {!recoveryToken && (
@@ -13541,10 +13697,13 @@ function SkywayGame() {
       <div
         className={`game-layout view-${mainView}${showPlayerLevel ? " has-player-level" : ""}`}
       >
-
         {showPlayerLevel && (
           <div className="report-utility-bar">
-            <LevelProgress level={playerProgression.level} xp={playerProgression.xp} required={playerProgression.xp_required} />
+            <LevelProgress
+              level={playerProgression.level}
+              xp={playerProgression.xp}
+              required={playerProgression.xp_required}
+            />
           </div>
         )}
         <section className="mode-actions" aria-label="Game modes">
@@ -13720,44 +13879,90 @@ function SkywayGame() {
               setGems(value);
             }}
           />
-
         ) : (
           <section
             id="main-game-panel"
             className={`game-card${(mainView === "versus" || mainView === "modes") && playScope === "single" ? " versus-hub-card" : ""}`}
             aria-label={
-              (mainView === "versus" || mainView === "modes") && playScope === "single"
+              (mainView === "versus" || mainView === "modes") &&
+              playScope === "single"
                 ? "Skyway Sprint 1v1 hub"
                 : "Skyway Sprint runner game"
             }
             aria-labelledby={
-              (mainView === "versus" || mainView === "modes") && playScope === "single"
+              (mainView === "versus" || mainView === "modes") &&
+              playScope === "single"
                 ? "versus-hub-title"
                 : undefined
             }
           >
             {matchSetup && playScope === "versus" ? (
-              <MatchSetupPanel setup={matchSetup} now={weaponClock || Date.now()}
+              <MatchSetupPanel
+                setup={matchSetup}
+                now={weaponClock || Date.now()}
                 map={{ key: versusMap, ...MAP_GUIDES[versusMap] }}
-                arenas={MAP_IDS.map(key => ({ key, ...MAP_GUIDES[key] }))}
-                characters={CHARACTER_ROSTER.filter(c => isCharacterOwned(unlocks, c.key) && isCharacterClassAllowed(versusMap, getCharacterClassKey(c.key)) && (versusMode !== "ranked" || c.rarity !== "mythic")).map(c => ({ key: c.key, name: c.name, rarity: c.rarity, classKey: getCharacterClassKey(c.key), description: CHARACTER_ABILITIES[c.key].description }))}
-                selfName={username || "YOU"} rivalName={versusOpponent}
+                arenas={MAP_IDS.map((key) => ({ key, ...MAP_GUIDES[key] }))}
+                characters={CHARACTER_ROSTER.filter(
+                  (c) =>
+                    isCharacterOwned(unlocks, c.key) &&
+                    isCharacterClassAllowed(
+                      versusMap,
+                      getCharacterClassKey(c.key),
+                    ) &&
+                    (versusMode !== "ranked" || c.rarity !== "mythic"),
+                ).map((c) => ({
+                  key: c.key,
+                  name: c.name,
+                  rarity: c.rarity,
+                  classKey: getCharacterClassKey(c.key),
+                  description: CHARACTER_ABILITIES[c.key].description,
+                }))}
+                selfName={username || "YOU"}
+                rivalName={versusOpponent}
                 selfCharacter={getCharacterDefinition(versusCharacter).name}
-                rivalCharacter={getCharacterDefinition(versusOpponentCharacter ?? "runner_ace").name}
-                selected={versusCharacter} busy={characterPickBusy || versusLeaving} status={versusResult}
-                onBan={key => void submitMatchChoice("ban", key)} onPick={key => void submitMatchChoice("character", key)}
+                rivalCharacter={
+                  getCharacterDefinition(
+                    versusOpponentCharacter ?? "runner_ace",
+                  ).name
+                }
+                selected={versusCharacter}
+                busy={characterPickBusy || versusLeaving}
+                status={versusResult}
+                onBan={(key) => void submitMatchChoice("ban", key)}
+                onPick={(key) => void submitMatchChoice("character", key)}
                 onLeave={backToMenu}
               />
-            ) : (mainView === "versus" || mainView === "modes") && playScope === "single" ? (
-              <DuelHub special={mainView === "modes"} mode={versusMode} activeMode={rotatingMode}
-                nextRotation={rotationAt} level={playerProgression.level} guest={guest}
-                rankedUnlocked={playerProgression.ranked_unlocked} rankedPurchased={playerProgression.ranked_purchased}
-                gems={gems} busy={versusLeaving} searching={versusPhase === "searching"} unlocking={rankedUnlockBusy}
-                status={versusResult} arenas={MAP_IDS.map(key => ({ key, ...MAP_GUIDES[key] }))}
-                attacks={VERSUS_ATTACKS} leaders={versusLeaders} leadersError={versusLeadersError} leadersLoading={versusLeadersLoading}
-                onMode={value => { setVersusMode(value); setVersusResult(""); if (value === "ranked") void loadVersusLeaderboard(); }}
-                onFind={() => void findVersusMatch()} onCancel={() => void cancelVersus()} onUnlock={() => void unlockRanked()}
-                onRefresh={() => void loadVersusLeaderboard()} onUpdates={() => setUpdateLogOpen(true)}
+            ) : (mainView === "versus" || mainView === "modes") &&
+              playScope === "single" ? (
+              <DuelHub
+                special={mainView === "modes"}
+                mode={versusMode}
+                activeMode={rotatingMode}
+                nextRotation={rotationAt}
+                level={playerProgression.level}
+                guest={guest}
+                rankedUnlocked={playerProgression.ranked_unlocked}
+                rankedPurchased={playerProgression.ranked_purchased}
+                gems={gems}
+                busy={versusLeaving}
+                searching={versusPhase === "searching"}
+                unlocking={rankedUnlockBusy}
+                status={versusResult}
+                arenas={MAP_IDS.map((key) => ({ key, ...MAP_GUIDES[key] }))}
+                attacks={VERSUS_ATTACKS}
+                leaders={versusLeaders}
+                leadersError={versusLeadersError}
+                leadersLoading={versusLeadersLoading}
+                onMode={(value) => {
+                  setVersusMode(value);
+                  setVersusResult("");
+                  if (value === "ranked") void loadVersusLeaderboard();
+                }}
+                onFind={() => void findVersusMatch()}
+                onCancel={() => void cancelVersus()}
+                onUnlock={() => void unlockRanked()}
+                onRefresh={() => void loadVersusLeaderboard()}
+                onUpdates={() => setUpdateLogOpen(true)}
               />
             ) : (
               <>
@@ -14670,7 +14875,11 @@ function SkywayGame() {
                         SPEED ×{getWaveSpeedMultiplier(wave).toFixed(2)}
                       </small>
                       {mode !== "normal" && (
-                        <small>{hardcoreDuel ? "FINAL SCORE ×2" : `SCORE ×${modeMultiplier.toFixed(2)}`}</small>
+                        <small>
+                          {hardcoreDuel
+                            ? "FINAL SCORE ×2"
+                            : `SCORE ×${modeMultiplier.toFixed(2)}`}
+                        </small>
                       )}
                     </div>
                     {activeCharacter === "runner_flare" &&
@@ -16028,7 +16237,22 @@ function SkywayGame() {
                 </div>
               )}
 
-              {usernameRequired || editUsername ? (
+              {pixelLinked ? (
+                <div className="pixel-linked-settings">
+                  <b>PIXEL PULSE · {username}</b>
+                  <p>
+                    Your shared username and password are managed on Pixel
+                    Pulse.
+                  </p>
+                  <a
+                    href="https://pixel-pulse-websites.vercel.app/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    OPEN PIXEL PULSE
+                  </a>
+                </div>
+              ) : usernameRequired || editUsername ? (
                 <form onSubmit={saveUsername}>
                   <label>
                     USERNAME
@@ -16069,7 +16293,15 @@ function SkywayGame() {
               )}
               {!usernameRequired && (
                 <>
-                  {editPassword ? (
+                  {isPixelPulseAvailable && !pixelLinked && (
+                    <a
+                      className="settings-action pixel-link-note"
+                      href="/connect/pixel-pulse?mode=link"
+                    >
+                      LINK PIXEL PULSE (HIGHLY RECOMMENDED)
+                    </a>
+                  )}
+                  {pixelLinked ? null : editPassword ? (
                     <form onSubmit={changePassword}>
                       <label>
                         CURRENT PASSWORD
@@ -16258,10 +16490,18 @@ function SkywayGame() {
               </button>
               <p>GEM SHOP</p>
               <h2 id="extraction-shop-title">EXTRACTION SHOP</h2>
-              <ExtractionBoxCards level={playerProgression.level} gems={gems} busy={extractBusy}
-                quantities={extractQuantities} extracting={extractingOption} setQuantities={setExtractQuantities}
-                onOpen={(option) => void extract(option)} />
-              <p className="box-duplicate-note">Duplicates give no new item and no gem refund.</p>
+              <ExtractionBoxCards
+                level={playerProgression.level}
+                gems={gems}
+                busy={extractBusy}
+                quantities={extractQuantities}
+                extracting={extractingOption}
+                setQuantities={setExtractQuantities}
+                onOpen={(option) => void extract(option)}
+              />
+              <p className="box-duplicate-note">
+                Duplicates give no new item and no gem refund.
+              </p>
               <div ref={extractFeedbackRef} className="extract-feedback">
                 {extractAnimation !== "idle" && extractingOption ? (
                   <div
@@ -16366,7 +16606,6 @@ function SkywayGame() {
                 ))}
               </div>
               <div className="inventory-scroll">
-
                 {!guest && (
                   <section className="inventory-direct-unlock">
                     <header>
@@ -16380,17 +16619,26 @@ function SkywayGame() {
                       className="direct-unlock-prices"
                       aria-label="Direct unlock prices"
                     >
-                      {(Object.keys(DIRECT_UNLOCK_COSTS) as (keyof typeof DIRECT_UNLOCK_COSTS)[]).map(
-                        (rarity) => (
-                          <span key={rarity} className={rarity}>
-                            <b>{rarity}</b>
-                            <small>COSMETIC ♦ {DIRECT_UNLOCK_COSTS[rarity].cosmetic}</small>
-                            <small>CHARACTER ♦ {DIRECT_UNLOCK_COSTS[rarity].character}</small>
-                          </span>
-                        ),
-                      )}
+                      {(
+                        Object.keys(
+                          DIRECT_UNLOCK_COSTS,
+                        ) as (keyof typeof DIRECT_UNLOCK_COSTS)[]
+                      ).map((rarity) => (
+                        <span key={rarity} className={rarity}>
+                          <b>{rarity}</b>
+                          <small>
+                            COSMETIC ♦ {DIRECT_UNLOCK_COSTS[rarity].cosmetic}
+                          </small>
+                          <small>
+                            CHARACTER ♦ {DIRECT_UNLOCK_COSTS[rarity].character}
+                          </small>
+                        </span>
+                      ))}
                     </div>
-                    <p className="direct-unlock-note">Common, Uncommon, and Rare only. Epic, Legendary, and Mythic items come from boxes.</p>
+                    <p className="direct-unlock-note">
+                      Common, Uncommon, and Rare only. Epic, Legendary, and
+                      Mythic items come from boxes.
+                    </p>
                     {directPurchaseItem ? (
                       <div className="direct-unlock-picker">
                         <label>
@@ -16422,7 +16670,8 @@ function SkywayGame() {
                           type="button"
                           disabled={
                             directPurchaseBusy ||
-                            directPurchaseCost === null || gems < directPurchaseCost
+                            directPurchaseCost === null ||
+                            gems < directPurchaseCost
                           }
                           onClick={() => void purchaseCatalogItem()}
                         >
@@ -16433,7 +16682,8 @@ function SkywayGame() {
                       </div>
                     ) : (
                       <p className="direct-unlock-complete">
-                        ALL DIRECT-PURCHASE ITEMS ARE ALREADY UNLOCKED. MORE ITEMS MAY STILL BE AVAILABLE IN BOXES.
+                        ALL DIRECT-PURCHASE ITEMS ARE ALREADY UNLOCKED. MORE
+                        ITEMS MAY STILL BE AVAILABLE IN BOXES.
                       </p>
                     )}
                   </section>
@@ -16731,12 +16981,14 @@ function SkywayGame() {
                                   )
                                 }
                               >
-                                {characterEquipBusy ? "EQUIPPING…" : activeClass === classKey &&
-                                activeCharacter === focusedCharacter.key
-                                  ? "EQUIPPED"
-                                  : !focusedCharacterAvailable
-                                    ? "LOCKED · EXTRACT IN SHOP"
-                                    : "EQUIP CHARACTER"}
+                                {characterEquipBusy
+                                  ? "EQUIPPING…"
+                                  : activeClass === classKey &&
+                                      activeCharacter === focusedCharacter.key
+                                    ? "EQUIPPED"
+                                    : !focusedCharacterAvailable
+                                      ? "LOCKED · EXTRACT IN SHOP"
+                                      : "EQUIP CHARACTER"}
                               </button>
                             </div>
                             <section className="character-ability-explainer">

@@ -19,5 +19,5 @@ test("the shared in-game ability popup can be minimized without hiding its resto
   );
   assert.match(source, /aria-label=\{[\s\S]*?"Expand ability status"[\s\S]*?"Minimize ability status"/);
   assert.match(source, /\{!abilitySidePanelCollapsed && \([\s\S]*?id="ability-side-panel-body"/);
-  assert.match(styles, /\.ability-side-panel\.minimized\{[^}]*overflow:hidden/);
+  assert.match(styles, /\.ability-side-panel\.minimized\s*\{[^}]*overflow\s*:\s*hidden/);
 });

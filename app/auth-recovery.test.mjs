@@ -21,5 +21,5 @@ test("Google provides a no-email recovery path without replacing player data", (
   assert.match(source, /provider: "google"/);
   assert.match(source, /CONTINUE WITH GOOGLE/);
   assert.match(source, /same\s+email as your Skyway account/i);
-  assert.match(source, /stats and inventory\s+stay connected/i);
+  assert.match(source, /stats\s+and\s+inventory\s+stay connected/i);
 });

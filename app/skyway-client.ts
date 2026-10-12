@@ -23,13 +23,161 @@ const neonAuth = createInternalNeonAuth<SupabaseAuthAdapterInstance>(
   },
 );
 const managedAuthClient = neonAuth.adapter;
+export const isPixelPulseAvailable =
+  process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED === "true";
+
+const readPixelSession = async (): Promise<Session | null> => {
+  if (!isPixelPulseAvailable) return null;
+  const response = await fetch("/api/pixel-pulse/session", {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  if (!response.ok)
+    throw new Error("Pixel Pulse session check is temporarily unavailable.");
+  return ((await response.json()) as { session: Session | null }).session;
+};
+export const continueWithPixelPulse = async (
+  intent: "sign-in" | "link" | "create" = "sign-in",
+) => {
+  const response = await fetch("/api/pixel-pulse/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ intent }),
+    cache: "no-store",
+  });
+  const result = (await response.json()) as { url?: string; error?: string };
+  if (!response.ok || !result.url)
+    throw new Error(result.error || "Pixel Pulse sign-in could not start.");
+  const target = new URL(result.url);
+  if (
+    target.origin !== "https://pixel-pulse-websites.vercel.app" ||
+    target.pathname !== "/api/sso/oauth2/authorize"
+  )
+    throw new Error("Pixel Pulse returned an invalid sign-in destination.");
+  window.location.assign(target.href);
+};
+const clearPixelSession = async () => {
+  if (!isPixelPulseAvailable) return;
+  const response = await fetch("/api/pixel-pulse/signout", {
+    method: "POST",
+    cache: "no-store",
+  });
+  if (!response.ok)
+    throw new Error(
+      "Could not finish signing out of Pixel Pulse on this game.",
+    );
+};
+const authOverrides = {
+  getSession: async () => {
+    const session = await readPixelSession();
+    return session
+      ? { data: { session }, error: null }
+      : managedAuthClient.getSession();
+  },
+  signOut: async (...args: Parameters<typeof managedAuthClient.signOut>) => {
+    await clearPixelSession();
+    return managedAuthClient.signOut(...args);
+  },
+  signInWithPassword: async (
+    ...args: Parameters<typeof managedAuthClient.signInWithPassword>
+  ) => {
+    await clearPixelSession();
+    return managedAuthClient.signInWithPassword(...args);
+  },
+  signUp: async (...args: Parameters<typeof managedAuthClient.signUp>) => {
+    await clearPixelSession();
+    return managedAuthClient.signUp(...args);
+  },
+  onAuthStateChange: (
+    ...args: Parameters<typeof managedAuthClient.onAuthStateChange>
+  ) => {
+    let subscribed = true;
+    const callback = args[0];
+    const result = managedAuthClient.onAuthStateChange(
+      async (event, session) => {
+        if (!isPixelPulseAvailable) {
+          if (subscribed) callback(event, session);
+          return;
+        }
+        try {
+          const pixel = await readPixelSession();
+          if (subscribed)
+            callback(pixel ? "SIGNED_IN" : event, pixel || session);
+        } catch {
+          /* Keep the previous verified account during a transient network failure. */
+        }
+      },
+    );
+    const unsubscribe = result.data.subscription.unsubscribe.bind(
+      result.data.subscription,
+    );
+    result.data.subscription.unsubscribe = () => {
+      subscribed = false;
+      unsubscribe();
+    };
+    return result;
+  },
+};
+const skywayAuthClient = new Proxy(managedAuthClient, {
+  get(target, property) {
+    if (Object.hasOwn(authOverrides, property))
+      return authOverrides[property as keyof typeof authOverrides];
+    const value = Reflect.get(target, property);
+    return typeof value === "function" ? value.bind(target) : value;
+  },
+});
 
 type DataSession = {
   userId: string;
   accessToken: string;
+  pixelPulse: boolean;
 };
 
 let dataSession: DataSession | null = null;
+let pixelTokenRefresh: Promise<string | null> | null = null;
+const dataToken = async () => {
+  const current = dataSession;
+  if (!current?.pixelPulse) return current?.accessToken ?? null;
+  let expires = 0;
+  try {
+    expires = JSON.parse(
+      atob(
+        current.accessToken
+          .split(".")[1]
+          .replaceAll("-", "+")
+          .replaceAll("_", "/"),
+      ),
+    ).exp;
+  } catch {
+    /* Fetch a new, server-verified token. */
+  }
+  if (expires > Date.now() / 1000 + 30) return current.accessToken;
+  if (!pixelTokenRefresh)
+    pixelTokenRefresh = (async () => {
+      const response = await fetch("/api/pixel-pulse/token", {
+        method: "POST",
+        cache: "no-store",
+      });
+      const result = (await response.json()) as {
+        token?: string;
+        user_id?: string;
+      };
+      if (
+        !response.ok ||
+        !result.token ||
+        result.user_id !== current.userId ||
+        dataSession !== current
+      )
+        throw new Error(
+          "Pixel Pulse session expired or changed. Sign in again.",
+        );
+      current.accessToken = result.token;
+      return result.token;
+    })().finally(() => {
+      pixelTokenRefresh = null;
+    });
+  return pixelTokenRefresh;
+};
 
 const neonDataClient = neonDataApiUrl
   ? new NeonPostgrestClient({
@@ -37,7 +185,7 @@ const neonDataClient = neonDataApiUrl
       options: {
         db: { schema: "public" },
         global: {
-          fetch: fetchWithToken(async () => dataSession?.accessToken ?? null),
+          fetch: fetchWithToken(dataToken),
         },
       },
     })
@@ -111,11 +259,12 @@ const routedRpc = (
  * live 1v1 invalidation uses Cloudflare rather than a second database feed.
  */
 export const supabase: SkywayClient = {
-  auth: managedAuthClient,
+  auth: skywayAuthClient,
   channel: (() => {
     throw new Error("Supabase Realtime is not available after Neon cutover.");
   }) as SupabaseClient["channel"],
-  removeChannel: (() => Promise.resolve("ok")) as SupabaseClient["removeChannel"],
+  removeChannel: (() =>
+    Promise.resolve("ok")) as SupabaseClient["removeChannel"],
   from: databaseClient.from.bind(databaseClient) as SupabaseClient["from"],
   rpc: routedRpc as SupabaseClient["rpc"],
 };
@@ -134,15 +283,13 @@ export const setDataSession = (
   dataSession = {
     userId: expectedUserId,
     accessToken: session.access_token,
+    pixelPulse: session.user.app_metadata?.provider === "pixel-pulse",
   };
   return true;
 };
 
 export const getDataAccessToken = (expectedUserId?: string | null) => {
-  if (
-    expectedUserId !== undefined &&
-    dataSession?.userId !== expectedUserId
-  )
+  if (expectedUserId !== undefined && dataSession?.userId !== expectedUserId)
     return null;
   return dataSession?.accessToken ?? null;
 };
@@ -212,15 +359,23 @@ export const setRealtimeMutationListener = (
 
 export const ensureNeonCompatibleSession = async (session: Session | null) => {
   if (!session || !neonDataClient) return session;
+  if (session.user.app_metadata?.provider === "pixel-pulse") {
+    const fresh = await readPixelSession();
+    if (!fresh || fresh.user.id !== session.user.id)
+      throw new Error("Pixel Pulse session expired or changed. Sign in again.");
+    return fresh;
+  }
   // The Next.js session cache may contain an opaque Better Auth session token.
   // Data API needs the signed JWT from /token, never that cached session token.
   // The pinned Neon adapter routes /token through its get-session cache. With
   // a warm cache, token() otherwise returns { session, user }, not { token }.
   // Its supported force-fetch header bypasses that cache and is stripped by
   // the adapter before the request reaches our same-origin auth proxy.
-  const { data, error } = await managedAuthClient.getBetterAuthInstance().token({
-    fetchOptions: { headers: { "X-Force-Fetch": "true" } },
-  });
+  const { data, error } = await managedAuthClient
+    .getBetterAuthInstance()
+    .token({
+      fetchOptions: { headers: { "X-Force-Fetch": "true" } },
+    });
   const accessToken = data?.token;
   if (error || !accessToken || accessToken.split(".").length !== 3)
     throw new Error("Could not obtain a Neon database access token.");

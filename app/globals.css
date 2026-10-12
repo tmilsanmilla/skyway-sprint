@@ -783,3 +783,14 @@
   .assigned-characters { gap: 10px; }
   .assigned-characters b { font-size: 18px; }
 }
+.pixel-auth-button { background: linear-gradient(130deg,#484ee5,#7736ba) !important; color: white; width: 100%; margin-top: 16px; min-height: 48px; }
+.pixel-link-note { display: block; text-align: center; margin: 12px 0; color: #7ec5fa; font-size: 14px; line-height: 1.6; }
+.pixel-linked-settings { padding: 20px; background: #181b35; border: 1px solid #6166c1; border-radius: 12px; color: #e2e5ff; }
+.pixel-linked-settings p { font-size: 15px; line-height: 1.6; }
+.pixel-linked-settings a { color: #95cafa; }
+.pixel-link-card { max-width: 600px; }
+.pixel-link-card > p { color: #c4c9e5; line-height: 1.6; font-size: 15px; }
+.pixel-link-card h2 { font-size: 19px; margin-bottom: 8px; }
+.pixel-link-option { margin: 20px 0; padding: 20px; border: 1px solid #393c6b; border-radius: 12px; background: #14162d; }
+.pixel-link-option p { color: #c4c9e5; font-size: 15px; line-height: 1.6; }
+.pixel-link-card a { color: #95cafa; }

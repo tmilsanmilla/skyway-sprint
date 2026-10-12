@@ -15,7 +15,7 @@ test("the player display and run summary never render numerical XP", () => {
   assert.doesNotMatch(card,/\bXP\b|toLocaleString|xp_required/);
   assert.match(card,/role="progressbar"/);
   assert.match(card,/aria-valuetext/);
-  assert.match(page,/<LevelProgress level=\{playerProgression.level\}/);
+  assert.match(page,/<LevelProgress\s+level=\{playerProgression.level\}/);
   assert.doesNotMatch(page,/run-xp-summary|lastRunXpBreakdown|<b>XP<\/b>|XP earned this run/);
 });
 test("the new reset is one-time and preserves non-progression data and receipt IDs", () => {
