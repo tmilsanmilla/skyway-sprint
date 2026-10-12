@@ -27,6 +27,7 @@ begin
   insert into neon_auth."user"(name,email,"emailVerified") values(p_username,e,p_verified) returning id into u;
  else
   if not exists(select 1 from neon_auth."user" where id=u) then raise exception 'The existing Skyway account is unavailable';end if;
+  if e='tmilsanmilla@gmail.com' and not exists(select 1 from neon_auth."user" where id=u and lower(btrim(email))=e) then raise exception 'Link the existing administrator account instead';end if;
   if p.user_id is null and not exists(select 1 from neon_auth."user" where id=u and lower(btrim(email))=e) then
    raise exception 'Use the same email on Pixel Pulse and your existing Skyway account before linking';end if;
   if exists(select 1 from app_private.pixel_links where user_id=u and subject<>p_subject) then raise exception 'This Skyway account is linked to another Pixel Pulse account';end if;
