@@ -4,12 +4,15 @@
 
 `pixel-pulse-01-sessions.sql` and `pixel-pulse-02-link.sql` add a separate,
 private Pixel Pulse sign-in bridge without replacing managed Neon passwords or
-sessions. Existing accounts must prove ownership with a native Skyway session
-before linking, even when their emails match. The mapped game UUID, inventory,
+sessions. Explicit linking requires native Skyway password/session proof.
+Normal Continue can adopt an exact, unique same-email native account only when
+both native and signed Pixel emails are verified, under the user's shared-site
+instruction. Unverified or ambiguous matches never auto-link. The mapped game UUID, inventory,
 scores, balances, bans and administrator roles are preserved. New Pixel users
 receive the normal four starter characters, not the full catalog. Central
-administrator roles are never imported. Linked usernames are canonical and
-cannot be changed independently on Skyway.
+administrator roles are never imported. Linked usernames are canonical, support
+3–25 lowercase letters/numbers/underscores/spaces, and can be changed centrally.
+Native updates cannot independently replace a linked name or email.
 
 The client uses public authorization-code OIDC with state, nonce and S256 PKCE.
 Passwords stay on Pixel Pulse (or Skyway for one-time existing-account proof).
@@ -61,6 +64,51 @@ Do not enable a hub entry or claim the public flow is complete before that test.
 `reconnect-pixel-gateway.mjs` is an approval-gated maintenance script, not a
 routine test; it automatically restores the original gateway if verification
 fails. Never delete the Auth service, database or branch for a gateway repair.
+
+## Versioned account-hub contract (staged app release)
+
+The prepared `/api/pixel-pulse/account` endpoint implements signed server-to-server
+`status`, `sync`, `link` and `create`. Tickets use the existing issuer/JWKS and
+EdDSA, exact audience `skyway-sprint`, `ticket_version=1`, purpose
+`pixel-pulse-account-management`, matching signed/body operation, a random jti,
+iat/exp no more than 60 seconds apart, and nonnegative safe-integer
+`profile_version`/`credential_version`. No roles are read from the ticket.
+Status is read-only and reveals no legacy ID/data from an email match; only an
+already-bound subject returns its own game ID and versions. Unverified email
+cannot probe existence. Mutation ticket hashes are one-use and bounded by expiry.
+
+Sync only updates an existing subject binding, checks versions/collisions and
+requires verified new email. Changes persist atomically to the Pixel link,
+managed Neon user and game username; no password hashes or game data are copied.
+Increasing the credential version revokes old Pixel cookies. Explicit hub Link
+verifies the existing **game** password directly with managed Neon and closes
+that isolated proof session; it never falls back to creating an account. Create
+requires a verified email and rechecks that no account/binding already exists.
+Successful Link/Create returns `Linking successful` only after database commit.
+Native password hashes remain preserved for legacy account proof/recovery; they
+are not replaced with the Pixel password. The credential epoch controls Pixel
+sessions, not a claim that legacy native credentials were physically changed.
+
+These private helpers are consolidated into Pixel 01/02 above, applied directly
+to Neon on October 12, and passed rollback tests with protected account/password/
+inventory/stats/admin checksums unchanged. Actual native-password proof passed.
+The auth-only app passed 238 tests, lint, type checking and a production build.
+`scripts/test-pixel-account-handler.mjs` also tests the complete Request/Response
+pipeline with disposable signing keys and rolled-back Neon fixtures. It checks
+all four operations, read-only status, verified-only lookup, mandatory native
+proof, ignored client IDs, no duplicate Create, persisted versions, stale writes
+and replay rejection. This is not a production central-ticket/HTTP assertion.
+The staged single-button screen passed a 390-pixel mobile overflow check.
+The new endpoint and primary-button/profile UI are **not live** until the
+scheduled release passes real HTTP and browser checks; the hub remains Connecting.
+
+Unlinked native-email changes remain a provider blocker: actual
+`/email-otp/request-email-change` returns `Change email with OTP is disabled`.
+`scripts/diagnose-native-email.mjs` uses only exact disposable fixtures and
+reports that capability, not successful email delivery. Do not bypass the
+new-address check or directly invent a verification flag. Linked identities can
+use centrally verified email sync; unlinked native changes require a supported
+managed-provider enablement before a working change-email UI is advertised.
 
 Skyway Sprint uses managed Neon Auth (Neon's managed Better Auth), Neon Data
 API for browser database calls, and Cloudflare for live 1v1 signaling. Supabase

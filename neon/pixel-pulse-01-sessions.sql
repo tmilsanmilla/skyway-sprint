@@ -4,7 +4,7 @@ begin;
 create table if not exists app_private.pixel_links(
  issuer text not null check(issuer='https://pixel-pulse-websites.vercel.app/api/sso'),subject uuid not null,
  user_id uuid not null unique references neon_auth."user"(id) on delete cascade,
- username text not null unique check(username~'^[a-z0-9_]{3,24}$'),email text not null,email_verified boolean not null,
+ username text not null unique check(username~'^[a-z0-9_ ]{3,25}$'),email text not null,email_verified boolean not null,
  linked_at timestamptz not null default clock_timestamp(),primary key(issuer,subject));
 create table if not exists app_private.pixel_login_attempts(
  state_hash text primary key check(state_hash~'^[a-f0-9]{64}$'),browser_hash text not null,
@@ -17,6 +17,25 @@ create table if not exists app_private.pixel_sessions(
 alter table app_private.pixel_links enable row level security;
 alter table app_private.pixel_login_attempts enable row level security;
 alter table app_private.pixel_sessions enable row level security;
+alter table app_private.pixel_links drop constraint if exists pixel_links_username_check;
+alter table app_private.pixel_links add constraint pixel_links_username_check check(username~'^[a-z0-9_ ]{3,25}$' and username=lower(btrim(regexp_replace(username,'[[:space:]]+',' ','g'))));
+alter table app_private.pixel_links add column if not exists profile_version bigint not null default 0 check(profile_version between 0 and 9007199254740991);
+alter table app_private.pixel_links add column if not exists credential_version bigint not null default 0 check(credential_version between 0 and 9007199254740991);
+alter table app_private.pixel_sessions add column if not exists credential_version bigint not null default 0;
+create table if not exists app_private.pixel_management_tickets(
+ ticket_hash text primary key check(ticket_hash~'^[a-f0-9]{64}$'), expires_at timestamptz not null);
+alter table app_private.pixel_management_tickets enable row level security;
+revoke all on app_private.pixel_management_tickets from public,anon,anonymous,authenticated,skyway_server_api;
+create or replace function app_private.pixel_ticket_take(h text,e timestamptz)
+returns boolean language plpgsql security definer set search_path='' as $$
+begin
+ if h is null or h!~'^[a-f0-9]{64}$' or e is null or e<=clock_timestamp() or e>clock_timestamp()+interval '65 seconds' then return false;end if;
+ delete from app_private.pixel_management_tickets where ticket_hash in(select ticket_hash from app_private.pixel_management_tickets where expires_at<clock_timestamp() limit 100);
+ insert into app_private.pixel_management_tickets values(h,e) on conflict do nothing;
+ return found;
+end $$;
+revoke all on function app_private.pixel_ticket_take(text,timestamptz) from public,anon,anonymous,authenticated;
+grant execute on function app_private.pixel_ticket_take(text,timestamptz) to skyway_server_api;
 revoke all on app_private.pixel_links,app_private.pixel_login_attempts,app_private.pixel_sessions from public,anon,anonymous,authenticated,skyway_server_api;
 create or replace function app_private.pixel_attempt_begin(s text,b text,v text,n text,i text,u uuid)
 returns void language plpgsql security definer set search_path='' as $$
@@ -37,9 +56,9 @@ end $$;
 create or replace function app_private.pixel_session_get(h text)
 returns jsonb language sql stable security definer set search_path='' as $$
  select jsonb_build_object('user_id',p.user_id,'subject',p.subject,'username',p.username,'email',p.email,
- 'email_verified',p.email_verified,'expires_at',s.expires_at,'created_at',s.created_at)
+ 'email_verified',p.email_verified,'profile_version',p.profile_version,'credential_version',p.credential_version,'expires_at',s.expires_at,'created_at',s.created_at)
  from app_private.pixel_sessions s join app_private.pixel_links p using(issuer,subject) join neon_auth."user" u on u.id=p.user_id
- where s.token_hash=h and s.expires_at>clock_timestamp() and
+ where s.token_hash=h and s.expires_at>clock_timestamp() and s.credential_version=p.credential_version and
  (not coalesce(u.banned,false) or (u."banExpires" is not null and u."banExpires"<clock_timestamp()));
 $$;
 create or replace function app_private.pixel_session_revoke(h text)
