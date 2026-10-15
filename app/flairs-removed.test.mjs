@@ -17,7 +17,9 @@ test("all 80 characters, their active skills, and map weapons remain",()=>{
   assert.match(page,/terminalSwordRef/);
   assert.match(page,/renderedKatanaState/);
   const photon=readFileSync(new URL("./photon-fury.tsx",import.meta.url),"utf8");
-  assert.match(photon,/LIGHTSABER/);
+  assert.match(photon,/activatePhotonSaber/);
+  const rules=readFileSync(new URL("./photon-fury-rules.ts",import.meta.url),"utf8");
+  assert.match(rules,/Lightsaber/);
 });
 test("flair-only stat and health extras do not survive without equipment",()=>{
   assert.doesNotMatch(page,/RELAY ROD · \+10 SCORE|HALO STAFF · \+1 HP|WORLD MAUL · DAMAGE HALVED|FATE SENSOR · (?:FIRST|SECOND)|PHOENIX FEATHER · FIRST OBSTACLE/);

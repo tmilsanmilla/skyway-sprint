@@ -178,6 +178,13 @@ import {
   createFactoryConveyorState,
   createPitchKatanaState,
   getAttackPointsForCoin,
+  getAttackPointCost,
+  getAllowedHealing,
+  planBotAttackPurchases,
+  canPurchaseAttack,
+  countPriorAttackPurchases,
+  getFrozenTurnDelaySeconds,
+  resolveRuinsPumpkin,
   getAvailableAttacks,
   getCurrentAllowedLaneIndexes,
   getFactoryObstacleSpeedMultiplier,
@@ -205,6 +212,10 @@ import {
   mapScoreBonus,
   vortexBlocksTurn,
   resolveTerminalSword,
+  terminalMelonScore,
+  terminalFacingForKey,
+  isTerminalMoveAllowed,
+  type TerminalFacing,
   type SwordState,
   type CourseItem,
 } from "./meadow-terminal-rules";
@@ -216,7 +227,9 @@ import {
 } from "./attack-delivery-rules";
 import { advanceGemStreak, formatGemStreakNotice } from "./gem-streak-rules";
 import { resolveMobileLaneIntent } from "./mobile-lane-controls";
+import { mapRequestIsCurrent, ruinsWaveGate, shouldApplyTerminalFacing } from "./map-refresh-runtime";
 type Kind =
+  | "pumpkin"
   | "gem"
   | "coin"
   | "melon"
@@ -244,6 +257,8 @@ type Item = {
   scheduledAt?: number;
   attackReleaseProgress?: number;
   sharedCourse?: boolean;
+  attackCoinReplacement?: boolean;
+  spawnedWave?: number;
 };
 type GameMode = EndlessMode;
 type OracleProphecy = "no-hit" | "completion" | "near-death";
@@ -400,8 +415,10 @@ type VersusLeader = {
   obstacle_points_spent: number;
   is_self: boolean;
 };
-type Rarity = "common" | "uncommon" | "rare" | "epic" | "legendary" | "mythic";
+type Rarity =
+  "default" | "common" | "uncommon" | "rare" | "epic" | "legendary" | "mythic";
 const RARITY_ORDER: Readonly<Record<Rarity, number>> = {
+  default: -1,
   common: 0,
   uncommon: 1,
   rare: 2,
@@ -458,7 +475,10 @@ type PendingVersusAttack = {
 };
 type CometRemovalReceipt = {
   receiptId: string;
-  kind: Exclude<Kind, "gem" | "coin" | "melon" | "mushroom" | "current">;
+  kind: Exclude<
+    Kind,
+    "gem" | "coin" | "melon" | "mushroom" | "pumpkin" | "current"
+  >;
   wave: number;
 };
 type HeatfeastPayload = {
@@ -475,6 +495,11 @@ type VersusAbilityStatePayload = {
     spawn_wave?: number;
   }>;
   self?: {
+    purchase_counts?: Record<string, number>;
+    ruins_banned_characters?: string[];
+    ruins_pumpkins_missed?: number;
+    ruins_pumpkin_wave?: number;
+    terminal_facing?: number;
     lane_index?: number | null;
     hearts?: number;
     mirage_active?: boolean;
@@ -563,7 +588,13 @@ type VersusStatePayload = {
     winner_user_id?: string | null;
   };
   self?: {
+    purchase_counts?: Record<string, number>;
+    ruins_banned_characters?: string[];
     obstacle_points?: number;
+    ruins_pumpkins_missed?: number;
+    ruins_pumpkin_wave?: number;
+    ruins_pumpkin_last_wave?: number;
+    terminal_facing?: number;
     hearts?: number;
     wave?: number;
     score?: number;
@@ -701,7 +732,11 @@ const MIN_SAME_LANE_GAP = 24;
 const HORIZON_PREVIEW_SIZE = 12;
 const WAVE_HAZARD_PLAN_SIZE = 128;
 const isHazardKind = (kind: Kind) =>
-  kind !== "gem" && kind !== "coin" && kind !== "melon" && kind !== "mushroom";
+  kind !== "gem" &&
+  kind !== "coin" &&
+  kind !== "melon" &&
+  kind !== "mushroom" &&
+  kind !== "pumpkin";
 const getAttackSafeLane = (
   kind: Kind,
   mapId: MapId,
@@ -852,9 +887,12 @@ const buildWaveHazardPlan = (
       cappedCount;
   for (let index = 0; index < WAVE_HAZARD_PLAN_SIZE; index += 1) {
     let selected: Kind = "log";
-    if (versusRun) {
+    {
       for (let attempt = 0; attempt < 8; attempt += 1) {
-        const natural = chooseNaturalObstacle(mapId, random);
+        const natural = chooseNaturalObstacle(
+          versusRun ? mapId : "classic",
+          random,
+        );
         selected = natural === "spike" ? "spikes" : natural;
         if (
           (streak.count < sameHazardLimit || selected !== streak.kind) &&
@@ -867,7 +905,7 @@ const buildWaveHazardPlan = (
         (streak.count >= sameHazardLimit && selected === streak.kind)
       ) {
         const weightedFallback = Object.entries(
-          getMapRules(mapId).naturalObstacleWeights,
+          getMapRules(versusRun ? mapId : "classic").naturalObstacleWeights,
         ).find(
           ([obstacle, weight]) =>
             Number(weight) > 0 &&
@@ -880,16 +918,6 @@ const buildWaveHazardPlan = (
               ? "spikes"
               : (weightedFallback as Kind);
       }
-    } else {
-      const choices =
-        streak.count >= sameHazardLimit
-          ? AMBIENT_HAZARDS.filter((hazard) => hazard !== streak.kind)
-          : AMBIENT_HAZARDS;
-      const allowedChoices = choices.filter(canSelect);
-      selected =
-        allowedChoices[Math.floor(random() * allowedChoices.length)] ??
-        choices.find(canSelect) ??
-        "log";
     }
     kinds.push(selected);
     streak =
@@ -934,6 +962,13 @@ const VERSUS_ATTACKS: ReadonlyArray<{
   icon: string;
   description: string;
 }> = [
+  {
+    kind: "car",
+    label: "CAR",
+    cost: ATTACK_POINT_COSTS.car,
+    icon: "▣",
+    description: "Fast vehicle · 1 HP",
+  },
   {
     kind: "snowflake",
     label: "SNOWFLAKE",
@@ -1129,7 +1164,7 @@ type VersusPhase =
   | "finished";
 const CLASS_CHARACTERS = {
   runner: [
-    { key: "runner_ace", name: "Ace", rarity: "common" },
+    { key: "runner_ace", name: "Ace", rarity: "default" },
     { key: "runner_dash", name: "Dash", rarity: "common" },
     { key: "runner_stride", name: "Stride", rarity: "common" },
     { key: "tank_glacier", name: "Glacier", rarity: "rare" },
@@ -1147,7 +1182,7 @@ const CLASS_CHARACTERS = {
     { key: "runner_zenith", name: "Zenith", rarity: "mythic" },
   ],
   medic: [
-    { key: "medic_patch", name: "Patch", rarity: "common" },
+    { key: "medic_patch", name: "Patch", rarity: "default" },
     { key: "medic_bloom", name: "Bloom", rarity: "common" },
     { key: "medic_remedy", name: "Remedy", rarity: "common" },
     { key: "medic_salve", name: "Salve", rarity: "common" },
@@ -1165,7 +1200,7 @@ const CLASS_CHARACTERS = {
     { key: "medic_oracle", name: "Oracle", rarity: "mythic" },
   ],
   tank: [
-    { key: "tank_bulwark", name: "Bulwark", rarity: "common" },
+    { key: "tank_bulwark", name: "Bulwark", rarity: "default" },
     { key: "runner_vault", name: "Vault", rarity: "common" },
     { key: "tank_guard", name: "Guard", rarity: "common" },
     { key: "tank_brace", name: "Brace", rarity: "uncommon" },
@@ -1183,7 +1218,7 @@ const CLASS_CHARACTERS = {
     { key: "trickster_phantom", name: "Phantom", rarity: "mythic" },
   ],
   trickster: [
-    { key: "trickster_rogue", name: "Rogue", rarity: "common" },
+    { key: "trickster_rogue", name: "Rogue", rarity: "default" },
     { key: "trickster_smoke", name: "Smoke", rarity: "common" },
     { key: "runner_drift", name: "Drift", rarity: "uncommon" },
     { key: "runner_spark", name: "Spark", rarity: "uncommon" },
@@ -1850,6 +1885,27 @@ function SkywayGame() {
   const [pixelLinked, setPixelLinked] = useState(false);
   const [pixelConnectionMessage, setPixelConnectionMessage] = useState("");
   const pixelPendingSuccessRef = useRef(false);
+  const [stardust, setStardust] = useState(0);
+  const [runXpTotal, setRunXpTotal] = useState<number | null>(null);
+  const [runXpError, setRunXpError] = useState(false);
+  const [leadersLoading, setLeadersLoading] = useState(false);
+  const [leadersError, setLeadersError] = useState("");
+  const [attackPurchaseCounts, setAttackPurchaseCounts] = useState<
+    Record<string, number>
+  >({});
+  const [ruinsBannedCharacters, setRuinsBannedCharacters] = useState<string[]>(
+    [],
+  );
+  const [pumpkinsMissed, setPumpkinsMissed] = useState(0);
+  const pumpkinMissedRef = useRef(0);
+  const pumpkinWaveRef = useRef(0);
+  const pumpkinSpawnProgressRef = useRef(0);
+  const pumpkinOutcomesRef = useRef(new Set<number>());
+  const pumpkinServerWaveRef = useRef(0);
+  const pumpkinHighestOutcomeRef = useRef(0);
+  const pumpkinPendingRef = useRef(new Map<number, boolean>());
+  const pumpkinSyncBusyRef = useRef(false);
+  const pumpkinBoundaryWaitRef = useRef<number | null>(null);
   const [meadowBonusLane, setMeadowBonusLane] = useState(0);
   const meadowBonusLaneRef = useRef(0);
   const vortexGravityRef = useRef({ blockedDirection: 0, until: 0 });
@@ -1863,6 +1919,10 @@ function SkywayGame() {
     cooldownUntil: 0,
   });
   const terminalSwordBusyRef = useRef(false);
+  const terminalFacingRef = useRef<TerminalFacing>(0);
+  const terminalServerFacingRef = useRef<TerminalFacing>(0);
+  const terminalFacingIntentRef = useRef(0);
+  const [terminalFacing, setTerminalFacing] = useState<TerminalFacing>(0);
   const terminalDamageSeenRef = useRef(0);
   const terminalWrapWaveRef = useRef(0);
   const terminalCourseRef = useRef<{
@@ -1873,6 +1933,7 @@ function SkywayGame() {
   const terminalConsumedRef = useRef(new Set<number>());
   const terminalSharedAttacksRef = useRef<CourseItem[]>([]);
   const terminalPositionQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const mapRefreshIdentityRef = useRef({ userId: null as string | null, generation: -1 });
   const [terminalSwordVersion, setTerminalSwordVersion] = useState(0);
   const [lane, setLane] = useState(2),
     [items, setItems] = useState<Item[]>([]),
@@ -2453,8 +2514,7 @@ function SkywayGame() {
     const recoveryError = params.get("error")?.trim();
     const pixelError = params.get("pixel_error")?.trim();
     if (pixelError) {
-      setAuthMode("signin");
-      setAuthMessage(pixelError);
+      setAuthMode("signin"); setAuthMessage(pixelError);
       window.history.replaceState({}, "", window.location.pathname);
     } else if (params.has("pixel_connected")) {
       pixelPendingSuccessRef.current = true;
@@ -2776,7 +2836,32 @@ function SkywayGame() {
     versusStateSyncQueueRef.current = queued.catch(() => undefined);
     return queued;
   }, []);
+  const invalidateMapRefreshRequests = useCallback(() => {
+    pumpkinPendingRef.current.clear();
+    pumpkinOutcomesRef.current.clear();
+    pumpkinServerWaveRef.current = 0;
+    pumpkinHighestOutcomeRef.current = 0;
+    pumpkinBoundaryWaitRef.current = null;
+    pumpkinSyncBusyRef.current = false;
+    pumpkinWaveRef.current = 0;
+    pumpkinMissedRef.current = 0;
+    setPumpkinsMissed(0);
+    terminalPositionQueueRef.current = Promise.resolve();
+    terminalSwordBusyRef.current = false;
+    terminalFacingIntentRef.current = 0;
+    terminalFacingRef.current = 0;
+    terminalServerFacingRef.current = 0;
+    setTerminalFacing(0);
+  }, []);
+  useEffect(() => {
+    const next = { userId: authSessionUserIdRef.current, generation: authSessionGenerationRef.current };
+    if (next.userId !== mapRefreshIdentityRef.current.userId || next.generation !== mapRefreshIdentityRef.current.generation) {
+      invalidateMapRefreshRequests();
+      mapRefreshIdentityRef.current = next;
+    }
+  }, [authReady, userEmail, invalidateMapRefreshRequests]);
   const resetVersusClientSync = useCallback(() => {
+    invalidateMapRefreshRequests();
     processedPickupIdsRef.current.clear();
     pendingVersusCoinPickupIdsRef.current.clear();
     versusCoinSyncBusyRef.current = false;
@@ -2799,11 +2884,11 @@ function SkywayGame() {
       clearTimeout(versusSyncRetryTimerRef.current);
       versusSyncRetryTimerRef.current = null;
     }
-  }, []);
+  }, [invalidateMapRefreshRequests]);
   const queueOnlineCoinAward = useCallback(
     (matchId: string, pickupId: number) => {
       if (!userIdRef.current || versusMatchRef.current !== matchId) return;
-      const pickupClaimId = `coin:${versusPickupNonceRef.current}:${pickupId}`;
+      const pickupClaimId = `coin:${versusPickupNonceRef.current}:${pickupId}:lane:${state.current.lane}`;
       if (pendingVersusCoinPickupIdsRef.current.has(pickupClaimId)) return;
       pendingVersusCoinPickupIdsRef.current.add(pickupClaimId);
 
@@ -2811,8 +2896,11 @@ function SkywayGame() {
       // are intentionally sent to Supabase only after this wave enters its
       // intermission. The server replaces this preview with the exact balance.
       const previewAward =
-        getAttackPointsForCoin(versusMapRef.current) *
-        currentCoinMultiplierRef.current;
+        getAttackPointsForCoin(
+          versusMapRef.current,
+          versusMapRef.current === "meadow" &&
+            state.current.lane === meadowBonusLaneRef.current,
+        ) * currentCoinMultiplierRef.current;
       versusPointsRef.current += previewAward;
       setVersusPoints(versusPointsRef.current);
     },
@@ -3275,26 +3363,25 @@ function SkywayGame() {
       return;
 
     const runId = progressionRunIdRef.current;
+    const finalScore = Math.max(0, Math.floor(scoreRef.current));
+    const finalWave = waveRef.current;
     progressionAwardedRunIdRef.current = runId;
+    setRunXpError(false);
     const awardRun = async () => {
       await gemClaimQueueRef.current.catch(() => undefined);
-      if (
-        userIdRef.current !== awardUserId ||
-        progressionRunIdRef.current !== runId
-      )
-        return;
+      if (userIdRef.current !== awardUserId) return;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         if (userIdRef.current !== awardUserId) return;
         const scope = "endless";
         await supabase.rpc("sync_progression_run", {
           p_run_id: runId,
-          p_wave: waveRef.current,
+          p_wave: finalWave,
           p_active: false,
         });
         if (userIdRef.current !== awardUserId) return;
         let result = await supabase.rpc("award_completed_run_v2", {
           p_run_id: runId,
-          p_score: Math.max(0, Math.floor(scoreRef.current)),
+          p_score: finalScore,
           p_scope: scope,
         });
         if (
@@ -3305,7 +3392,7 @@ function SkywayGame() {
         ) {
           result = await supabase.rpc("award_completed_run", {
             p_run_id: runId,
-            p_score: Math.max(0, Math.floor(scoreRef.current)),
+            p_score: finalScore,
             p_scope: scope,
           });
         }
@@ -3313,12 +3400,20 @@ function SkywayGame() {
         const { data, error } = result;
         if (!error) {
           applyProgressionPayload(data, awardUserId);
+          if (progressionRunIdRef.current === runId) setRunXpTotal(
+            Math.max(
+              0,
+              Math.floor(
+                Number(data?.xp_breakdown?.total ?? data?.xp_awarded) || 0,
+              ),
+            ),
+          );
           const savedHighScore = Number(
             (data as { high_score?: unknown } | null)?.high_score,
           );
           if (Number.isFinite(savedHighScore) && savedHighScore >= 0) {
-            highScoreRef.current = Math.floor(savedHighScore);
-            setHighScore(Math.floor(savedHighScore));
+            highScoreRef.current = Math.max(highScoreRef.current, Math.floor(savedHighScore));
+            setHighScore(highScoreRef.current);
           }
           return;
         }
@@ -3327,8 +3422,10 @@ function SkywayGame() {
           if (
             userIdRef.current === awardUserId &&
             progressionRunIdRef.current === runId
-          )
+          ) {
             progressionAwardedRunIdRef.current = null;
+            setRunXpError(true);
+          }
           return;
         }
         await new Promise((resolve) =>
@@ -3336,13 +3433,24 @@ function SkywayGame() {
         );
       }
     };
-    const pendingAward = awardRun();
+    const pendingAward = awardRun().catch(() => {
+      if (userIdRef.current === awardUserId && progressionRunIdRef.current === runId) {
+        progressionAwardedRunIdRef.current = null;
+        setRunXpError(true);
+      }
+    });
     progressionAwardPromiseRef.current = pendingAward;
     void pendingAward.finally(() => {
       if (progressionAwardPromiseRef.current === pendingAward)
         progressionAwardPromiseRef.current = null;
     });
   }, [applyProgressionPayload, guest, over, playScope, progressionRunVersion]);
+  useEffect(() => {
+    if (running && !over) {
+      setRunXpTotal(null);
+      setRunXpError(false);
+    }
+  }, [running, over]);
   useEffect(() => {
     if (mainView === "endless" && !running && !over) setHearts(startingHearts);
   }, [mainView, over, running, startingHearts]);
@@ -3514,8 +3622,17 @@ function SkywayGame() {
   const queueGemClaim = useCallback(
     (contextId: string, pickupId: number, requestUserId: string) => {
       const requestStreakGeneration = gemStreakGenerationRef.current;
+      const pickupWave = waveRef.current;
       const claim = async () => {
         if (userIdRef.current !== requestUserId) return;
+        if (progressionRunIdRef.current === contextId) {
+          const { error } = await supabase.rpc("sync_progression_run", {
+            p_run_id: contextId,
+            p_wave: pickupWave,
+            p_active: true,
+          });
+          if (error || userIdRef.current !== requestUserId) return;
+        }
         if (
           gemStreakResetPendingRef.current &&
           progressionRunIdRef.current === contextId
@@ -3734,6 +3851,15 @@ function SkywayGame() {
     [applyFreezeEffect],
   );
   const resetCharacterAbilityState = useCallback((restoredWave?: number) => {
+    pumpkinMissedRef.current = 0;
+    setPumpkinsMissed(0);
+    pumpkinWaveRef.current = 0;
+    pumpkinOutcomesRef.current.clear();
+    pumpkinServerWaveRef.current = 0;
+    pumpkinHighestOutcomeRef.current = 0;
+    pumpkinPendingRef.current.clear();
+    pumpkinBoundaryWaitRef.current = null;
+    setAttackPurchaseCounts({});
     const restoring = restoredWave !== undefined;
     const now = Date.now();
     firstGuardWaveRef.current = restoring ? restoredWave : 0;
@@ -4510,6 +4636,10 @@ function SkywayGame() {
       setHearts(runStartingHearts);
       setWave(1);
       terminalSwordRef.current = { durability: 4, cooldownUntil: 0 };
+      terminalFacingRef.current = 0;
+      terminalServerFacingRef.current = 0;
+      terminalFacingIntentRef.current = 0;
+      setTerminalFacing(0);
       terminalRivalSwordRef.current = { durability: 4, cooldownUntil: 0 };
       terminalDamageSeenRef.current = 0;
       terminalWrapWaveRef.current = 0;
@@ -4844,8 +4974,15 @@ function SkywayGame() {
     ],
   );
   const applyTerminalSnapshot = useCallback(
-    (snapshot: VersusStatePayload, applyHealth = true) => {
+    (snapshot: VersusStatePayload, applyHealth = true, facingResponseIntent?: number) => {
       if (snapshot.match?.map_key !== "terminal") return;
+      const facing = snapshot.self?.terminal_facing;
+      if ((facing === -1 || facing === 0 || facing === 1) &&
+        shouldApplyTerminalFacing(terminalFacingIntentRef.current, facingResponseIntent)) {
+        terminalServerFacingRef.current = facing;
+        terminalFacingRef.current = facing;
+        setTerminalFacing(facing);
+      }
       const total = Number(snapshot.self?.sword_damage_total) || 0;
       if (total < terminalDamageSeenRef.current) return;
       const unseenDamage = total - terminalDamageSeenRef.current;
@@ -4926,6 +5063,136 @@ function SkywayGame() {
     },
     [applyDirectMapDamage],
   );
+  const changeTerminalFacing = useCallback((facing: TerminalFacing) => {
+    if (activeMapId !== "terminal" || !state.current.running || state.current.paused || state.current.wavePause || terminalSwordBusyRef.current) return;
+    const request = { userId: userIdRef.current, generation: authSessionGenerationRef.current, matchId: versusMatchRef.current };
+    const isCurrent = () => mapRequestIsCurrent(request, { userId: userIdRef.current, sessionUserId: authSessionUserIdRef.current, generation: authSessionGenerationRef.current, matchId: versusMatchRef.current });
+    if (isOnlineVersus && !isCurrent()) return;
+    const facingIntent = ++terminalFacingIntentRef.current;
+    terminalFacingRef.current = facing;
+    setTerminalFacing(facing);
+    if (!isOnlineVersus || !request.matchId) return;
+    const matchId = request.matchId;
+    terminalPositionQueueRef.current = terminalPositionQueueRef.current.then(async () => {
+      if (!isCurrent()) return;
+      const { data, error } = await supabase.rpc("set_1v1_terminal_facing", {p_match_id: matchId, p_facing: facing});
+      if (!isCurrent()) return;
+      if (error) {
+        showAbilityNotice("COULD NOT CHANGE FACING · TRY AGAIN", 1000);
+        // A failed response may follow a committed turn; read it back rather
+        // than letting an older polling response roll the direction backward.
+        const recovered = await supabase.rpc("get_1v1_state", { p_match_id: matchId });
+        if (!isCurrent()) return;
+        if (recovered.data && !recovered.error)
+          applyTerminalSnapshot(recovered.data as VersusStatePayload, true, facingIntent);
+        else if (terminalFacingIntentRef.current === facingIntent) {
+          terminalFacingRef.current = terminalServerFacingRef.current;
+          setTerminalFacing(terminalServerFacingRef.current);
+        }
+      } else {
+        const serverFacing = (data as VersusStatePayload).self?.terminal_facing;
+        if (serverFacing === -1 || serverFacing === 0 || serverFacing === 1)
+          terminalServerFacingRef.current = serverFacing;
+        applyTerminalSnapshot(data as VersusStatePayload, true, facingIntent);
+      }
+    }).catch(() => {
+      if (isCurrent() && terminalFacingIntentRef.current === facingIntent) {
+        terminalFacingRef.current = terminalServerFacingRef.current;
+        setTerminalFacing(terminalServerFacingRef.current);
+        showAbilityNotice("COULD NOT CHANGE FACING · TRY AGAIN", 1000);
+      }
+    });
+  }, [activeMapId, applyTerminalSnapshot, isOnlineVersus, showAbilityNotice]);
+  const releaseRuinsBoundary = useCallback(() => {
+    const waitingWave = pumpkinBoundaryWaitRef.current;
+    if (!waitingWave || !state.current.running || pumpkinServerWaveRef.current < waitingWave || pumpkinPendingRef.current.has(waitingWave)) return;
+    pumpkinBoundaryWaitRef.current = null;
+    const progress = Math.max(waveProgressRef.current, waitingWave * WAVE_PROGRESS_LENGTH);
+    waveProgressRef.current = progress;
+    // Keep the normal wave-end pause; the existing effect opens intermission.
+    setWaveProgress(progress);
+  }, []);
+  const applyRuinsPumpkinSnapshot = useCallback((snapshot: VersusStatePayload) => {
+    const rawWave = snapshot.self?.ruins_pumpkin_wave ?? snapshot.self?.ruins_pumpkin_last_wave;
+    if (rawWave === undefined) return;
+    const settledWave = Math.max(0, Number(rawWave) || 0);
+    if (settledWave < pumpkinServerWaveRef.current) return;
+    pumpkinServerWaveRef.current = settledWave;
+    // Polling cannot acknowledge a particular pending collected/missed value;
+    // only that exact receipt's successful RPC removes it from the retry queue.
+    if (settledWave >= pumpkinHighestOutcomeRef.current) {
+      const missed = Math.max(0, Math.min(3, Number(snapshot.self?.ruins_pumpkins_missed) || 0));
+      pumpkinMissedRef.current = missed;
+      setPumpkinsMissed(missed);
+    }
+    releaseRuinsBoundary();
+  }, [releaseRuinsBoundary]);
+  const syncRuinsPumpkins = useCallback(async () => {
+    const matchId = versusMatchRef.current;
+    if (!isOnlineVersus || activeMapId !== "ruins" || !matchId || pumpkinSyncBusyRef.current || pumpkinPendingRef.current.size === 0) return;
+    const request = { userId: userIdRef.current, generation: authSessionGenerationRef.current, matchId };
+    const isCurrent = () => mapRequestIsCurrent(request, { userId: userIdRef.current, sessionUserId: authSessionUserIdRef.current, generation: authSessionGenerationRef.current, matchId: versusMatchRef.current });
+    if (!isCurrent()) return;
+    pumpkinSyncBusyRef.current = true;
+    let accepted = false;
+    try {
+      await enqueueVersusStateSync(async () => {
+        for (const [pendingWave, collected] of [...pumpkinPendingRef.current].sort(([a], [b]) => a - b)) {
+          if (!isCurrent()) return;
+          const { data, error } = await supabase.rpc("record_1v1_ruins_pumpkin", {p_match_id:matchId,p_wave:pendingWave,p_collected:collected});
+          if (!isCurrent()) return;
+          if (error) {
+            setVersusResult("PUMPKIN SYNC INTERRUPTED · RETRYING");
+            return;
+          }
+          pumpkinPendingRef.current.delete(pendingWave);
+          applyRuinsPumpkinSnapshot(data as VersusStatePayload);
+          accepted = true;
+        }
+      });
+    } catch {
+      if (isCurrent()) setVersusResult("PUMPKIN SYNC INTERRUPTED · RETRYING");
+    } finally {
+      if (isCurrent()) {
+        pumpkinSyncBusyRef.current = false;
+        releaseRuinsBoundary();
+        if (accepted) setVersusSyncRetry((value) => value + 1);
+      }
+    }
+  }, [activeMapId, applyRuinsPumpkinSnapshot, enqueueVersusStateSync, isOnlineVersus, releaseRuinsBoundary]);
+  const recordRuinsPumpkin = useCallback((pumpkinWave: number, collected: boolean) => {
+    if (activeMapId !== "ruins" || pumpkinWave <= pumpkinServerWaveRef.current || pumpkinOutcomesRef.current.has(pumpkinWave)) return false;
+    if (isOnlineVersus && (!userIdRef.current || userIdRef.current !== authSessionUserIdRef.current)) return false;
+    pumpkinOutcomesRef.current.add(pumpkinWave);
+    pumpkinHighestOutcomeRef.current = Math.max(pumpkinHighestOutcomeRef.current, pumpkinWave);
+    const outcome = resolveRuinsPumpkin(pumpkinMissedRef.current, collected);
+    pumpkinMissedRef.current = outcome.missed;
+    setPumpkinsMissed(outcome.missed);
+    const eliminated = outcome.eliminated;
+    if (eliminated) {
+      state.current.hearts = 0;
+      state.current.running = false;
+      setHearts(0);
+      setRunning(false);
+      setPaused(false);
+      setOver(true);
+      setVersusSelfEliminated(true);
+      versusSelfEliminatedRef.current = true;
+      setVersusPhase("eliminated");
+      setVersusIntermissionReady(false);
+      setVersusResult("THREE PUMPKINS MISSED");
+    }
+    if (isOnlineVersus && versusMatchRef.current) {
+      pumpkinPendingRef.current.set(pumpkinWave, collected);
+      void syncRuinsPumpkins();
+    }
+    return eliminated;
+  }, [activeMapId, isOnlineVersus, syncRuinsPumpkins]);
+  useEffect(() => {
+    if (!isOnlineVersus || activeMapId !== "ruins") return;
+    const timer = window.setInterval(() => void syncRuinsPumpkins(), 2000);
+    return () => window.clearInterval(timer);
+  }, [activeMapId, isOnlineVersus, syncRuinsPumpkins]);
   const triggerTerminalSword = useCallback(async () => {
     if (
       activeMapId !== "terminal" ||
@@ -4935,6 +5202,9 @@ function SkywayGame() {
       terminalSwordBusyRef.current
     )
       return;
+    const request = { userId: userIdRef.current, generation: authSessionGenerationRef.current, matchId: versusMatchRef.current };
+    const isCurrent = () => mapRequestIsCurrent(request, { userId: userIdRef.current, sessionUserId: authSessionUserIdRef.current, generation: authSessionGenerationRef.current, matchId: versusMatchRef.current });
+    if (isOnlineVersus && !isCurrent()) return;
     const now = Date.now();
     if (
       terminalSwordRef.current.durability <= 0 ||
@@ -4942,12 +5212,15 @@ function SkywayGame() {
     )
       return;
     terminalSwordBusyRef.current = true;
+    setTerminalSwordVersion((value) => value + 1);
     try {
       await terminalPositionQueueRef.current;
-      if (isOnlineVersus && versusMatchRef.current) {
+      if (isOnlineVersus) {
+        if (!isCurrent()) return;
         const { data, error } = await supabase.rpc("use_1v1_terminal_sword", {
-          p_match_id: versusMatchRef.current,
+          p_match_id: request.matchId,
         });
+        if (!isCurrent()) return;
         if (error) {
           showAbilityNotice(error.message.toUpperCase(), 1400);
           return;
@@ -4969,6 +5242,7 @@ function SkywayGame() {
           state.current.lane,
           versusOpponentLane,
           now,
+          terminalFacingRef.current,
         );
         if (!swing.used) return;
         terminalSwordRef.current = swing.self;
@@ -4980,9 +5254,12 @@ function SkywayGame() {
         setTerminalSwordVersion((value) => value + 1);
       }
     } catch {
-      showAbilityNotice("SWORD COULD NOT SYNC · TRY AGAIN", 1200);
+      if (!isOnlineVersus || isCurrent()) showAbilityNotice("SWORD COULD NOT SYNC · TRY AGAIN", 1200);
     } finally {
-      terminalSwordBusyRef.current = false;
+      if (!isOnlineVersus || isCurrent()) {
+        terminalSwordBusyRef.current = false;
+        setTerminalSwordVersion((value) => value + 1);
+      }
     }
   }, [
     activeMapId,
@@ -5091,13 +5368,16 @@ function SkywayGame() {
       volcanoStationaryMsRef.current = 0;
       if (isOnlineVersus && versusMatchRef.current) {
         const matchId = versusMatchRef.current;
+        const request = { userId: userIdRef.current, generation: authSessionGenerationRef.current, matchId };
+        const isCurrent = () => mapRequestIsCurrent(request, { userId: userIdRef.current, sessionUserId: authSessionUserIdRef.current, generation: authSessionGenerationRef.current, matchId: versusMatchRef.current });
         terminalPositionQueueRef.current = terminalPositionQueueRef.current
           .then(async () => {
-            if (versusMatchRef.current !== matchId) return;
+            if (!isCurrent()) return;
             const { error } = await supabase.rpc("update_1v1_position", {
               p_match_id: matchId,
               p_lane_index: destination,
             });
+            if (!isCurrent()) return;
             if (error && activeMapId === "terminal") {
               showAbilityNotice(error.message.toUpperCase(), 1200);
               void hydrateVersusStateRef.current?.(matchId, true);
@@ -5173,6 +5453,7 @@ function SkywayGame() {
         state.current.paused ||
         state.current.wavePause ||
         (activeMapId === "terminal" && terminalSwordBusyRef.current) ||
+        (activeMapId === "terminal" && !isTerminalMoveAllowed(terminalFacingRef.current, d)) ||
         turnLockedRef.current ||
         (anchorLaneLockedRef.current &&
           anchorGuardUntilRef.current > Date.now()) ||
@@ -5209,6 +5490,8 @@ function SkywayGame() {
           : Math.max(0, Math.min(activeLaneCount - 1, state.current.lane + d));
       if (destination === state.current.lane) return;
       const finishMove = () => {
+        if (activeMapId === "terminal" && terminalSwordBusyRef.current) return;
+        if (activeMapId === "terminal" && !isTerminalMoveAllowed(terminalFacingRef.current, d)) return;
         if (
           vortexBlocksTurn(
             d,
@@ -5231,9 +5514,7 @@ function SkywayGame() {
       };
       const combinedTurnDelay = addTurnDelays(
         frozenUntilRef.current > Date.now()
-          ? activeMapId === "meadow"
-            ? 0.4
-            : 0.25
+          ? getFrozenTurnDelaySeconds(activeMapId)
           : 0,
         activeMapId === "volcano" ? VOLCANO_RULES.turnDelaySeconds : 0,
       );
@@ -7244,8 +7525,10 @@ function SkywayGame() {
           )
         : restoredMaxHearts,
     );
-    if (restoredMap === "terminal")
+    if (restoredMap === "terminal") {
+      if (!preserveRunState) terminalFacingIntentRef.current = 0;
       applyTerminalSnapshot(snapshot, preserveRunState);
+    }
     if (
       restoredMap === "meadow" &&
       Number.isInteger(snapshot.wave_rules?.bonus_lane_index)
@@ -7375,6 +7658,10 @@ function SkywayGame() {
     setVersusSelfMushrooms(
       Math.max(0, Number(snapshot.self?.current_wave_mushrooms) || 0),
     );
+    if (snapshot.self?.purchase_counts)
+      setAttackPurchaseCounts(snapshot.self.purchase_counts);
+    setRuinsBannedCharacters(snapshot.self?.ruins_banned_characters ?? []);
+    applyRuinsPumpkinSnapshot(snapshot);
     setVersusOpponentMushrooms(
       Math.max(0, Number(snapshot.opponent?.current_wave_mushrooms) || 0),
     );
@@ -7737,6 +8024,10 @@ function SkywayGame() {
       return;
     }
     const effectiveVersusMode = versusMode;
+    if (effectiveVersusMode === "casual" && playerProgression.level < 5) {
+      setVersusResult("REACH LEVEL 5 TO PLAY CASUAL 1V1 · NO GEMS REQUIRED");
+      return;
+    }
     if (
       effectiveVersusMode === "ranked" &&
       !playerProgression.ranked_unlocked
@@ -7960,22 +8251,24 @@ function SkywayGame() {
     const attack = VERSUS_ATTACKS.find((entry) => entry.kind === kind);
     if (
       !attack ||
-      !getAvailableAttacks(activeMapId).includes(kind) ||
+      !canPurchaseAttack(activeMapId, kind, attackPurchaseCounts) ||
       versusPhase !== "intermission" ||
       !versusIntermissionReady ||
       versusCountdown <= 0 ||
       versusAttackBusyRef.current
     )
       return;
+    const attackPrice = getAttackPointCost(activeMapId, kind, countPriorAttackPurchases(attackPurchaseCounts));
+    if (attackPrice === null) return;
     if (isBotPractice) {
       const cometPurchase =
         activeCharacter === "runner_comet"
           ? getCometSendPurchase(
-              attack.cost,
+              attackPrice,
               1,
               heatfeastStateRef.current.consumed,
             )
-          : { price: attack.cost, amount: 1 };
+          : { price: attackPrice, amount: 1 };
       const gambitSendMultiplier =
         activeCharacter === "trickster_gambit"
           ? Math.max(
@@ -8007,6 +8300,7 @@ function SkywayGame() {
         setAbilityStateVersion((value) => value + 1);
       }
       setVersusPoints(versusPointsRef.current);
+      setAttackPurchaseCounts((counts) => ({...counts, [kind]: (counts[kind] ?? 0) + 1}));
       setVersusResult(
         `${attack.label} ×${sentAmount} QUEUED FOR THE BOT'S NEXT WAVE`,
       );
@@ -8027,6 +8321,8 @@ function SkywayGame() {
       if (versusMatchRef.current !== matchId) return;
       const snapshot = refreshResult.data;
       const authoritativePoints = Number(snapshot?.self?.obstacle_points);
+      if (snapshot?.self?.purchase_counts)
+        setAttackPurchaseCounts(snapshot.self.purchase_counts);
       if (Number.isFinite(authoritativePoints))
         applyAuthoritativeVersusPoints(authoritativePoints);
       const remaining = secondsUntil(snapshot?.match?.intermission_ends_at, 0);
@@ -8062,6 +8358,10 @@ function SkywayGame() {
       }
       if (typeof attackResult.data?.remaining_points === "number")
         applyAuthoritativeVersusPoints(attackResult.data.remaining_points);
+      const purchaseCounts = (
+        attackResult.data as { purchase_counts?: Record<string, number> } | null
+      )?.purchase_counts;
+      if (purchaseCounts) setAttackPurchaseCounts(purchaseCounts);
       const receivedHeatfeast = applyHeatfeastPayload(
         attackResult.data?.heatfeast,
         waveRef.current,
@@ -8070,7 +8370,7 @@ function SkywayGame() {
         const remaining = Number(attackResult.data?.remaining_points);
         const spent = Number.isFinite(remaining)
           ? Math.max(0, pointsBeforeAttack - remaining)
-          : attack.cost;
+          : attackPrice;
         const nextHeat = addHeatfeastSpending(heatfeastStateRef.current, spent);
         heatfeastStateRef.current = nextHeat;
         setHeatfeastState(nextHeat);
@@ -8120,6 +8420,12 @@ function SkywayGame() {
           return { ...current, hits: current.hits + 1, prompt: nextPrompt };
         });
         void audioEngine.playSfx("click");
+        return;
+      }
+      const facing = terminalFacingForKey(e.key);
+      if (activeMapId === "terminal" && isVersusRun && facing !== null) {
+        e.preventDefault();
+        if (!e.repeat) changeTerminalFacing(facing);
         return;
       }
       if (
@@ -8198,6 +8504,7 @@ function SkywayGame() {
     adminOpen,
     activeCharacter,
     activeMapId,
+    changeTerminalFacing,
     matchSetup,
     cancelEchoKnowingHold,
     consumeCometHeatfeast,
@@ -8511,13 +8818,11 @@ function SkywayGame() {
             plannedWave.cursor < plannedWave.kinds.length
           )
             return plannedWave.kinds[plannedWave.cursor];
-          if (!isVersusRun)
-            return hazardChoices[
-              Math.floor(Math.random() * hazardChoices.length)
-            ];
           let selected: Kind = "log";
           for (let attempt = 0; attempt < 8; attempt += 1) {
-            const natural = chooseNaturalObstacle(activeMapId);
+            const natural = chooseNaturalObstacle(
+              isVersusRun ? activeMapId : "classic",
+            );
             selected = natural === "spike" ? "spikes" : natural;
             if (
               !(scribeCapReached && selected === scribeHazard) &&
@@ -8533,9 +8838,24 @@ function SkywayGame() {
             : selected;
         };
         let kind: Kind;
-        if (isVersusRun && r < attackPickupChance) kind = "coin";
+        const needsPumpkinOutcome = activeMapId === "ruins" &&
+          !pumpkinOutcomesRef.current.has(wave) && pumpkinServerWaveRef.current < wave;
+        if (needsPumpkinOutcome && pumpkinWaveRef.current !== wave) {
+          pumpkinWaveRef.current = wave;
+          pumpkinSpawnProgressRef.current =
+            (wave - 1) * WAVE_PROGRESS_LENGTH +
+            (Math.random() * 0.7 + 0.1) * WAVE_PROGRESS_LENGTH;
+        }
+        if (
+          needsPumpkinOutcome &&
+          waveProgressRef.current >= pumpkinSpawnProgressRef.current
+        )
+          kind = "pumpkin";
+        else if (isVersusRun && r < attackPickupChance) kind = "coin";
         else if (!isVersusRun && r < attackPickupChance) kind = "melon";
         else if (isVersusRun && r > versusGemThreshold) kind = "gem";
+        else if (activeMapId === "grove" && Math.random() < 0.15)
+          kind = "mushroom";
         else if (r < danger || isVersusRun) kind = randomHazard();
         else if (r > gemThreshold) kind = "gem";
         else kind = randomHazard();
@@ -8676,6 +8996,7 @@ function SkywayGame() {
                   (!isHazardKind(kind) || !reservedAttackSafeLanes.has(lane)),
               );
           if (lanes.length > 0) {
+            if (kind === "pumpkin") pumpkinSpawnProgressRef.current = Infinity;
             const spawnLane = lanes[Math.floor(Math.random() * lanes.length)];
             advancePlannedHazard();
             if (isHazardKind(kind)) {
@@ -8721,6 +9042,7 @@ function SkywayGame() {
                 y: -10,
                 kind,
                 scheduledAt,
+                spawnedWave: wave,
               },
             ];
             itemsSnapshotRef.current = nextItems;
@@ -8755,15 +9077,17 @@ function SkywayGame() {
                 ? 1.75
                 : item.kind === "current"
                   ? 1.75 * CURRENT_RULES.barrelSpeedMultiplier
-                  : item.kind === "car"
-                    ? 1.28
-                    : item.kind === "log"
-                      ? 0.72
-                      : item.kind === "rock"
-                        ? 0.3
-                        : item.kind === "vortex"
-                          ? VORTEX_SPEED_FACTOR
-                          : 1;
+                  : item.kind === "pumpkin"
+                    ? 1
+                    : item.kind === "car"
+                      ? 1.28
+                      : item.kind === "log"
+                        ? 0.72
+                        : item.kind === "rock"
+                          ? 0.3
+                          : item.kind === "vortex"
+                            ? VORTEX_SPEED_FACTOR
+                            : 1;
           if (isHazard) {
             speedFactor *= permanentObstacleSlowRef.current;
             if (beaconActiveRef.current) speedFactor *= 0.5;
@@ -9030,7 +9354,7 @@ function SkywayGame() {
               n.kind === "gem" ||
               n.kind === "coin" ||
               n.kind === "melon" ||
-              n.kind === "mushroom"
+              n.kind === "mushroom" || n.kind === "pumpkin"
             ) {
               if (processedPickupIdsRef.current.has(n.id)) return [];
               processedPickupIdsRef.current.add(n.id);
@@ -9289,7 +9613,11 @@ function SkywayGame() {
               );
               return [];
             }
-            if (n.kind === "mushroom") {
+            if (n.kind === "pumpkin") {
+              recordRuinsPumpkin(n.spawnedWave ?? wave, true);
+              void audioEngine.playSfx("gem");
+              showAbilityNotice("PUMPKIN COLLECTED", 750);
+            } else if (n.kind === "mushroom") {
               void audioEngine.playSfx("gem");
               scoreRef.current += GROVE_RULES.mushroomScore;
               setScore(scoreRef.current);
@@ -9424,14 +9752,10 @@ function SkywayGame() {
                 queueGemClaim(gemContextId, n.id, gemRequestUserId);
             } else if (n.kind === "melon") {
               void audioEngine.playSfx("gem");
-              const melonScore = Math.max(
-                0,
-                Math.floor(
-                  melonBaseScore(wave) *
-                    currentCoinMultiplierRef.current *
-                    (hasCharacterAbility("runner_ranger") ? 2 : 1),
-                ),
-              );
+              const melonBeforeMap = melonBaseScore(wave) * currentCoinMultiplierRef.current * (hasCharacterAbility("runner_ranger") ? 2 : 1);
+              const melonScore = activeMapId === "terminal"
+                ? terminalMelonScore(melonBeforeMap, Boolean(n.attackCoinReplacement))
+                : Math.max(0, Math.round(melonBeforeMap));
               if (vialAllegianceActive) {
                 scoreRef.current = Math.max(0, scoreRef.current - melonScore);
                 setScore(scoreRef.current);
@@ -9462,7 +9786,11 @@ function SkywayGame() {
             } else if (n.kind === "coin") {
               void audioEngine.playSfx("gem");
               const coinValue =
-                getAttackPointsForCoin(activeMapId) *
+                getAttackPointsForCoin(
+                  activeMapId,
+                  activeMapId === "meadow" &&
+                    state.current.lane === meadowBonusLaneRef.current,
+                ) *
                 currentCoinMultiplierRef.current *
                 (activeCharacter === "runner_comet"
                   ? getHeatfeastBenefits(heatfeastStateRef.current.consumed)
@@ -10123,6 +10451,9 @@ function SkywayGame() {
             return [];
           }
           if (n.y < 108) return [n];
+          if (n.kind === "pumpkin") {
+            recordRuinsPumpkin(n.spawnedWave ?? wave, false);
+          }
           if (isHazard && hasCharacterAbility("trickster_pickpocket")) {
             pickpocketPassedCountRef.current += 1;
             if (pickpocketPassedCountRef.current % 7 === 0) {
@@ -10137,7 +10468,10 @@ function SkywayGame() {
         // Keep the runner in place and clear every nearby object after impact.
         const recoveryRetained =
           clearRecoveryZone && activeMapId !== "terminal"
-            ? advanced.filter((item) => item.y <= 45 || item.y >= 105)
+            ? advanced.filter(
+                (item) =>
+                  item.kind === "pumpkin" || item.y <= 45 || item.y >= 105,
+              )
             : advanced;
         const retained = clearDamagedLane
           ? recoveryRetained.filter(
@@ -10146,7 +10480,7 @@ function SkywayGame() {
                 item.kind === "gem" ||
                 item.kind === "coin" ||
                 item.kind === "melon" ||
-                item.kind === "mushroom",
+                item.kind === "mushroom" || item.kind === "pumpkin",
             )
           : recoveryRetained;
         let relayRetained = retained;
@@ -10386,11 +10720,21 @@ function SkywayGame() {
           setVersusOpponentScore(botScoreRef.current);
         }
       }
-      setWaveProgress((value) => {
-        const nextProgress = value + waveProgressGain;
-        waveProgressRef.current = nextProgress;
-        return nextProgress;
-      });
+      // Give the Pumpkin its actual collection/pass opportunity first. Online
+      // play also acknowledges that exact outcome before advancing server wave.
+      const gate = activeMapId === "ruins"
+        ? ruinsWaveGate(waveProgressRef.current + waveProgressGain, wave,
+            pumpkinOutcomesRef.current.has(wave) || pumpkinServerWaveRef.current >= wave,
+            isOnlineVersus, pumpkinServerWaveRef.current, pumpkinPendingRef.current.has(wave))
+        : { progress: waveProgressRef.current + waveProgressGain, waitForReceipt: false };
+      if (gate.waitForReceipt) {
+        pumpkinBoundaryWaitRef.current = wave;
+        state.current.paused = true;
+        setPaused(true);
+        setVersusResult("WAITING FOR RIVAL");
+      }
+      waveProgressRef.current = gate.progress;
+      setWaveProgress(gate.progress);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -10431,6 +10775,7 @@ function SkywayGame() {
     soundtrack,
     queueGemClaim,
     queueEndlessGemStreakReset,
+    recordRuinsPumpkin,
     queueOnlineCoinAward,
     applyAuthoritativeVersusPoints,
     applyProgressionPayload,
@@ -10446,6 +10791,7 @@ function SkywayGame() {
     const next = Math.floor(waveProgress / WAVE_PROGRESS_LENGTH) + 1;
     if (next !== wave) {
       const completedWave = next - 1;
+      setAttackPurchaseCounts({});
       let characterChoiceOpened = false;
       if (cometRemovalQueueRef.current.wave <= completedWave)
         cometRemovalQueueRef.current = { wave: 0, counts: {} };
@@ -10614,7 +10960,7 @@ function SkywayGame() {
             ? maxHearts
             : sutureFullRestore
               ? maxHearts
-              : Math.min(maxHearts, state.current.hearts + healAmount);
+              : Math.min(maxHearts, state.current.hearts + getAllowedHealing(activeMapId, healAmount));
         state.current.hearts = healedHearts;
         setHearts(healedHearts);
       }
@@ -10877,6 +11223,7 @@ function SkywayGame() {
     showAbilityNotice,
     acknowledgeSpawnedVersusAttacks,
     queueEndlessGemStreakReset,
+    recordRuinsPumpkin,
   ]);
   useEffect(() => {
     if (
@@ -10906,22 +11253,10 @@ function SkywayGame() {
     if (versusCountdown <= 0) {
       if (isBotPractice) {
         const botBudgetBefore = botAttackPointsRef.current;
-        let botBudget = botBudgetBefore;
-        const botAttacks: VersusAttackKind[] = [];
         const attackLimit = Math.min(6, 1 + Math.ceil(wave / 3));
-        const availableAttackIds = getAvailableAttacks(activeMapId);
-        while (botAttacks.length < attackLimit) {
-          const affordable = VERSUS_ATTACKS.filter(
-            (attack) =>
-              availableAttackIds.includes(attack.kind) &&
-              attack.cost <= botBudget,
-          );
-          if (affordable.length === 0) break;
-          const chosen =
-            affordable[Math.floor(Math.random() * affordable.length)];
-          botAttacks.push(chosen.kind);
-          botBudget -= chosen.cost;
-        }
+        const botPurchase = planBotAttackPurchases(activeMapId, botBudgetBefore, attackLimit);
+        const botAttacks: VersusAttackKind[] = botPurchase.attacks;
+        const botBudget = botPurchase.remainingBudget;
         botAttackPointsRef.current = botBudget;
         let attacksForPlayer = botAttacks;
         if (activeCharacter === "runner_comet") {
@@ -11265,6 +11600,9 @@ function SkywayGame() {
           versusStateSyncIntentRef.current !== syncIntent
         )
           return;
+        // A failed Pumpkin receipt must not be overtaken by a wave/death
+        // heartbeat. Its successful retry schedules this ordinary update again.
+        if (activeMapId === "ruins" && pumpkinPendingRef.current.size > 0) return;
         let data: VersusStatePayload | null = null;
         let syncError = "";
         try {
@@ -11481,7 +11819,7 @@ function SkywayGame() {
         ] = await Promise.all([
           supabase
             .from("player_stats")
-            .select("total_gems,high_score")
+            .select("total_gems,high_score,stardust")
             .eq("user_id", user.id)
             .maybeSingle(),
           supabase
@@ -11501,9 +11839,7 @@ function SkywayGame() {
             .eq("user_id", user.id)
             .maybeSingle(),
           supabase.rpc("get_player_progression"),
-          isPixelPulseAvailable
-            ? supabase.rpc("get_my_pixel_identity")
-            : Promise.resolve({ data: null }),
+          isPixelPulseAvailable ? supabase.rpc("get_my_pixel_identity") : Promise.resolve({ data: null }),
         ]);
         if (
           userIdRef.current !== sessionUserId ||
@@ -11516,11 +11852,13 @@ function SkywayGame() {
           gemsRef.current = stats.total_gems;
           highScoreRef.current = stats.high_score;
           setGems(stats.total_gems);
+          setStardust(Number(stats.stardust) || 0);
           setHighScore(stats.high_score);
         } else {
           gemsRef.current = 0;
           highScoreRef.current = 0;
           setGems(0);
+          setStardust(0);
           setHighScore(0);
           console.error("Account stats were not provisioned for this player.");
         }
@@ -11529,12 +11867,7 @@ function SkywayGame() {
           setUsernameInput(profile.username);
           setUsernameRequired(false);
         } else setUsernameRequired(true);
-        setPixelLinked(
-          Boolean(
-            pixelIdentity?.linked ||
-            user.app_metadata?.provider === "pixel-pulse",
-          ),
-        );
+        setPixelLinked(Boolean(pixelIdentity?.linked || user.app_metadata?.provider === "pixel-pulse"));
         if (pixelPendingSuccessRef.current && pixelIdentity?.linked && user.app_metadata?.provider === "pixel-pulse") {
           setPixelConnectionMessage("Linking successful");
           pixelPendingSuccessRef.current = false;
@@ -11620,7 +11953,14 @@ function SkywayGame() {
       authSessionGenerationRef.current = generation;
       const nextAuthUserId = session?.user.id ?? null;
       authSessionUserIdRef.current = nextAuthUserId;
-      if (userIdRef.current !== nextAuthUserId) userIdRef.current = null;
+      if (userIdRef.current !== nextAuthUserId) {
+        userIdRef.current = null;
+        setStardust(0);
+        setRunXpTotal(null);
+        setLeaders([]);
+        setLeadersError("");
+        setLeadersLoading(false);
+      }
       setAuthReady(false);
       // Revoke browser data access synchronously. The next account's token is
       // installed only after its refresh finishes and this generation is
@@ -11900,6 +12240,11 @@ function SkywayGame() {
     userIdRef.current = null;
     progressionOwnerUserIdRef.current = null;
     setPlayerProgression(createEmptyPlayerProgression());
+    setStardust(0);
+    setRunXpTotal(null);
+    setLeaders([]);
+    setLeadersError("");
+    setLeadersLoading(false);
     invalidateVersusSearch();
     resetVersusClientSync();
     closeVersusChannel();
@@ -12016,6 +12361,7 @@ function SkywayGame() {
     setObstacleCosmetic("");
     setEnvironmentCosmetic("");
     setGems(0);
+    setStardust(0);
     setHighScore(0);
     gemsRef.current = 0;
     highScoreRef.current = 0;
@@ -12259,24 +12605,33 @@ function SkywayGame() {
     if (guest) return;
     const sessionUserId = userIdRef.current;
     if (!sessionUserId) return;
-    const [ownedResult, loadoutResult, catalogResult] = await Promise.all([
-      supabase
-        .from("player_unlocks")
-        .select("item_key,item_type,rarity")
-        .eq("user_id", sessionUserId),
-      supabase
-        .from("player_loadouts")
-        .select("*")
-        .eq("user_id", sessionUserId)
-        .maybeSingle(),
-      supabase
-        .from("extraction_catalog")
-        .select("item_key,item_type,rarity,display_name,extractable")
-        .eq("active", true),
-    ]);
+    const [ownedResult, loadoutResult, catalogResult, walletResult] =
+      await Promise.all([
+        supabase
+          .from("player_unlocks")
+          .select("item_key,item_type,rarity")
+          .eq("user_id", sessionUserId),
+        supabase
+          .from("player_loadouts")
+          .select("*")
+          .eq("user_id", sessionUserId)
+          .maybeSingle(),
+        supabase
+          .from("extraction_catalog")
+          .select("item_key,item_type,rarity,display_name,extractable")
+          .eq("active", true),
+        supabase
+          .from("player_stats")
+          .select("total_gems,stardust")
+          .eq("user_id", sessionUserId)
+          .maybeSingle(),
+      ]);
     if (userIdRef.current !== sessionUserId) return;
     const collectionError =
-      ownedResult.error ?? loadoutResult.error ?? catalogResult.error;
+      ownedResult.error ??
+      loadoutResult.error ??
+      catalogResult.error ??
+      walletResult.error;
     if (collectionError) {
       setInventoryStatus(
         `Could not load inventory: ${collectionError.message}`,
@@ -12286,6 +12641,11 @@ function SkywayGame() {
     const owned = ownedResult.data;
     const loadout = loadoutResult.data;
     const catalog = catalogResult.data;
+    if (walletResult.data) {
+      setStardust(Number(walletResult.data.stardust) || 0);
+      gemsRef.current = Number(walletResult.data.total_gems) || 0;
+      setGems(gemsRef.current);
+    }
     const ownedItems = (owned ?? []) as Unlock[];
     const availableCatalog = (catalog ?? []) as CatalogItem[];
     const lockedCatalog = availableCatalog.filter(
@@ -12401,8 +12761,9 @@ function SkywayGame() {
       const newCount = results.filter((item) => item.is_new).length;
       const duplicateCount = results.length - newCount;
       setShopStatus(
-        `${results.length} ITEM${results.length === 1 ? "" : "S"} REVEALED — ${newCount} NEW · ${duplicateCount} DUPLICATE${duplicateCount === 1 ? "" : "S"} · NO DUPLICATE REFUNDS`,
+        `${results.length} ITEM${results.length === 1 ? "" : "S"} REVEALED — ${newCount} NEW · ${duplicateCount} DUPLICATE${duplicateCount === 1 ? "" : "S"} · +${Number(data?.stardust_awarded) || 0} STARDUST`,
       );
+      setStardust(Number(data?.stardust) || 0);
       await loadCollection();
     } catch {
       setShopStatus(
@@ -12535,13 +12896,11 @@ function SkywayGame() {
     }
     const cost = directUnlockCost(item.rarity, item.item_type);
     if (cost === null) {
-      setInventoryStatus(
-        "Only Common, Uncommon, and Rare items can be directly unlocked.",
-      );
+      setInventoryStatus("Default items are included and cannot be purchased.");
       return;
     }
-    if (gemsRef.current < cost) {
-      setInventoryStatus(`You need ♦ ${cost} to unlock this item.`);
+    if (stardust < cost) {
+      setInventoryStatus(`You need ${cost} Stardust to unlock this item.`);
       return;
     }
     setDirectPurchaseBusy(true);
@@ -12556,6 +12915,7 @@ function SkywayGame() {
         return;
       }
       const nextGems = Number(data?.total_gems ?? data?.gems);
+      setStardust(Number(data?.stardust) || 0);
       if (Number.isFinite(nextGems)) {
         gemsRef.current = Math.max(0, nextGems);
         setGems(gemsRef.current);
@@ -12565,8 +12925,8 @@ function SkywayGame() {
       const chargedCost = Math.max(0, Number(data?.cost) || 0);
       setInventoryStatus(
         data?.already_owned
-          ? `${(item.display_name ?? item.item_key).toUpperCase()} WAS ALREADY OWNED · NO GEMS SPENT.`
-          : `${(item.display_name ?? item.item_key).toUpperCase()} UNLOCKED FOR ♦ ${chargedCost}.`,
+          ? `${(item.display_name ?? item.item_key).toUpperCase()} WAS ALREADY OWNED · NO STARDUST SPENT.`
+          : `${(item.display_name ?? item.item_key).toUpperCase()} UNLOCKED FOR ${chargedCost} STARDUST.`,
       );
     } catch {
       if (userIdRef.current !== shopUserId) return;
@@ -12579,9 +12939,26 @@ function SkywayGame() {
   };
   const loadLeaderboard = async () => {
     cancelPendingProgressionStart();
-    const { data } = await supabase.rpc("get_leaderboard");
-    setLeaders((data ?? []) as Leader[]);
     setLeaderboardOpen(true);
+    setLeaders([]);
+    setLeadersError("");
+    if (guest || !userIdRef.current) {
+      setLeadersError("Sign in to view the leaderboard.");
+      return;
+    }
+    const requestUserId = userIdRef.current;
+    setLeadersLoading(true);
+    try {
+      const { data, error } = await supabase.rpc("get_leaderboard");
+      if (requestUserId !== userIdRef.current) return;
+      if (error) setLeadersError("Could not load the leaderboard. Please try again.");
+      else setLeaders((data ?? []) as Leader[]);
+    } catch {
+      if (requestUserId === userIdRef.current)
+        setLeadersError("Could not connect to the leaderboard. Please try again.");
+    } finally {
+      if (requestUserId === userIdRef.current) setLeadersLoading(false);
+    }
   };
   const loadVersusLeaderboard = async () => {
     if (guest) {
@@ -12592,20 +12969,28 @@ function SkywayGame() {
     }
     setVersusLeadersLoading(true);
     setVersusLeadersError("");
-    const { data, error } = await supabase.rpc("get_1v1_leaderboard", {
-      p_limit: 50,
-      p_offset: 0,
-    });
+    const requestUserId = userIdRef.current;
+    try {
+      const { data, error } = await supabase.rpc("get_1v1_leaderboard", {
+        p_limit: 50,
+        p_offset: 0,
+      });
+      if (requestUserId !== userIdRef.current) return;
     if (error) {
       setVersusLeaders([]);
       setVersusLeadersError(
         error.message.includes("get_1v1_leaderboard") &&
           error.message.toLowerCase().includes("schema cache")
-          ? "1V1 LEADERBOARD DATABASE SETUP IS MISSING · RUN MULTI-DEVICE 03 RANKED"
-          : error.message,
+          ? "Ranked leaderboard is temporarily unavailable. Please try again."
+          : "Could not load the ranked leaderboard. Please try again.",
       );
     } else setVersusLeaders((data ?? []) as VersusLeader[]);
-    setVersusLeadersLoading(false);
+    } catch {
+      if (requestUserId === userIdRef.current)
+        setVersusLeadersError("Could not connect to the ranked leaderboard. Please try again.");
+    } finally {
+      if (requestUserId === userIdRef.current) setVersusLeadersLoading(false);
+    }
   };
   const ownedPlayerCosmetics = unlocks.filter(
     (item) => item.item_type === "player",
@@ -13888,8 +14273,31 @@ function SkywayGame() {
               <MatchSetupPanel
                 setup={matchSetup}
                 now={weaponClock || Date.now()}
-                map={{ key: versusMap, ...MAP_GUIDES[versusMap] }}
-                arenas={MAP_IDS.map((key) => ({ key, ...MAP_GUIDES[key] }))}
+                map={{
+                  key: versusMap,
+                  ...MAP_GUIDES[versusMap],
+                  rules: [
+                    ...MAP_GUIDES[versusMap].rules,
+                    ...(versusMap === "ruins"
+                      ? [
+                          `This match bans: ${ruinsBannedCharacters.map((k) => CHARACTER_ROSTER.find((c) => c.key === k)?.name ?? k).join(", ")}.`,
+                        ]
+                      : []),
+                  ],
+                }}
+                arenas={[
+                  ...MAP_IDS.map((key) => ({ key, ...MAP_GUIDES[key] })),
+                  ...(versusMode === "ranked"
+                    ? [
+                        {
+                          key: "unknown",
+                          name: "Unknown",
+                          description: "Reveals one random map after bans.",
+                          rules: ["Ranked-only random map choice."],
+                        },
+                      ]
+                    : []),
+                ]}
                 characters={CHARACTER_ROSTER.filter(
                   (c) =>
                     isCharacterOwned(unlocks, c.key) &&
@@ -13897,7 +14305,10 @@ function SkywayGame() {
                       versusMap,
                       getCharacterClassKey(c.key),
                     ) &&
-                    (versusMode !== "ranked" || c.rarity !== "mythic"),
+                    ((!["ranked"].includes(versusMode) &&
+                      versusMap !== "ruins") ||
+                      c.rarity !== "mythic") &&
+                    !ruinsBannedCharacters.includes(c.key),
                 ).map((c) => ({
                   key: c.key,
                   name: c.name,
@@ -14028,11 +14439,21 @@ function SkywayGame() {
                           {versusOpponentScore.toLocaleString()}
                         </b>
                       </div>
-                      <em
-                        aria-label={`${getDisplayedAttackPoints(versusPoints)} attack coins`}
-                      >
-                        ◉ {getDisplayedAttackPoints(versusPoints)}
-                      </em>
+                      {activeMapId !== "terminal" && (
+                        <em
+                          aria-label={`${getDisplayedAttackPoints(versusPoints)} attack coins`}
+                        >
+                          ◉ {getDisplayedAttackPoints(versusPoints)}
+                        </em>
+                      )}
+                      {activeMapId === "ruins" && (
+                        <em
+                          className="pumpkin-counter"
+                          aria-label={`${pumpkinsMissed} consecutive pumpkins missed`}
+                        >
+                          🎃 MISSED {pumpkinsMissed}/3
+                        </em>
+                      )}
                     </div>
                   )}
                   {isVersusRun && (
@@ -14980,7 +15401,7 @@ function SkywayGame() {
                       </div>
                     )}
                     <div
-                      className={`runner character-${activeCharacter}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}${mirageInvasion && !mirageInvasion.finished ? " mirage-invading" : ""}${beaconActiveRef.current ? " beacon-active" : ""}${reviveFlyingRef.current ? " flight-active" : ""}${haloPartsRef.current >= 3 ? " halo-ready" : ""}${phantomLord ? " phantom-lord-form" : ""}${echoKnowingState.chargingSinceMs !== null ? " echo-charging" : ""}${echoKnowingState.awakened ? " echo-awakened" : ""}${echoKnowingState.realmUntilMs > Date.now() ? " echo-realm" : ""}${activeCharacter === "runner_velocity" && velocityDisplayPercent > 0 ? (velocityDisplayPercent >= 100 ? " velocity-max" : velocityDisplayPercent >= 50 ? " velocity-charged" : " velocity-charging") : ""}`}
+                      className={`runner character-${activeCharacter}${activeMapId === "terminal" ? terminalFacing < 0 ? " facing-left" : terminalFacing > 0 ? " facing-right" : " facing-forward" : ""}${playerCosmetic ? ` player-${playerCosmetic}` : ""}${slowed ? " frozen" : ""}${invincible ? " invincible" : ""}${mirageInvasion && !mirageInvasion.finished ? " mirage-invading" : ""}${beaconActiveRef.current ? " beacon-active" : ""}${reviveFlyingRef.current ? " flight-active" : ""}${haloPartsRef.current >= 3 ? " halo-ready" : ""}${phantomLord ? " phantom-lord-form" : ""}${echoKnowingState.chargingSinceMs !== null ? " echo-charging" : ""}${echoKnowingState.awakened ? " echo-awakened" : ""}${echoKnowingState.realmUntilMs > Date.now() ? " echo-realm" : ""}${activeCharacter === "runner_velocity" && velocityDisplayPercent > 0 ? (velocityDisplayPercent >= 100 ? " velocity-max" : velocityDisplayPercent >= 50 ? " velocity-charged" : " velocity-charging") : ""}`}
                       style={{
                         left: `${((lane + 0.5) / activeLaneCount) * 100}%`,
                       }}
@@ -15042,6 +15463,7 @@ function SkywayGame() {
                       </button>
                     )}
                     {activeMapId === "terminal" && isVersusRun && (
+                      <>
                       <button
                         type="button"
                         className={`pitch-katana terminal-sword${terminalSwordRef.current.durability === 0 ? " broken" : ""}`}
@@ -15063,7 +15485,7 @@ function SkywayGame() {
                             : `${terminalSwordRef.current.durability}/4 · ${Math.max(0, (terminalSwordRef.current.cooldownUntil - Date.now()) / 1000).toFixed(1)}s`}
                         </small>
                         <em className="pitch-katana-description">
-                          MATCH LANE: RIVAL −1 HP · MISS: YOU −0.5 HP
+                          FACING {terminalFacing < 0 ? "LEFT" : terminalFacing > 0 ? "RIGHT" : "FORWARD"} · HIT: RIVAL −1 HP · MISS: YOU −0.5 HP
                           <br />
                           EDGE WRAP:{" "}
                           {terminalWrapWaveRef.current === wave
@@ -15071,6 +15493,15 @@ function SkywayGame() {
                             : "READY"}
                         </em>
                       </button>
+                      <div className="terminal-facing-controls" role="group" aria-label="Terminal sword direction">
+                        {([-1, 0, 1] as const).map((facing) => <button
+                          type="button" key={facing}
+                          aria-pressed={terminalFacing === facing}
+                          disabled={!running || paused || wavePause || terminalSwordBusyRef.current}
+                          onClick={() => changeTerminalFacing(facing)}
+                        >{facing < 0 ? "Z · FACE LEFT" : facing > 0 ? "C · FACE RIGHT" : "X · FORWARD"}</button>)}
+                      </div>
+                      </>
                     )}
                   </div>
                   {abilityChoice?.kind === "lifeline-lane" && (
@@ -15869,6 +16300,18 @@ function SkywayGame() {
                             </em>
                           </div>
                         )}
+                      {over && !guest && !isVersusRun && (
+                        <div className="run-xp-summary" role="status">
+                          {runXpError ? "XP COULD NOT BE SAVED YET" : runXpTotal === null
+                            ? "SAVING XP…"
+                            : `+${runXpTotal.toLocaleString()} XP · SCORE + GEMS`}
+                          {runXpError && <button type="button" onClick={() => {
+                            progressionAwardedRunIdRef.current = null;
+                            setRunXpError(false);
+                            setProgressionRunVersion((value) => value + 1);
+                          }}>RETRY XP SAVE</button>}
+                        </div>
+                      )}
                       {!over && (
                         <div className="mode-select">
                           <button
@@ -15923,10 +16366,14 @@ function SkywayGame() {
                       >
                         <p>NEXT WAVE IN</p>
                         <h1>{versusCountdown}</h1>
-                        <strong>
-                          ATTACK COINS: ◉{" "}
-                          {getDisplayedAttackPoints(versusPoints)}
-                        </strong>
+                        {activeMapId === "terminal" ? (
+                          <strong>SHARED COURSE · NO ARMORY</strong>
+                        ) : (
+                          <strong>
+                            ATTACK COINS: ◉{" "}
+                            {getDisplayedAttackPoints(versusPoints)}
+                          </strong>
+                        )}
                         <span
                           className="versus-shop-state"
                           role="status"
@@ -15934,7 +16381,9 @@ function SkywayGame() {
                         >
                           {versusCountdown <= 0
                             ? "STARTING NEXT WAVE…"
-                            : "ARMORY OPEN"}
+                            : activeMapId === "terminal"
+                              ? "NEXT METRO WAVE"
+                              : "ARMORY OPEN"}
                         </span>
                         <div className="attack-grid">
                           {VERSUS_ATTACKS.filter((attack) =>
@@ -15942,14 +16391,21 @@ function SkywayGame() {
                               attack.kind,
                             ),
                           ).map((attack) => {
+                            const priorBought = countPriorAttackPurchases(attackPurchaseCounts);
+                            const basePrice =
+                              getAttackPointCost(
+                                activeMapId,
+                                attack.kind,
+                                priorBought,
+                              ) ?? Infinity;
                             const offer =
                               activeCharacter === "runner_comet"
                                 ? getCometSendPurchase(
-                                    attack.cost,
+                                    basePrice,
                                     1,
                                     heatfeastState.consumed,
                                   )
-                                : { price: attack.cost, amount: 1 };
+                                : { price: basePrice, amount: 1 };
                             return (
                               <button
                                 key={attack.kind}
@@ -15957,7 +16413,8 @@ function SkywayGame() {
                                   !versusIntermissionReady ||
                                   versusCountdown <= 0 ||
                                   versusAttackBusy ||
-                                  versusPoints < offer.price
+                                  versusPoints < offer.price ||
+                                  !canPurchaseAttack(activeMapId, attack.kind, attackPurchaseCounts)
                                 }
                                 onClick={() =>
                                   void sendVersusAttack(attack.kind)
@@ -15973,16 +16430,23 @@ function SkywayGame() {
                             );
                           })}
                         </div>
-                        <small>
-                          Each track coin adds{" "}
-                          {getAttackPointsForCoin(activeMapId)} attack points.{" "}
-                          {activeMapRules.waveAttackReward.kind === "fixed"
-                            ? `Completing the wave adds ${activeMapRules.waveAttackReward.points}.`
-                            : "The mushroom winner gets 14; a tie gives both players 7."}{" "}
-                          Purchased hazards trickle into {versusOpponent}&apos;s
-                          next wave between natural obstacles, with a clear
-                          escape route.
-                        </small>
+                        {activeMapId === "terminal" ? (
+                          <small>
+                            Melons give 50% more score. Extra melons replacing attack coins give another 40%. Heal 0.5 HP after each
+                            wave.
+                          </small>
+                        ) : (
+                          <small>
+                            Each track coin adds{" "}
+                            {getAttackPointsForCoin(activeMapId)} attack points.{" "}
+                            {activeMapRules.waveAttackReward.kind === "fixed"
+                              ? `Completing the wave adds ${activeMapRules.waveAttackReward.points}.`
+                              : "The mushroom winner gets 14; a tie gives both players 7."}{" "}
+                            Purchased hazards trickle into {versusOpponent}
+                            &apos;s next wave between natural obstacles, with a
+                            clear escape route.
+                          </small>
+                        )}
                         {versusResult && (
                           <div
                             className="versus-message"
@@ -16225,30 +16689,8 @@ function SkywayGame() {
                 </div>
               )}
 
-              {isPixelPulseAvailable && !pixelLinked && (
-                <a
-                  className="settings-action pixel-link-note"
-                  href="/connect/pixel-pulse?mode=link"
-                >
-                  LINK PIXEL PULSE (HIGHLY RECOMMENDED)
-                </a>
-              )}
-              {pixelLinked ? (
-                <div className="pixel-linked-settings">
-                  <b>LINKED · PIXEL PULSE · {username}</b>
-                  <p>
-                    Your shared username, email and password are managed on Pixel
-                    Pulse.
-                  </p>
-                  <a
-                    href="https://pixel-pulse-websites.vercel.app/?account=1"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    OPEN PIXEL PULSE
-                  </a>
-                </div>
-              ) : usernameRequired || editUsername ? (
+              {isPixelPulseAvailable && !pixelLinked && <a className="settings-action pixel-link-note" href="/connect/pixel-pulse?mode=link">LINK PIXEL PULSE (HIGHLY RECOMMENDED)</a>}
+              {pixelLinked ? <div className="pixel-linked-settings"><b>LINKED · PIXEL PULSE · {username}</b><p>Your shared username, email and password are managed on Pixel Pulse.</p><a href="https://pixel-pulse-websites.vercel.app/?account=1" target="_blank" rel="noopener noreferrer">OPEN PIXEL PULSE</a></div> : usernameRequired || editUsername ? (
                 <form onSubmit={saveUsername}>
                   <label>
                     USERNAME
@@ -16488,7 +16930,7 @@ function SkywayGame() {
                 onOpen={(option) => void extract(option)}
               />
               <p className="box-duplicate-note">
-                Duplicates give no new item and no gem refund.
+                Duplicates give Stardust. Spend it on the exact Skyway item you want.
               </p>
               <div ref={extractFeedbackRef} className="extract-feedback">
                 {extractAnimation !== "idle" && extractingOption ? (
@@ -16549,7 +16991,9 @@ function SkywayGame() {
                   </section>
                 ) : null}
               </div>
-              <strong className="shop-balance">BALANCE: ♦ {gems}</strong>
+              <strong className="shop-balance">
+                ♦ {gems} GEMS · ✧ {stardust} STARDUST
+              </strong>
               {shopStatus && (
                 <div className="report-status" role="status" aria-live="polite">
                   {shopStatus}
@@ -16599,9 +17043,9 @@ function SkywayGame() {
                     <header>
                       <div>
                         <small>CHOOSE EXACTLY WHAT YOU WANT</small>
-                        <h3>DIRECT UNLOCK</h3>
+                        <h3>STARDUST UNLOCK</h3>
                       </div>
-                      <strong>♦ {gems} BALANCE</strong>
+                      <strong>✧ {stardust} STARDUST</strong>
                     </header>
                     <div
                       className="direct-unlock-prices"
@@ -16615,17 +17059,16 @@ function SkywayGame() {
                         <span key={rarity} className={rarity}>
                           <b>{rarity}</b>
                           <small>
-                            COSMETIC ♦ {DIRECT_UNLOCK_COSTS[rarity].cosmetic}
+                            COSMETIC ✧ {DIRECT_UNLOCK_COSTS[rarity].cosmetic}
                           </small>
                           <small>
-                            CHARACTER ♦ {DIRECT_UNLOCK_COSTS[rarity].character}
+                            CHARACTER ✧ {DIRECT_UNLOCK_COSTS[rarity].character}
                           </small>
                         </span>
                       ))}
                     </div>
                     <p className="direct-unlock-note">
-                      Common, Uncommon, and Rare only. Epic, Legendary, and
-                      Mythic items come from boxes.
+                      Stardust unlocks exact Skyway items of any rarity. Direct unlocks never cost Gems.
                     </p>
                     {directPurchaseItem ? (
                       <div className="direct-unlock-picker">
@@ -16645,7 +17088,7 @@ function SkywayGame() {
                                   item.display_name ?? item.item_key
                                 ).toUpperCase()}{" "}
                                 · {item.item_type.toUpperCase()} ·{" "}
-                                {item.rarity.toUpperCase()} · ♦{" "}
+                                {item.rarity.toUpperCase()} · ✧{" "}
                                 {directUnlockCost(item.rarity, item.item_type)}
                               </option>
                             ))}
@@ -16659,13 +17102,13 @@ function SkywayGame() {
                           disabled={
                             directPurchaseBusy ||
                             directPurchaseCost === null ||
-                            gems < directPurchaseCost
+                            stardust < directPurchaseCost
                           }
                           onClick={() => void purchaseCatalogItem()}
                         >
                           {directPurchaseBusy
                             ? "UNLOCKING…"
-                            : `UNLOCK FOR ♦ ${directPurchaseCost}`}
+                            : `UNLOCK FOR ✧ ${directPurchaseCost}`}
                         </button>
                       </div>
                     ) : (
@@ -17080,10 +17523,15 @@ function SkywayGame() {
               >
                 ×
               </button>
-              <p>LEADERBOARD 1</p>
-              <h2>TOP RUNNERS</h2>
+              <p>ENDLESS</p>
+              <h2>LEADERBOARD</h2>
+              <button type="button" disabled={leadersLoading} onClick={() => void loadLeaderboard()}>REFRESH</button>
               <div className="leader-list">
-                {leaders.length === 0 ? (
+                {leadersLoading ? (
+                  <p className="leaderboard-state" role="status">Loading scores…</p>
+                ) : leadersError ? (
+                  <p className="leaderboard-state" role="status">{leadersError}</p>
+                ) : leaders.length === 0 ? (
                   <div className="empty-reports">No scores yet.</div>
                 ) : (
                   leaders.map((entry) => (

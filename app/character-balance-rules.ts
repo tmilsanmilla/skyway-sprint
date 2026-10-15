@@ -59,6 +59,7 @@ export const applyScoreMultiplierToAttackPoints = (
 ) => Math.max(0, finiteOr(basePoints) * Math.max(0, finiteOr(scoreMultiplier, 1)));
 
 export type CharacterRarity =
+  | "default"
   | "common"
   | "uncommon"
   | "rare"

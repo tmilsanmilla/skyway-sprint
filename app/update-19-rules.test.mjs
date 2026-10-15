@@ -7,12 +7,14 @@ test("Update 19 K uses the rolling-game boundary and the 600 divisor",()=>{
 });
 test("second finisher bonus rounds before adding 500; melons scale with waves",()=>{
   assert.equal(secondFinisherScore(10346),11363);assert.equal(secondFinisherScore(0),500);
-  for(let w=1;w<=100;w++) assert.equal(melonBaseScore(w),Math.floor(220+30*w**1.4));
+  for(let w=1;w<=100;w++) assert.equal(melonBaseScore(w),Math.floor(260+40*w**1.4));
+  assert.equal(melonBaseScore(NaN),300);
 });
 test("rotating modes switch daily at UTC midnight and hardcore excludes four maps",()=>{
   assert.notEqual(activeRotatingMode(0),activeRotatingMode(86400000));assert.equal(activeRotatingMode(0),activeRotatingMode(86400000*2));
-  assert.equal(nextRotationAt(100),86400000);assert.equal(HARDCORE_DUEL_MAPS.length,6);
-  for(const m of ["desert","grove","alley","terminal"]) assert.ok(!HARDCORE_DUEL_MAPS.includes(m));
+  assert.equal(nextRotationAt(100),86400000);assert.equal(HARDCORE_DUEL_MAPS.length,7);
+  for(const m of ["unknown","grove","volcano","terminal"]) assert.ok(!HARDCORE_DUEL_MAPS.includes(m));
+  for(const m of ["classic","ruins","desert","skyway","pitch","factory","meadow"]) assert.ok(HARDCORE_DUEL_MAPS.includes(m));
   assert.deepEqual(MATCH_SETUP,{banSeconds:10,announcementSeconds:4,characterSeconds:15});
 });
 test("RNG odds are exact, exclude starters/mythics, and never assign the same class",()=>{

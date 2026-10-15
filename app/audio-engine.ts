@@ -17,7 +17,7 @@ export type SfxName =
   | "rivalDown"
   | "katanaBlock" | "swordHit" | "swordMiss" | "swordBreak"
   | "lightsaber" | "vortex" | "currentWind" | "highwayTraffic"
-  | "click";
+  | "click" | "joltShock";
 
 type AudioContextConstructor = typeof AudioContext;
 
@@ -28,7 +28,7 @@ const TRACK_TEMPO: Record<GameTrack, number> = {
   muse: 128,
 };
 const MUSIC_PITCH_MULTIPLIER = 1.1;
-export const MUSIC_TEMPO_MULTIPLIER = 1.3;
+export const MUSIC_TEMPO_MULTIPLIER = 1.3 * 0.9;
 const SAMPLES: Partial<Record<SfxName, readonly [string, number]>> = {
   hit: ["impactGeneric_light_000", 0.65],
   katanaBlock: ["impactMetal_medium_000", 0.65],
@@ -58,9 +58,13 @@ export class AudioEngine {
   private musicVolume = 0.55;
   private sfxVolume = 0.75;
   private playing = false;
-  private scheduler: ReturnType<typeof setInterval> | null = null;
-  private nextStepTime = 0;
-  private step = 0;
+  private musicLoop: AudioBufferSourceNode | null = null;
+  private musicLoopStartedAt = 0;
+  private musicLoopOffset = 0;
+  private musicRequest = 0;
+  private readonly musicBuffers = new Map<GameTrack, Promise<AudioBuffer | null>>();
+  private renderContext: OfflineAudioContext | null = null;
+  private renderMusicBus: GainNode | null = null;
   private readonly scheduledMusic = new Set<AudioScheduledSourceNode>();
   private readonly scheduledSfx = new Set<AudioScheduledSourceNode>();
 
@@ -79,46 +83,39 @@ export class AudioEngine {
   /** Start the selected soundtrack. Call from a user gesture to unlock audio. */
   async start(track?: Soundtrack): Promise<void> {
     if (track) this.selectedTrack = track;
-    const context = await this.ensureContext();
-    if (!context) return;
-
-    if (context.state === "suspended") await context.resume();
     this.playing = true;
-    this.restartSequence(false);
+    await this.beginMusicLoop(true);
   }
 
   /** Resume music after pause. It is safe to call repeatedly. */
   async resume(): Promise<void> {
-    const context = await this.ensureContext();
-    if (!context) return;
-
-    if (context.state === "suspended") await context.resume();
-    if (this.playing && this.scheduler) return;
-
+    if (this.playing && this.musicLoop) return;
     this.playing = true;
-    this.nextStepTime = context.currentTime + 0.04;
-    this.beginScheduler();
+    await this.beginMusicLoop(false);
   }
 
   /** Pause the soundtrack while keeping its place in the loop. */
   pause(): void {
     this.playing = false;
-    this.clearScheduler();
+    this.musicRequest += 1;
+    if (this.context && this.musicLoop?.buffer) {
+      this.musicLoopOffset = (this.musicLoopOffset + Math.max(0, this.context.currentTime - this.musicLoopStartedAt)) % this.musicLoop.buffer.duration;
+    }
     this.stopSources(this.scheduledMusic);
+    this.musicLoop = null;
   }
 
   /** Stop the soundtrack and reset it to the start of the loop. */
   stop(): void {
     this.pause();
-    this.step = 0;
-    this.nextStepTime = 0;
+    this.musicLoopOffset = 0;
   }
 
   /** Switch tracks without allowing the old track's scheduled notes to leak. */
   setTrack(track: GameTrack): void {
     if (track === this.selectedTrack) return;
     this.selectedTrack = track;
-    if (this.playing) this.restartSequence(true);
+    if (this.playing) void this.beginMusicLoop(true);
   }
 
   setMusicVolume(volume: number): void {
@@ -141,6 +138,9 @@ export class AudioEngine {
     const sample = SAMPLES[name];
     if (sample) void this.playSample(sample[0], sample[1]);
     switch (name) {
+      case "joltShock":
+        this.noise("sfx", now, 0.14, 0.12, 6000);
+        this.tone("sfx", 1600, now, 0.18, 0.12, "sawtooth", 110); break;
       case "katanaBlock":
         this.tone("sfx", 2100, now, 0.12, 0.06, "triangle", 900); break;
       case "swordHit":
@@ -285,46 +285,60 @@ export class AudioEngine {
     return context;
   }
 
-  private restartSequence(keepScheduler: boolean): void {
-    if (!this.context) return;
+  /** A hardware-clocked loop keeps the beat steady when background timers slow. */
+  private async beginMusicLoop(reset: boolean): Promise<void> {
+    const request = ++this.musicRequest;
+    const track = this.selectedTrack;
     this.stopSources(this.scheduledMusic);
-    this.step = 0;
-    this.nextStepTime = this.context.currentTime + 0.04;
-    if (!keepScheduler) this.clearScheduler();
-    this.beginScheduler();
-  }
-
-  private beginScheduler(): void {
-    if (this.scheduler || !this.context || !this.playing) return;
-    this.scheduleAhead();
-    this.scheduler = setInterval(() => this.scheduleAhead(), 25);
-  }
-
-  private clearScheduler(): void {
-    if (!this.scheduler) return;
-    clearInterval(this.scheduler);
-    this.scheduler = null;
-  }
-
-  private scheduleAhead(): void {
-    const context = this.context;
-    if (!context || !this.playing || context.state === "closed") return;
-
-    // Recover cleanly if a background tab made the timer fall far behind.
-    if (this.nextStepTime < context.currentTime - 0.25) {
-      this.nextStepTime = context.currentTime + 0.04;
+    this.musicLoop = null;
+    if (reset) this.musicLoopOffset = 0;
+    const context = await this.ensureContext();
+    if (!context || !this.playing || request !== this.musicRequest) return;
+    if (context.state === "suspended") await context.resume();
+    let pending = this.musicBuffers.get(track);
+    if (!pending) {
+      pending = this.renderTrackLoop(track, context.sampleRate).catch(() => null);
+      this.musicBuffers.set(track, pending);
     }
+    const buffer = await pending;
+    if (!buffer || !this.musicBus || !this.playing || request !== this.musicRequest || track !== this.selectedTrack || context !== this.context) return;
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    source.connect(this.musicBus);
+    this.trackSource(this.scheduledMusic, source);
+    this.musicLoopOffset %= buffer.duration;
+    this.musicLoopStartedAt = context.currentTime;
+    this.musicLoop = source;
+    source.start(context.currentTime, this.musicLoopOffset);
+  }
 
-    const secondsPerStep = 60 / (TRACK_TEMPO[this.selectedTrack] * MUSIC_TEMPO_MULTIPLIER) / 4;
-    while (this.nextStepTime < context.currentTime + 0.18) {
-      const swing =
-        this.selectedTrack === "jazz" && this.step % 4 === 2
-          ? secondsPerStep * 0.28
-          : 0;
-      this.scheduleTrackStep(this.selectedTrack, this.step, this.nextStepTime + swing);
-      this.nextStepTime += secondsPerStep;
-      this.step = (this.step + 1) % 32;
+  private async renderTrackLoop(track: GameTrack, sampleRate: number): Promise<AudioBuffer | null> {
+    if (typeof OfflineAudioContext === "undefined") return null;
+    const rawStep = 60 / (TRACK_TEMPO[track] * MUSIC_TEMPO_MULTIPLIER) / 4;
+    const loopFrames = Math.round(rawStep * 32 * sampleRate);
+    const stepSeconds = loopFrames / sampleRate / 32;
+    // Render two cycles, then retain the second, including the first cycle's tails.
+    const offline = new OfflineAudioContext(2, loopFrames * 2 + sampleRate * 2, sampleRate);
+    const bus = offline.createGain();
+    bus.connect(offline.destination);
+    this.renderContext = offline;
+    this.renderMusicBus = bus;
+    try {
+      for (let step = 0; step < 64; step++) {
+        const swing = track === "jazz" && step % 4 === 2 ? stepSeconds * 0.28 : 0;
+        this.scheduleTrackStep(track, step % 32, step * stepSeconds + swing);
+      }
+    } finally {
+      this.renderContext = null;
+      this.renderMusicBus = null;
     }
+    const rendered = await offline.startRendering();
+    const loop = offline.createBuffer(2, loopFrames, sampleRate);
+    for (let channel = 0; channel < 2; channel++) {
+      loop.copyToChannel(rendered.getChannelData(channel).subarray(loopFrames, loopFrames * 2), channel);
+    }
+    return loop;
   }
 
   private scheduleTrackStep(track: GameTrack, step: number, time: number): void {
@@ -412,8 +426,9 @@ export class AudioEngine {
     wave: OscillatorType,
     endFrequency?: number,
   ): void {
-    const context = this.context;
-    const destination = bus === "music" ? this.musicBus : this.sfxBus;
+    const rendering = bus === "music" && this.renderContext !== null;
+    const context = rendering ? this.renderContext : this.context;
+    const destination = rendering ? this.renderMusicBus : bus === "music" ? this.musicBus : this.sfxBus;
     if (!context || !destination) return;
 
     const oscillator = context.createOscillator();
@@ -433,7 +448,7 @@ export class AudioEngine {
     envelope.gain.exponentialRampToValueAtTime(0.0001, start + duration);
     oscillator.connect(envelope);
     envelope.connect(destination);
-    this.trackSource(sourceSet, oscillator, envelope);
+    if (!rendering) this.trackSource(sourceSet, oscillator, envelope);
     oscillator.start(start);
     oscillator.stop(start + duration + 0.025);
   }
@@ -445,8 +460,9 @@ export class AudioEngine {
     volume: number,
     cutoff: number,
   ): void {
-    const context = this.context;
-    const destination = bus === "music" ? this.musicBus : this.sfxBus;
+    const rendering = bus === "music" && this.renderContext !== null;
+    const context = rendering ? this.renderContext : this.context;
+    const destination = rendering ? this.renderMusicBus : bus === "music" ? this.musicBus : this.sfxBus;
     if (!context || !destination) return;
 
     const source = context.createBufferSource();
@@ -461,7 +477,7 @@ export class AudioEngine {
     source.connect(filter);
     filter.connect(envelope);
     envelope.connect(destination);
-    this.trackSource(sourceSet, source, envelope, filter);
+    if (!rendering) this.trackSource(sourceSet, source, envelope, filter);
     source.start(start);
     source.stop(start + duration + 0.02);
   }
@@ -478,7 +494,7 @@ export class AudioEngine {
     this.noise("music", time, 0.22, volume, 3200);
   }
 
-  private getNoiseBuffer(context: AudioContext): AudioBuffer {
+  private getNoiseBuffer(context: BaseAudioContext): AudioBuffer {
     if (this.noiseBuffer) return this.noiseBuffer;
     const length = Math.floor(context.sampleRate * 1.5);
     const buffer = context.createBuffer(1, length, context.sampleRate);

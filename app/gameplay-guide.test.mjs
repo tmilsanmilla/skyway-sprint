@@ -41,6 +41,7 @@ test("every arena, item, and control has usable guide copy", () => {
     "log",
     "melon",
     "mushroom",
+    "pumpkin",
     "rock",
     "snowflake",
     "spikes",
@@ -67,8 +68,8 @@ test("item guide includes the exact core hazard and pickup behavior", () => {
   assert.match(ITEM_GUIDES.rock.description, /2 HP/);
   assert.match(ITEM_GUIDES.barrel.description, /0\.5 HP/);
   assert.match(ITEM_GUIDES.snowflake.description, /3 seconds/);
-  assert.match(ITEM_GUIDES.snowflake.description, /0\.25-second/);
-  assert.match(ITEM_GUIDES.melon.description, /200 base score/);
+  assert.match(ITEM_GUIDES.snowflake.description, /0\.25 seconds/);
+  assert.match(ITEM_GUIDES.melon.description, /300 base score/);
   assert.match(ITEM_GUIDES.coin.description, /1v1-only/);
   for (const attackId of [
     "snowflake",
@@ -83,10 +84,10 @@ test("item guide includes the exact core hazard and pickup behavior", () => {
       new RegExp(`${attackId} ${ATTACK_POINT_COSTS[attackId]}`, "i"),
     );
   }
-  assert.match(ITEM_GUIDES.car.description, /cannot be bought/i);
-  assert.match(ITEM_GUIDES.current.description, /every 1v1 map/i);
-  assert.match(ITEM_GUIDES.current.description, /naturally only on Skyway/i);
-  assert.match(ITEM_GUIDES.current.description, /three-lane Alley.*edges/i);
+  assert.match(ITEM_GUIDES.car.description, /bought on every map with an Armory/i);
+  assert.match(ITEM_GUIDES.current.description, /Skyway-only/i);
+  assert.match(ITEM_GUIDES.snowflake.description, /do not break your Gem streak/i);
+  assert.match(ITEM_GUIDES.pumpkin.description, /missing three in a row/i);
   assert.match(ITEM_GUIDES.gem.description, /(?:stay|hold)s? at 5 for five more gems/i);
   assert.match(ITEM_GUIDES.gem.description, /cap(?:s)? at 7 until.*damage/i);
   assert.match(

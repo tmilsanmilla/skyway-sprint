@@ -9,14 +9,18 @@ test("the level bar moves only in broad fifths, not exact XP percentages", () =>
   assert.equal(broadLevelProgress(999,200),100);
   for (const [xp,required] of [[NaN,200],[1,0],[Infinity,200],[20,NaN]]) assert.equal(broadLevelProgress(xp,required),0);
 });
-test("the player display and run summary never render numerical XP", () => {
+test("the new player display exposes current XP and completed-run XP without a formula", () => {
   const card=readFileSync(new URL('./level-progress.tsx',import.meta.url),'utf8');
   const page=readFileSync(new URL('./page.tsx',import.meta.url),'utf8');
-  assert.doesNotMatch(card,/\bXP\b|toLocaleString|xp_required/);
+  assert.match(card,/player-level-xp/);
+  assert.match(card,/earned.toLocaleString/);
+  assert.match(card,/total.toLocaleString/);
   assert.match(card,/role="progressbar"/);
   assert.match(card,/aria-valuetext/);
   assert.match(page,/<LevelProgress\s+level=\{playerProgression.level\}/);
-  assert.doesNotMatch(page,/run-xp-summary|lastRunXpBreakdown|<b>XP<\/b>|XP earned this run/);
+  assert.match(page,/run-xp-summary/);
+  assert.match(page,/runXpTotal.toLocaleString/);
+  assert.doesNotMatch(card,/R\^|score\s*\/\s*1[_,]?100|2\.2/);
 });
 test("the new reset is one-time and preserves non-progression data and receipt IDs", () => {
   const sql=readFileSync(new URL('../neon/progression.sql',import.meta.url),'utf8');

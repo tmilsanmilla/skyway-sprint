@@ -23,6 +23,7 @@ export type GameplayItemId =
   | "coin"
   | "melon"
   | "mushroom"
+  | "pumpkin"
   | "car"
   | "log"
   | "snowflake"
@@ -38,13 +39,25 @@ const seconds = (value: number) =>
 export const MAP_GUIDES: Readonly<Record<MapId, MapGuide>> = {
   meadow: {
     name: "Meadow",
-    description: "Six lanes of grassland with a marked bonus lane: earn 40% more score there, but take double obstacle damage.",
-    rules: ["Vortex deals 1 HP and pulls adjacent players toward it, preventing movement away for 0.5 seconds.", "Snowflakes freeze for 3 seconds; every frozen turn takes 0.4 seconds here.", "Coins give 6 attack points and each completed wave gives 8."],
+    description:
+      "Six lanes of grassland with a marked bonus lane: earn 40% more score there, but take double obstacle damage.",
+    rules: [
+      "Vortex deals 1 HP and pulls adjacent players toward it, preventing movement away for 0.5 seconds.",
+      "Snowflakes freeze for 3 seconds; every frozen turn adds 0.25 seconds.",
+      "Coins give 3 attack points, or 7 in the bonus lane; each completed wave gives 4.",
+    ],
   },
   terminal: {
     name: "Terminal",
-    description: "Both rivals share one five-lane metro course as Ace, starting with 4 HP and a Sword with 4 durability.",
-    rules: ["Spikes deal 2 HP. Running in a spike's lane gives 40% extra score, combining with Ace's 10% for 54%.", "Move outward from an edge lane to wrap to the opposite edge once per wave.", "Press Q or click SWORD: matching your rival's lane deals 1 HP to them; missing costs you 0.5 HP and 1 durability.", "Every swing gives you a 3-second cooldown; a successful hit gives both swords that cooldown. Rocks and spikes also cost 1 durability. At zero durability your Sword stays broken for the duel."],
+    description:
+      "Both rivals share one five-lane metro course as Ace, starting with 4 HP and a Sword with 4 durability.",
+    rules: [
+      "Spikes deal 2 HP. Running in a spike's lane gives 40% extra score, combining with Ace's 10% for 54%.",
+      "There are no attack coins or Armory. Melons give 50% more score; extra melons replacing attack coins give another 40%. Wave healing restores 0.5 HP.",
+      "Move outward from an edge lane to wrap to the opposite edge once per wave.",
+      "Z faces left, X forward, and C right. While facing sideways you cannot move in the opposite direction. Press Q or click SWORD to hit the lane you face: your own lane when forward, or the neighboring lane when sideways. A hit deals 1 HP; a miss costs 0.5 HP and 1 durability.",
+      "Every swing gives you a 3-second cooldown; a successful hit gives both swords that cooldown. Rocks and spikes also cost 1 durability. At zero durability your Sword stays broken for the duel.",
+    ],
   },
   classic: {
     name: "Classic",
@@ -55,15 +68,15 @@ export const MAP_GUIDES: Readonly<Record<MapId, MapGuide>> = {
       "Logs, spikes, barrels, rocks, and snowflakes can spawn naturally.",
     ],
   },
-  alley: {
-    name: "Alley",
+  ruins: {
+    name: "Ruins",
     description:
-      "Only three lanes carry the same total traffic as Classic, so every lane is busier. Starting HP and maximum HP are doubled.",
+      "Four lanes of ancient ruins. Starting and maximum HP are reduced by 1.",
     rules: [
-      "Every character class is allowed.",
-      "Bought Currents travel in an edge lane, leaving the opposite edge safe.",
+      "Healers and Mythics are banned, plus ten random non-starter characters shared by both rivals.",
+      "Collect the one Pumpkin in each wave. Missing three in a row is fatal; collecting one resets the counter.",
       "Coins give 7 attack points and each completed wave gives 7.",
-      "Logs are most common; snowflakes are rare but still possible.",
+      "Barrels and rocks dominate. Snowflakes and Currents cannot be bought here.",
     ],
   },
   desert: {
@@ -71,9 +84,9 @@ export const MAP_GUIDES: Readonly<Record<MapId, MapGuide>> = {
     description:
       "A wide seven-lane arena with no healing. Only Runners and Tricksters are allowed.",
     rules: [
-      "Snowflakes do not spawn and cannot be bought here.",
+      "Snowflakes can spawn and be bought. They delay each frozen turn by 0.25 seconds.",
       "Coins give 5 attack points and each completed wave gives 5.",
-      "Barrels are the most common natural hazard.",
+      "Rocks are the most common natural hazard, followed by barrels.",
     ],
   },
   skyway: {
@@ -83,6 +96,7 @@ export const MAP_GUIDES: Readonly<Record<MapId, MapGuide>> = {
     rules: [
       `A direct Current hit deals ${CURRENT_RULES.directHitDamage} HP; being beside an edge Current can deal ${CURRENT_RULES.edgeAdjacentDamage} HP.`,
       "Current movement ignores the normal frozen-turn delay.",
+      "Snowflakes add a 0.3-second turn delay here. Currents travel 5% faster than before.",
       "Coins give 5 attack points and each completed wave gives 5.",
     ],
   },
@@ -113,7 +127,7 @@ export const MAP_GUIDES: Readonly<Record<MapId, MapGuide>> = {
       "A compact four-lane arena with one conveyor lane that changes every wave.",
     rules: [
       `The marked conveyor makes hazards either ${FACTORY_RULES.slowMultiplier}× or ${FACTORY_RULES.fastMultiplier}× speed. Its label is shown above the lane.`,
-      "Natural traffic is balanced per lane, so the total field is slightly lighter than Classic.",
+      "Natural traffic is balanced per lane, with slightly increased density. Cars, spikes and barrels can spawn.",
       "Cars can spawn naturally. Coins and completed waves each give 5 attack points.",
     ],
   },
@@ -124,13 +138,17 @@ export const MAP_GUIDES: Readonly<Record<MapId, MapGuide>> = {
     rules: [
       `Each mushroom gives ${GROVE_RULES.mushroomScore} score. The player with fewer mushrooms after healing loses ${GROVE_RULES.lowerMushroomHealthPenalty} HP.`,
       `The mushroom winner gets ${GROVE_RULES.mushroomWinnerAttackPoints} attack points; a tie gives each player ${GROVE_RULES.mushroomTieAttackPointsPerPlayer}.`,
-      "Snowflakes do not spawn and cannot be bought here.",
+      "Snowflakes can spawn and be bought; logs make up half of natural hazards.",
     ],
   },
 };
 
 export const ITEM_GUIDES: Readonly<Record<GameplayItemId, GuideEntry>> = {
-  vortex: { name: "Vortex", description: "Meadow-only hazard worth 1 HP of damage. It moves midway between Log and Spike speed. Passing beside it locks movement away from it for 0.5 seconds." },
+  vortex: {
+    name: "Vortex",
+    description:
+      "Meadow and Volcano hazard worth 1 HP of damage. It moves midway between Log and Spike speed. Passing beside it locks movement away from it for 0.5 seconds.",
+  },
   gem: {
     name: "Gem",
     description:
@@ -138,13 +156,16 @@ export const ITEM_GUIDES: Readonly<Record<GameplayItemId, GuideEntry>> = {
   },
   coin: {
     name: "Attack Coin",
-    description:
-      `1v1-only pickup. It adds the current map's attack-point amount to this match so you can buy hazards during intermission. Armory prices are Snowflake ${ATTACK_POINT_COSTS.snowflake}, Log ${ATTACK_POINT_COSTS.log}, Spike ${ATTACK_POINT_COSTS.spike}, Rock ${ATTACK_POINT_COSTS.rock}, Barrel ${ATTACK_POINT_COSTS.barrel}, and Current ${ATTACK_POINT_COSTS.current}.`,
+    description: `1v1-only pickup for intermission attacks. Base prices: Snowflake ${ATTACK_POINT_COSTS.snowflake} (12 on Skyway), Log ${ATTACK_POINT_COSTS.log}, Barrel ${ATTACK_POINT_COSTS.barrel}, Current ${ATTACK_POINT_COSTS.current}, Spike ${ATTACK_POINT_COSTS.spike}, Car ${ATTACK_POINT_COSTS.car}, Rock ${ATTACK_POINT_COSTS.rock}. Each obstacle already bought that wave adds 2 to every price. Buy at most four of each type per wave, except Snowflakes. Availability depends on the map. Terminal has no attack coins.`,
   },
   melon: {
     name: "Melon",
     description:
-      "Endless-only pickup worth 200 base score before mode and character multipliers. It does not make the wave end sooner.",
+      "Starts at 300 base score in wave 1 and becomes more valuable each wave, before mode and character multipliers. Terminal adds 50%, and its extra replacement melons add another 40%. Melons do not make the wave end sooner.",
+  },
+  pumpkin: {
+    name: "Pumpkin",
+    description: "Ruins has one Pumpkin each wave, moving at Melon speed. It awards no score or currency. Collecting it clears your miss counter; missing three in a row ends your run.",
   },
   mushroom: {
     name: "Mushroom",
@@ -162,17 +183,16 @@ export const ITEM_GUIDES: Readonly<Record<GameplayItemId, GuideEntry>> = {
   car: {
     name: "Car",
     description:
-      "Moves faster than a normal hazard and deals 1 HP on contact. Cars remain natural and legacy hazards, but cannot be bought from the 1v1 Armory.",
+      "Moves faster than a normal hazard and deals 1 HP on contact. Cars can be bought on every map with an Armory.",
   },
   snowflake: {
     name: "Snowflake",
     description:
-      "Deals no direct HP damage. It freezes movement for 3 seconds and adds a 0.25-second delay to every turn during the freeze.",
+      "Freezes you for 3 seconds. Every turn is delayed by 0.25 seconds, or 0.3 seconds on Skyway. Snowflakes do not break your Gem streak. In Hardcore Duel, contact is a fatal hit instead.",
   },
   current: {
     name: "Current",
-    description:
-      `Purchasable on every 1v1 map for ${ATTACK_POINT_COSTS.current} attack points, but spawns naturally only on Skyway. A direct hit deals 0.5 HP; an edge beside it can deal 1 HP, and its pull ignores frozen input delay. It uses middle lanes except on three-lane Alley, where it uses the edges.`,
+    description: `Skyway-only hazard and purchase: base ${ATTACK_POINT_COSTS.current} attack points. A direct hit deals 0.5 HP; an edge beside it can deal 1 HP. It uses middle lanes and its pull ignores frozen input delay.`,
   },
   rock: {
     name: "Rock",
@@ -193,15 +213,18 @@ export const CONTROL_GUIDES: readonly GuideEntry[] = [
   },
   {
     name: "Character ability",
-    description: "Press E or use the active-ability button. The live kit panel shows its exact state.",
+    description:
+      "Press E or use the active-ability button. The live kit panel shows its exact state.",
   },
   {
     name: "Secondary ability",
-    description: "Some characters use R; their live kit panel names the action and cooldown.",
+    description:
+      "Some characters use R; their live kit panel names the action and cooldown.",
   },
   {
     name: "Map weapon / Pause",
-    description: "Q activates your map weapon: Katana on Pitch, Sword on Terminal, or Lightsaber in Photon Fury. The bottom-right button shows cooldown in tenths. Space pauses Endless.",
+    description:
+      "Q activates your map weapon: Katana on Pitch, Sword on Terminal, or Lightsaber in Photon Fury. The bottom-right button shows cooldown in tenths. Space pauses Endless.",
   },
 ];
 

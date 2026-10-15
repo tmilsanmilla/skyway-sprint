@@ -1,0 +1,195 @@
+/* Photon-only visual layer. This mode is a luminous arena, not a highway reskin. */
+.photon-futuristic {
+  --photon-panel: #080e22;
+  color-scheme: dark;
+  color: #edfaff;
+  border-radius: 18px;
+  overflow: hidden;
+  isolation: isolate;
+}
+.photon-futuristic .photon-heading,
+.photon-futuristic .photon-footer,
+.photon-futuristic .photon-guide,
+.photon-futuristic .photon-hud {
+  color: #edfaff;
+  background: linear-gradient(125deg, #080e22, color-mix(in srgb, var(--photon-accent) 34%, #080e22));
+  border-color: color-mix(in srgb, var(--photon-glow) 50%, transparent);
+}
+.photon-futuristic .photon-heading h2 { letter-spacing: .12em; text-shadow: 0 0 24px var(--photon-glow); }
+.photon-futuristic .photon-heading strong,
+.photon-futuristic .photon-hud b { color: var(--photon-glow); }
+.photon-futuristic .photon-heading small { color: #b9cde3; }
+.photon-futuristic .photon-lobby { background: #080e22f2; color: #edfaff; border-radius: 12px; }
+/* Pair every text surface with its own foreground; never inherit cream Skyway cards. */
+.photon-futuristic .photon-equipped,
+.photon-futuristic .photon-selected-character {
+  background: #101d34;
+  color: #edfaff;
+  border-color: #466587;
+  border-radius: 10px;
+}
+.photon-futuristic .photon-equipped b,
+.photon-futuristic .photon-selected-character b { color: #edfaff; }
+.photon-futuristic .photon-equipped p,
+.photon-futuristic .photon-selected-character p { color: #c7dcf2; }
+.photon-futuristic.photon-panel button {
+  color: #edfaff;
+  background: linear-gradient(140deg, #172544, #10203a);
+  border: 1px solid color-mix(in srgb, var(--photon-glow) 65%, #476483);
+  border-radius: 8px;
+  box-shadow: none;
+  min-height: 44px;
+}
+.photon-futuristic.photon-panel button:hover:not(:disabled) { background: #203a56; box-shadow: 0 0 18px color-mix(in srgb, var(--photon-glow) 25%, transparent); }
+.photon-futuristic button:focus-visible,
+.photon-futuristic summary:focus-visible { outline: 3px solid #fff; outline-offset: 4px; }
+.photon-futuristic.photon-panel button:disabled { opacity: 1; color: #a7b8cf; background: #111c30; border-color: #3c4b63; cursor: not-allowed; }
+.photon-futuristic .photon-playfield {
+  height: clamp(400px, 65vh, 730px);
+  border-radius: 12px;
+  margin-inline: 12px;
+  width: calc(100% - 24px);
+  background: #030713;
+}
+.photon-futuristic .photon-arena {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Skyway centers its narrower road with translateX(-50%); Laserdrome fills its frame. */
+  transform: none;
+  translate: none;
+  border-radius: 10px;
+  background:
+    linear-gradient(90deg, #0007, transparent 20% 80%, #0007),
+    repeating-linear-gradient(0deg, transparent 0 53px, color-mix(in srgb, var(--photon-glow) 18%, transparent) 54px 55px),
+    linear-gradient(90deg, var(--photon-floor), color-mix(in srgb, var(--photon-accent) 35%, var(--photon-floor)), var(--photon-floor));
+  box-shadow: inset 0 0 45px #0009, inset 0 0 0 1px var(--photon-glow);
+  animation: photonArenaFlow 2.5s linear infinite;
+}
+.photon-futuristic .photon-arena::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 0, color-mix(in srgb, var(--photon-glow) 22%, transparent), transparent 65%);
+  pointer-events: none;
+}
+.photon-futuristic .photon-arena::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg, #ffffff03 0 1px, transparent 1px 4px);
+  border-inline: 9px solid color-mix(in srgb, var(--photon-glow) 16%, transparent);
+}
+.photon-futuristic .photon-arena .lane-divider {
+  width: 2px;
+  height: 100%;
+  opacity: .5;
+  background: var(--photon-glow);
+  border: 0;
+  box-shadow: 0 0 9px var(--photon-glow);
+}
+.photon-futuristic .photon-obstacle { filter: drop-shadow(0 0 9px var(--photon-glow)); z-index: 4; }
+.photon-futuristic .photon-obstacle.laser-target { pointer-events: auto; }
+.photon-futuristic .photon-pause,
+.photon-futuristic .photon-time-stop,
+.photon-futuristic .photon-chaos-countdown { color: #edfaff; background: #070d21ef; backdrop-filter: blur(5px); }
+.photon-futuristic .photon-arena > .photon-pause,
+.photon-futuristic .photon-arena > .photon-chaos-countdown {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  transform: none;
+  translate: none;
+  overflow: auto;
+}
+.photon-futuristic .photon-arena > .photon-time-stop {
+  position: absolute;
+  inset: 12% 3%;
+  width: auto;
+  height: auto;
+  max-width: 94%;
+  transform: none;
+  translate: none;
+  overflow: auto;
+}
+.photon-futuristic .photon-category { color: #edfaff; background: #09152ac9; border: 1px solid #416480; border-radius: 10px; }
+.photon-futuristic .photon-character-card { color: #edfaff; background: #101d34; border: 1px solid #344f6f; border-radius: 9px; }
+.photon-futuristic .photon-character-card.selected { color: #edfaff; background: #18364a; border-color: var(--photon-glow); box-shadow: inset 0 0 20px #3cf4ff12; }
+.photon-futuristic .photon-inventory h3,
+.photon-futuristic .photon-inventory h4,
+.photon-futuristic .photon-inventory summary { color: #edfaff; }
+.photon-futuristic .photon-character-card p,
+.photon-futuristic .photon-character-card dd { color: #e0edff; }
+.photon-futuristic .photon-character-card dt,
+.photon-futuristic .photon-inventory-note { color: #a9bed9; }
+.photon-futuristic .photon-portrait { background: radial-gradient(ellipse, #304269, #071126); border-color: #3c6487; }
+.photon-futuristic .photon-guide summary,
+.photon-futuristic .photon-status { color: var(--photon-glow); }
+.photon-futuristic .photon-footer .heart-glyph { color: #ffa3ca; }
+.photon-futuristic .photon-footer .heart-glyph.partial { color: #ffa3ca; }
+.photon-futuristic .photon-footer .heart-glyph.lost { color: #43526b; }
+.photon-futuristic .photon-runner .head { border-radius: 8px 8px 5px 5px; background: var(--photon-skin-color, var(--photon-color)); border: 2px solid #d4f8ff; }
+.photon-futuristic .photon-runner .head::before { background: #122b48; box-shadow: inset 0 -2px #9af4ff; }
+.photon-futuristic .photon-runner .body { border-radius: 4px; background: linear-gradient(90deg, #0b1c35, var(--photon-skin-color, var(--photon-color)), #0b1c35); border: 2px solid #5b88ac; }
+.photon-futuristic .photon-runner .arm,
+.photon-futuristic .photon-runner .leg { background: #203958; border-color: #83bbd5; }
+.photon-suit-emblem { position: absolute; left: 15px; top: 32px; font: 900 16px/1 sans-serif; color: #f1fcff; z-index: 8; text-shadow: 0 0 8px var(--photon-skin-color, var(--photon-color)); }
+.photon-futuristic .photon-skin-intermediate .body { background: linear-gradient(135deg, var(--photon-skin-color), #172946); border-color: #d1f7ff; }
+.photon-futuristic .photon-skin-pro .body { background: repeating-linear-gradient(45deg, #eafbff 0 3px, var(--photon-skin-color) 4px 9px, #132646 10px 14px); box-shadow: 0 0 16px var(--photon-skin-color); }
+.photon-futuristic .photon-skin-divine .body { background: linear-gradient(135deg, #fffad9, var(--photon-skin-color), #fff); box-shadow: 0 0 25px var(--photon-skin-color); }
+.photon-futuristic .photon-skin-divine .head { border-color: #fff4b6; box-shadow: 0 0 14px #fff4b6; }
+.photon-futuristic .photon-skin-preview { display: block; position: relative; height: 120px; margin: 12px 0; background: radial-gradient(ellipse, #2e4565, #091326); border-radius: 8px; overflow: visible; }
+.photon-futuristic .photon-skin-preview .runner { left: 50%; top: 25px; transform: translateX(-50%); animation: none; }
+.photon-futuristic .photon-theme-grid button > span { border-radius: 5px; border: 1px solid #ffffff3d; }
+.photon-futuristic .photon-box-results article { border-radius: 8px; }
+.photon-futuristic .photon-needle-status { color: #ffd0eb; background: #3e123b; border-color: #ff79c2; }
+.photon-futuristic .photon-weapon strong { color: var(--photon-glow); }
+.photon-futuristic .photon-stage-meter { color: #e4ddff; background: #241a46; }
+.photon-futuristic .photon-inverted-controls { color: #ffe6ad; background: #46351c; }
+.photon-futuristic .photon-footer .photon-abilities { margin-left: auto; }
+.photon-futuristic .photon-damage-hearts { color: #ffa3ca; filter: drop-shadow(0 0 7px #ed4f9b); }
+.photon-futuristic .photon-playfield[data-paused="true"] * { animation-play-state: paused !important; }
+
+/* Seventeen distinct cosmetic deck treatments retain identical lane geometry. */
+.theme-photon_theme_cobalt .photon-arena::before { background: repeating-linear-gradient(45deg, transparent 0 35px, #41d9ff0c 36px 39px); }
+.theme-photon_theme_hangar .photon-arena::before { background: repeating-linear-gradient(0deg, transparent 0 90px, #94ffa21a 91px 106px); }
+.theme-photon_theme_terminal .photon-arena::before { background: repeating-linear-gradient(90deg, #fa8bff08 0 4%, transparent 4% 21%); }
+.theme-photon_theme_reactor .photon-arena::before { background: repeating-radial-gradient(ellipse at center, transparent 0 45px, #d0ff4314 47px 50px); }
+.theme-photon_theme_polar .photon-arena::before { background: repeating-linear-gradient(125deg, transparent 0 56px, #e0faff19 57px 61px); }
+.theme-photon_theme_sunset .photon-arena::before { background: radial-gradient(ellipse at top, #ffa47438, transparent 70%); }
+.theme-photon_theme_abyss .photon-arena::before { background: radial-gradient(ellipse at center, transparent, #000a), repeating-linear-gradient(0deg, transparent 0 14px, #686bff12 15px 17px); }
+.theme-photon_theme_quartz .photon-arena::before { background: repeating-conic-gradient(from 45deg, #e6b7ff0d 0 25%, transparent 25% 50%) 0 0 / 80px 80px; }
+.theme-photon_theme_mars .photon-arena::before { background: repeating-linear-gradient(15deg, transparent 0 65px, #ff75491c 67px 72px); }
+.theme-photon_theme_storm .photon-arena::before { background: repeating-conic-gradient(from 60deg at 50% 20%, transparent 0 40deg, #bde8ff12 41deg 44deg); }
+.theme-photon_theme_void .photon-arena::before { background: repeating-radial-gradient(ellipse at 50% -10%, transparent 0 60px, #f647e918 61px 63px); }
+.theme-photon_theme_garden .photon-arena::before { background: radial-gradient(ellipse at center, #47ffc819 0 8%, transparent 10%) 0 0 / 55px 80px; }
+.theme-photon_theme_nova .photon-arena::before { background: radial-gradient(ellipse at top, #ffe35a50, transparent 55%), repeating-linear-gradient(0deg, transparent 0 45px, #ec542a20 47px 49px); }
+.theme-photon_theme_chrono .photon-arena::before { background: repeating-conic-gradient(from 0deg at center, transparent 0 28deg, #77ffef14 29deg 30deg); }
+.theme-photon_theme_prism .photon-arena::before { background: repeating-linear-gradient(120deg, #ff71c912 0 30px, #77ffef12 31px 60px, #a495ff12 61px 90px); }
+.theme-photon_theme_singularity .photon-arena::before { background: repeating-radial-gradient(ellipse at 50% 0, #0006 0 35px, #7140ce30 36px 40px); }
+.theme-photon_theme_celestial .photon-arena::before { background: radial-gradient(circle, #ffe6a0a0 0 1px, transparent 2px) 0 0 / 53px 71px, radial-gradient(ellipse at top, #5c92d946, transparent 70%); }
+@keyframes photonArenaFlow { to { background-position: 0 0, 0 55px, 0 0; } }
+@media (max-width: 600px) {
+  .photon-futuristic .photon-heading { padding: 14px 12px; flex-wrap: wrap; gap: 12px; }
+  .photon-futuristic .photon-heading h2 { font-size: 23px; }
+  .photon-futuristic .photon-playfield { height: clamp(360px, 61dvh, 620px); margin-inline: 5px; width: calc(100% - 10px); }
+  .photon-futuristic .photon-inventory { padding: 12px; }
+  .photon-futuristic .photon-character-grid { grid-template-columns: 1fr; }
+  .photon-futuristic .photon-skin-grid,
+  .photon-futuristic .photon-theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .photon-futuristic .photon-collection-extras button { padding: 10px; overflow-wrap: anywhere; }
+  .photon-futuristic .photon-footer { padding: 12px; gap: 10px; }
+  .photon-futuristic .photon-footer .photon-abilities { margin-left: 0; }
+  .photon-futuristic .photon-time-stop { inset: 12% 3%; padding: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .photon-futuristic .photon-arena,
+  .photon-futuristic .photon-skin-pro::after,
+  .photon-futuristic .photon-box-opening,
+  .photon-futuristic .photon-damage-hearts,
+  .photon-futuristic .runner,
+  .photon-futuristic .runner * { animation: none !important; }
+}

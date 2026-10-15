@@ -1,0 +1,14 @@
+.player-level-meter { display: grid; gap: 5px; }
+.player-level-xp { font-size: 12px; font-weight: 800; white-space: nowrap; }
+.terminal-facing-controls { display: flex; gap: 6px; align-items: center; }
+.terminal-facing-controls button { min-height: 42px; padding: 7px 10px; border: 2px solid var(--ink); border-radius: 5px; background: #edf5ff; font-size: 11px; font-weight: 900; cursor: pointer; }
+.terminal-facing-controls button[aria-pressed="true"] { background: #ffd666; }
+.terminal-facing-controls button:disabled { opacity: .55; cursor: not-allowed; }
+.runner.facing-left { rotate: -12deg; }
+.runner.facing-right { rotate: 12deg; }
+.leaderboard-state { padding: 16px; font-weight: 800; text-align: center; }
+@media(max-width:600px) {
+  .terminal-facing-controls { flex-wrap: wrap; justify-content: center; }
+  .terminal-facing-controls button { min-height: 44px; }
+  .player-level-xp { font-size: 11px; }
+}

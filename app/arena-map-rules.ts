@@ -7,7 +7,7 @@
 
 export const MAP_IDS = [
   "classic",
-  "alley",
+  "ruins",
   "desert",
   "skyway",
   "pitch",
@@ -55,12 +55,10 @@ export const ATTACK_IDS = [
 ] as const;
 
 export type AttackId = (typeof ATTACK_IDS)[number];
-export type PurchasableAttackId = Exclude<AttackId, "car">;
+export type PurchasableAttackId = AttackId;
 export type RandomSource = () => number;
 export type ObstacleDensityMode =
-  | "classic-baseline"
-  | "same-total"
-  | "same-per-lane";
+  "classic-baseline" | "same-total" | "same-per-lane";
 
 export interface HealthModifiers {
   readonly startingHpMultiplier: number;
@@ -108,6 +106,7 @@ export interface MapRules {
     | "vortex"
     | "terminal-sword"
     | "shared-course"
+    | "ruins-pumpkins"
   )[];
 }
 
@@ -134,36 +133,36 @@ const ATTACKS_WITH_SNOWFLAKE: readonly AttackId[] = [
   "log",
   "barrel",
   "snowflake",
-  "current",
   "spike",
   "rock",
+  "car",
 ];
 const ATTACKS_WITHOUT_SNOWFLAKE: readonly AttackId[] = [
   "log",
   "barrel",
-  "current",
   "spike",
   "rock",
+  "car",
 ];
 
-/** Armory prices. Car is retained as an AttackId only for legacy payloads. */
-export const ATTACK_POINT_COSTS: Readonly<
-  Record<PurchasableAttackId, 4 | 5 | 6 | 8>
-> = {
-  log: 4,
-  barrel: 6,
-  snowflake: 4,
-  current: 8,
-  spike: 5,
-  rock: 5,
-};
+/** Base prices; each previously purchased obstacle adds 2 to the next price. */
+export const ATTACK_POINT_COSTS: Readonly<Record<PurchasableAttackId, number>> =
+  {
+    log: 13,
+    barrel: 13,
+    snowflake: 11,
+    current: 13,
+    spike: 14,
+    car: 14,
+    rock: 15,
+  };
 
 export const CURRENT_RULES = {
   mapId: "skyway",
-  naturalSpawnWeight: 15,
-  attackPointCost: 8,
-  /** Current moves at 95% of Barrel's speed. */
-  barrelSpeedMultiplier: 0.95,
+  naturalSpawnWeight: 20,
+  attackPointCost: 13,
+  /** Refresh makes the existing 95%-of-Barrel Current 5% faster. */
+  barrelSpeedMultiplier: 0.95 * 1.05,
   allowedLaneIndexes: [1, 2, 3, 4],
   directHitDamage: 0.5,
   edgeAdjacentDamage: 1,
@@ -209,7 +208,7 @@ export const ONE_V_ONE_SCORING_RULES = {
   secondDeathMultiplier: 1.05,
 } as const;
 
-export const MAP_RULES = {
+export const MAP_RULES: Readonly<Record<MapId, MapRules>> = {
   classic: {
     id: "classic",
     name: "Classic",
@@ -220,47 +219,44 @@ export const MAP_RULES = {
     forcedCharacterId: null,
     health: NORMAL_HEALTH,
     naturalObstacleWeights: {
-      log: 30,
-      spike: 30,
-      barrel: 15,
-      rock: 15,
-      snowflake: 10,
+      log: 25,
+      spike: 25,
+      barrel: 20,
+      rock: 25,
+      snowflake: 5,
     },
     availableAttacks: ATTACKS_WITH_SNOWFLAKE,
     attackPointsPerCoin: 6,
     waveAttackReward: { kind: "fixed", points: 8 },
     specialRules: [],
   },
-  alley: {
-    id: "alley",
-    name: "Alley",
-    laneCount: 3,
+  ruins: {
+    id: "ruins",
+    name: "Ruins",
+    laneCount: 4,
     obstacleDensityMode: "same-total",
     totalObstacleMultiplier: 1,
-    allowedClasses: ALL_CLASSES,
+    allowedClasses: ["runner", "tank", "trickster", "misc"],
     forcedCharacterId: null,
     health: {
-      startingHpMultiplier: 2,
-      startingHpBonus: 0,
-      maxHpMultiplier: 2,
-      maxHpBonus: 0,
+      startingHpMultiplier: 1,
+      startingHpBonus: -1,
+      maxHpMultiplier: 1,
+      maxHpBonus: -1,
       healingMultiplier: 1,
       healingCap: null,
       obstacleDamageMultiplier: 1,
     },
-    // The explicit spawn table lists Snowflake at 5%, so it wins over the
-    // earlier prose sentence that says Alley has no Snowflake.
     naturalObstacleWeights: {
-      log: 40,
-      spike: 25,
-      barrel: 10,
-      rock: 20,
-      snowflake: 5,
+      log: 10,
+      spike: 20,
+      barrel: 40,
+      rock: 30,
     },
-    availableAttacks: ATTACKS_WITH_SNOWFLAKE,
+    availableAttacks: ATTACKS_WITHOUT_SNOWFLAKE,
     attackPointsPerCoin: 7,
     waveAttackReward: { kind: "fixed", points: 7 },
-    specialRules: [],
+    specialRules: ["ruins-pumpkins"],
   },
   desert: {
     id: "desert",
@@ -272,12 +268,13 @@ export const MAP_RULES = {
     forcedCharacterId: null,
     health: { ...NORMAL_HEALTH, healingMultiplier: 0 },
     naturalObstacleWeights: {
-      log: 25,
-      spike: 25,
+      log: 5,
+      spike: 20,
       barrel: 30,
-      rock: 20,
+      rock: 35,
+      snowflake: 10,
     },
-    availableAttacks: ATTACKS_WITHOUT_SNOWFLAKE,
+    availableAttacks: ATTACKS_WITH_SNOWFLAKE,
     attackPointsPerCoin: 5,
     waveAttackReward: { kind: "fixed", points: 5 },
     specialRules: [],
@@ -292,14 +289,14 @@ export const MAP_RULES = {
     forcedCharacterId: null,
     health: NORMAL_HEALTH,
     naturalObstacleWeights: {
-      log: 25,
-      spike: 25,
-      barrel: 5,
-      rock: 10,
+      spike: 10,
+      barrel: 20,
+      rock: 5,
       snowflake: 20,
-      current: 15,
+      current: 20,
+      car: 25,
     },
-    availableAttacks: ATTACKS_WITH_SNOWFLAKE,
+    availableAttacks: ["log", "snowflake", "current", "spike", "car", "rock"],
     attackPointsPerCoin: 5,
     waveAttackReward: { kind: "fixed", points: 5 },
     specialRules: ["current"],
@@ -315,10 +312,10 @@ export const MAP_RULES = {
     health: NORMAL_HEALTH,
     naturalObstacleWeights: {
       log: 25,
-      spike: 30,
-      barrel: 20,
-      rock: 20,
-      snowflake: 5,
+      spike: 25,
+      barrel: 15,
+      rock: 25,
+      snowflake: 10,
     },
     availableAttacks: ATTACKS_WITH_SNOWFLAKE,
     attackPointsPerCoin: 6,
@@ -335,34 +332,32 @@ export const MAP_RULES = {
     forcedCharacterId: "runner_ace",
     health: NORMAL_HEALTH,
     naturalObstacleWeights: {
-      log: 15,
-      spike: 20,
-      barrel: 25,
-      rock: 40,
+      log: 25,
+      spike: 10,
+      rock: 50,
+      car: 5,
+      vortex: 10,
     },
-    availableAttacks: ATTACKS_WITHOUT_SNOWFLAKE,
+    availableAttacks: ["log", "spike", "car", "rock"],
     attackPointsPerCoin: 5,
     waveAttackReward: { kind: "fixed", points: 5 },
-    specialRules: ["volcano-idle-damage"],
+    specialRules: ["volcano-idle-damage", "vortex"],
   },
   factory: {
     id: "factory",
     name: "Factory",
     laneCount: 4,
     obstacleDensityMode: "same-per-lane",
-    totalObstacleMultiplier: 4 / 5,
+    totalObstacleMultiplier: 0.88,
     allowedClasses: ALL_CLASSES,
     forcedCharacterId: null,
     health: NORMAL_HEALTH,
     naturalObstacleWeights: {
-      log: 15,
-      spike: 30,
-      barrel: 5,
-      rock: 35,
-      snowflake: 5,
-      car: 10,
+      spike: 40,
+      barrel: 25,
+      car: 35,
     },
-    availableAttacks: ATTACKS_WITH_SNOWFLAKE,
+    availableAttacks: ATTACKS_WITHOUT_SNOWFLAKE,
     attackPointsPerCoin: 5,
     waveAttackReward: { kind: "fixed", points: 5 },
     specialRules: ["factory-conveyor"],
@@ -381,13 +376,13 @@ export const MAP_RULES = {
       maxHpBonus: 1,
     },
     naturalObstacleWeights: {
-      log: 30,
+      log: 50,
       spike: 20,
-      barrel: 15,
-      rock: 20,
-      mushroom: 15,
+      barrel: 10,
+      rock: 15,
+      snowflake: 5,
     },
-    availableAttacks: ATTACKS_WITHOUT_SNOWFLAKE,
+    availableAttacks: ATTACKS_WITH_SNOWFLAKE,
     attackPointsPerCoin: 5,
     waveAttackReward: {
       kind: "grove-mushroom-comparison",
@@ -406,10 +401,16 @@ export const MAP_RULES = {
     allowedClasses: ALL_CLASSES,
     forcedCharacterId: null,
     health: NORMAL_HEALTH,
-    naturalObstacleWeights: { log: 25, spike: 25, barrel: 10, rock: 15, snowflake: 10, vortex: 15 },
+    naturalObstacleWeights: {
+      log: 30,
+      barrel: 15,
+      rock: 25,
+      snowflake: 15,
+      vortex: 15,
+    },
     availableAttacks: ATTACKS_WITH_SNOWFLAKE,
-    attackPointsPerCoin: 6,
-    waveAttackReward: { kind: "fixed", points: 8 },
+    attackPointsPerCoin: 3,
+    waveAttackReward: { kind: "fixed", points: 4 },
     specialRules: ["meadow-bonus", "vortex"],
   },
   terminal: {
@@ -420,11 +421,16 @@ export const MAP_RULES = {
     totalObstacleMultiplier: 1,
     allowedClasses: ["runner"],
     forcedCharacterId: "runner_ace",
-    health: { ...NORMAL_HEALTH, startingHpBonus: 1, maxHpBonus: 1 },
-    naturalObstacleWeights: { log: 25, spike: 40, barrel: 10, rock: 15, snowflake: 10 },
-    availableAttacks: ATTACKS_WITH_SNOWFLAKE,
-    attackPointsPerCoin: 6,
-    waveAttackReward: { kind: "fixed", points: 8 },
+    health: {
+      ...NORMAL_HEALTH,
+      startingHpBonus: 1,
+      maxHpBonus: 1,
+      healingMultiplier: 0.5,
+    },
+    naturalObstacleWeights: { barrel: 30, spike: 40, rock: 5, car: 25 },
+    availableAttacks: [],
+    attackPointsPerCoin: 0,
+    waveAttackReward: { kind: "fixed", points: 0 },
     specialRules: ["terminal-sword", "shared-course"],
   },
 } as const satisfies Record<MapId, MapRules>;
@@ -471,7 +477,10 @@ export const applyMapHealthModifiers = (
   };
 };
 
-export const getAllowedHealing = (mapId: MapId, healingAmount: number): number =>
+export const getAllowedHealing = (
+  mapId: MapId,
+  healingAmount: number,
+): number =>
   Math.max(0, healingAmount) * MAP_RULES[mapId].health.healingMultiplier;
 
 export const getObstacleDamage = (mapId: MapId, baseDamage: number): number =>
@@ -535,13 +544,101 @@ export const getAvailableAttacks = (mapId: MapId): readonly AttackId[] =>
 export const getAttackPointCost = (
   mapId: MapId,
   attackId: AttackId,
-): 4 | 5 | 6 | 8 | null => {
-  if (attackId === "car" || !isAttackAvailable(mapId, attackId)) return null;
-  return ATTACK_POINT_COSTS[attackId];
+  priorBought = 0,
+): number | null => {
+  if (!isAttackAvailable(mapId, attackId)) return null;
+  return (
+    ATTACK_POINT_COSTS[attackId] +
+    (mapId === "skyway" && attackId === "snowflake" ? 1 : 0) +
+    2 * Math.max(0, Math.floor(Number.isFinite(priorBought) ? priorBought : 0))
+  );
 };
 
-export const getAttackPointsForCoin = (mapId: MapId): number =>
-  MAP_RULES[mapId].attackPointsPerCoin;
+export const ATTACK_PER_TYPE_LIMIT = 4;
+export type AttackPurchaseCounts = Readonly<Partial<Record<AttackId, number>>>;
+
+/** Count paid obstacles only, not bonus copies produced by character abilities. */
+export const countPriorAttackPurchases = (counts: AttackPurchaseCounts): number =>
+  ATTACK_IDS.reduce((total, kind) => total + Math.max(0, Math.floor(
+    Number.isFinite(counts[kind]) ? counts[kind]! : 0,
+  )), 0);
+
+export const canPurchaseAttack = (
+  mapId: MapId,
+  attackId: AttackId,
+  counts: AttackPurchaseCounts = {},
+): boolean => isAttackAvailable(mapId, attackId) &&
+  (attackId === "snowflake" || (counts[attackId] ?? 0) < ATTACK_PER_TYPE_LIMIT);
+
+/** Practice rivals use the same escalating paid prices and per-type caps. */
+export const planBotAttackPurchases = (
+  mapId: MapId,
+  startingBudget: number,
+  limit: number,
+  random: RandomSource = Math.random,
+) => {
+  let budget = Number.isFinite(startingBudget) ? Math.max(0, startingBudget) : 0;
+  const counts: Partial<Record<AttackId, number>> = {};
+  const attacks: AttackId[] = [];
+  const maxPurchases = Number.isFinite(limit) ? Math.max(0, Math.min(100, Math.floor(limit))) : 0;
+  while (attacks.length < maxPurchases) {
+    const prior = countPriorAttackPurchases(counts);
+    const affordable = getAvailableAttacks(mapId).filter((kind) =>
+      canPurchaseAttack(mapId, kind, counts) && getAttackPointCost(mapId, kind, prior)! <= budget);
+    if (affordable.length === 0) break;
+    const kind = chooseUniformly(affordable, random);
+    budget -= getAttackPointCost(mapId, kind, prior)!;
+    attacks.push(kind);
+    counts[kind] = (counts[kind] ?? 0) + 1;
+  }
+  return { attacks, remainingBudget: budget, counts };
+};
+
+export const getFrozenTurnDelaySeconds = (mapId: MapId): number =>
+  mapId === "skyway" ? 0.3 : 0.25;
+
+export const RUINS_RULES = {
+  bannedCharacterCount: 10,
+  pumpkinMissLimit: 3,
+  pumpkinsPerWave: 1,
+} as const;
+
+export type RuinsCharacterCandidate = {
+  readonly key: string;
+  readonly class: string;
+  readonly rarity: string;
+  readonly starter?: boolean;
+};
+
+const RUINS_STARTER_KEYS = new Set([
+  "runner_ace", "medic_patch", "tank_bulwark", "trickster_rogue",
+]);
+
+/** Run once per match; both rivals consume the same persisted result. */
+export const chooseRuinsCharacterBans = (
+  characters: readonly RuinsCharacterCandidate[],
+  random: RandomSource = Math.random,
+): readonly string[] => {
+  const eligible = [...new Set(characters.filter((c) =>
+    c.class !== "medic" && c.rarity !== "mythic" &&
+    !c.starter && !RUINS_STARTER_KEYS.has(c.key) && !c.key.startsWith("photon_"),
+  ).map((c) => c.key))];
+  if (eligible.length < RUINS_RULES.bannedCharacterCount)
+    throw new RangeError("Ruins needs at least ten eligible characters.");
+  return sampleWithoutReplacement(eligible, RUINS_RULES.bannedCharacterCount, random);
+};
+
+export const resolveRuinsPumpkin = (missedInARow: number, collected: boolean) => {
+  const missed = collected ? 0 : Math.min(RUINS_RULES.pumpkinMissLimit,
+    Math.max(0, Math.floor(missedInARow)) + 1);
+  return { missed, eliminated: missed >= RUINS_RULES.pumpkinMissLimit };
+};
+
+export const getAttackPointsForCoin = (
+  mapId: MapId,
+  inBonusLane = false,
+): number =>
+  mapId === "meadow" && inBonusLane ? 7 : MAP_RULES[mapId].attackPointsPerCoin;
 
 export const getWaveAttackPointRewards = (
   mapId: MapId,
@@ -574,13 +671,16 @@ export type CurrentInteraction =
 
 const assertLane = (lane: number, laneCount: number, label: string) => {
   if (!Number.isInteger(lane) || lane < 0 || lane >= laneCount) {
-    throw new RangeError(`${label} must be an integer from 0 to ${laneCount - 1}.`);
+    throw new RangeError(
+      `${label} must be an integer from 0 to ${laneCount - 1}.`,
+    );
   }
 };
 
-export const getCurrentAllowedLaneIndexes = (mapId: MapId): readonly number[] => {
+export const getCurrentAllowedLaneIndexes = (
+  mapId: MapId,
+): readonly number[] => {
   const laneCount = MAP_RULES[mapId].laneCount;
-  if (laneCount === 3) return [0, 2];
   return Array.from({ length: laneCount - 2 }, (_, index) => index + 1);
 };
 
@@ -726,10 +826,7 @@ export const applyGroveHealthPenalty = (
   ownMushrooms: number,
   opponentMushrooms: number,
 ): number =>
-  Math.max(
-    0,
-    hpAfterHealing - (ownMushrooms < opponentMushrooms ? 1 : 0),
-  );
+  Math.max(0, hpAfterHealing - (ownMushrooms < opponentMushrooms ? 1 : 0));
 
 export interface PitchKatanaState {
   readonly broken: boolean;
@@ -779,7 +876,8 @@ export const activatePitchKatana = (
       ...state,
       activationStartedAtMs: nowMs,
       activeUntilMs,
-      cooldownUntilMs: activeUntilMs + PITCH_KATANA_RULES.cooldownSeconds * 1_000,
+      cooldownUntilMs:
+        activeUntilMs + PITCH_KATANA_RULES.cooldownSeconds * 1_000,
       movementLockedUntilMs:
         activeUntilMs +
         PITCH_KATANA_RULES.postActiveMovementLockSeconds * 1_000,
@@ -845,7 +943,9 @@ export const resolvePitchKatanaCollision = (
     blocksDamage: true,
     sendToOpponent: true,
     state: {
-      ...state, hitDuringActivation: true, whiffSettled: true,
+      ...state,
+      hitDuringActivation: true,
+      whiffSettled: true,
       activeUntilMs: nowMs,
       cooldownUntilMs: nowMs + PITCH_KATANA_RULES.cooldownSeconds * 1_000,
     },
@@ -896,12 +996,16 @@ export const resolveOneVersusOneScores = (
   secondDeath: PlayerSlot | null,
 ) => {
   const adjustedPlayerOneScore =
-    secondDeath === "playerOne" ? Math.round(playerOneScore * 1.05) + 500 : playerOneScore;
+    secondDeath === "playerOne"
+      ? Math.round(playerOneScore * 1.05) + 500
+      : playerOneScore;
   const adjustedPlayerTwoScore =
-    secondDeath === "playerTwo" ? Math.round(playerTwoScore * 1.05) + 500 : playerTwoScore;
+    secondDeath === "playerTwo"
+      ? Math.round(playerTwoScore * 1.05) + 500
+      : playerTwoScore;
   const winner: PlayerSlot =
     adjustedPlayerOneScore === adjustedPlayerTwoScore
-      ? secondDeath ?? "playerTwo"
+      ? (secondDeath ?? "playerTwo")
       : adjustedPlayerOneScore > adjustedPlayerTwoScore
         ? "playerOne"
         : "playerTwo";
@@ -910,9 +1014,7 @@ export const resolveOneVersusOneScores = (
     adjustedPlayerTwoScore,
     winner,
     eloActualScores:
-      winner === "playerOne"
-          ? ([1, 0] as const)
-          : ([0, 1] as const),
+      winner === "playerOne" ? ([1, 0] as const) : ([0, 1] as const),
   };
 };
 
@@ -966,10 +1068,7 @@ export interface OneVersusOneMapSelectionOptions {
 
 export type OneVersusOneMapSelection = {
   readonly mapId: MapId;
-  readonly reason:
-    | "shared-vote"
-    | "shared-pair-random"
-    | "no-overlap-random";
+  readonly reason: "shared-vote" | "shared-pair-random" | "no-overlap-random";
   readonly candidates: readonly MapId[];
   readonly sharedVotes: readonly MapId[];
 };
@@ -1013,7 +1112,8 @@ export const selectOneVersusOneMap = (
 /** Returns human-readable invariant failures; an empty array means valid. */
 export const validateArenaMapRules = (): readonly string[] => {
   const errors: string[] = [];
-  if (Object.keys(MAP_RULES).length !== MAP_IDS.length) errors.push("Map catalog is incomplete.");
+  if (Object.keys(MAP_RULES).length !== MAP_IDS.length)
+    errors.push("Map catalog is incomplete.");
   for (const mapId of MAP_IDS) {
     const map = MAP_RULES[mapId];
     const weightTotal = Object.values(map.naturalObstacleWeights).reduce(
@@ -1038,18 +1138,21 @@ export const validateArenaMapRules = (): readonly string[] => {
   }
   if (MAP_VOTE_COUNT !== 2) errors.push("1v1 map voting must use two picks.");
   const expectedAttackPointCosts = {
-    snowflake: 4,
-    log: 4,
-    spike: 5,
-    rock: 5,
-    barrel: 6,
-    current: 8,
+    snowflake: 11,
+    log: 13,
+    spike: 14,
+    rock: 15,
+    barrel: 13,
+    current: 13,
+    car: 14,
   } as const;
   for (const [attackId, expectedCost] of Object.entries(
     expectedAttackPointCosts,
   ) as [keyof typeof expectedAttackPointCosts, number][]) {
     if (ATTACK_POINT_COSTS[attackId] !== expectedCost) {
-      errors.push(`${attackId} must cost exactly ${expectedCost} attack points.`);
+      errors.push(
+        `${attackId} must cost exactly ${expectedCost} attack points.`,
+      );
     }
   }
   if (CURRENT_RULES.attackPointCost !== ATTACK_POINT_COSTS.current) {
@@ -1057,11 +1160,13 @@ export const validateArenaMapRules = (): readonly string[] => {
   }
   for (const mapId of MAP_IDS) {
     const map = MAP_RULES[mapId];
-    if (!map.availableAttacks.includes("current")) {
-      errors.push(`Current attack must be available on ${map.name}.`);
+    if (map.availableAttacks.includes("current") !== (mapId === "skyway")) {
+      errors.push(`Only Skyway may sell Current.`);
     }
-    if (map.availableAttacks.includes("car")) {
-      errors.push(`Car attack must not be purchasable on ${map.name}.`);
+    if (map.availableAttacks.includes("car") !== (mapId !== "terminal")) {
+      errors.push(
+        `Car must be purchasable except on Terminal, whose Armory is closed.`,
+      );
     }
     const naturalCurrentWeight =
       (map.naturalObstacleWeights as MapRules["naturalObstacleWeights"])
@@ -1081,15 +1186,16 @@ export const validateArenaMapRules = (): readonly string[] => {
     if (
       currentLanes.length === 0 ||
       currentLanes.some(
-        (lane) =>
-          !Number.isInteger(lane) || lane < 0 || lane >= map.laneCount,
+        (lane) => !Number.isInteger(lane) || lane < 0 || lane >= map.laneCount,
       )
     ) {
       errors.push(`${map.name} must provide safe valid lanes for Current.`);
     }
   }
   if (MAP_RULES.skyway.laneCount !== 6) {
-    errors.push("Skyway must have 6 lanes for Current's middle-four-lane rule.");
+    errors.push(
+      "Skyway must have 6 lanes for Current's middle-four-lane rule.",
+    );
   }
   if ((MAP_RULES.factory.naturalObstacleWeights.car ?? 0) <= 0) {
     errors.push("Car must remain supported as a natural Factory obstacle.");

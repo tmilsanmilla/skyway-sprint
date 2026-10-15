@@ -1,46 +1,46 @@
-import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import test from "node:test";
-import { PHOTON_GUIDE } from "./photon-guide.ts";
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import { PHOTON_GUIDE } from './photon-guide.ts';
 
-test("Photon's beginner guide explains controls, the Lightsaber, and its currency without formulas", () => {
-  assert.equal(PHOTON_GUIDE.steps.length, 3);
-  const copy = [PHOTON_GUIDE.introduction, ...PHOTON_GUIDE.steps.map(step => `${step.title} ${step.text}`), PHOTON_GUIDE.needle].join(" ");
-  assert.match(copy, /four lanes/i);
-  assert.match(copy, /press Q or tap LIGHTSABER/i);
-  assert.match(copy, /one obstacle.*point/i);
-  assert.match(copy, /half a heart/i);
-  assert.match(copy, /cars wear down.*breaks/i);
-  assert.match(copy, /Photons are this mode’s currency/i);
-  assert.match(copy, /points turn into Photons.*end of the run/i);
-  assert.match(copy, /at least 4 points; 7 points earn 10 Photons/i);
-  assert.doesNotMatch(copy, /formula|\d+%|\*|cooldown|durability|spawn chances/i);
-  assert.ok(copy.split(/\s+/).length < 160);
+test('the beginner guide explains four lanes,Q,single blocks,misses and photons without formulas or jargon', () => {
+  assert.equal(PHOTON_GUIDE.steps.length,3);
+  const copy=[PHOTON_GUIDE.introduction,...PHOTON_GUIDE.steps.map(s=>`${s.title} ${s.text}`),PHOTON_GUIDE.needle].join(' ');
+  for(const pattern of [/four lanes/i,/press Q or tap LIGHTSABER/i,/one obstacle.*point/i,/half a heart/i,/cars and needles.*breaks/i,/Photons are this mode’s currency/i,/points turn into Photons.*end of the run/i,/at least 4 points; 7 points earn 10 Photons/i]) assert.match(copy,pattern);
+  assert.doesNotMatch(copy,/formula|\d+%|\*|cooldown|durability|spawn chances/i);
+  assert.ok(copy.split(/\s+/).length<160);
 });
-
-test("both modes share obstacle art, while Photon keeps its own lane-aligned runner and hazards", () => {
-  const normal = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
-  const photon = readFileSync(new URL("./photon-fury.tsx", import.meta.url), "utf8");
-  const sprites = readFileSync(new URL("./obstacle-sprite.tsx", import.meta.url), "utf8");
-  for (const view of [normal, photon]) assert.match(view, /import \{ Obstacle \} from "\.\/obstacle-sprite"/);
-  for (const shape of ["rock-shape", "car-shape", "log-shape", "barrel-shape", "ground-spike-shape"]) assert.match(sprites, new RegExp(shape));
-  assert.match(sprites, /kind === "spikes" \|\| kind === "spike"/);
-  assert.match(photon, /className=\{`runner photon-runner/);
-  assert.match(photon, /className="playfield photon-playfield"/);
-  assert.match(photon, /\[1, 2, 3\]\.map\(lane/);
-  assert.match(photon, /left: `\$\{\(item.lane \+ .5\) \* 25\}%`/);
-  assert.match(photon, /<Obstacle kind=\{item.kind\}/);
-  const footer = photon.slice(photon.indexOf('<footer className="photon-footer">'));
-  assert.match(footer, /className="photon-abilities"/);
-  assert.match(footer, /heart-glyph/);
-  assert.match(footer, /PHOTON_GUIDE.steps/);
+test('Photon has its own futuristic arena with aligned four-lane inputs and equipped appearance', () => {
+  const view=readFileSync(new URL('./photon-fury.tsx',import.meta.url),'utf8');
+  const avatar=readFileSync(new URL('./photon-avatar.tsx',import.meta.url),'utf8');
+  const css=readFileSync(new URL('./photon-refresh.css',import.meta.url),'utf8');
+  assert.match(view,/photon-panel photon-futuristic/);
+  assert.match(view,/\[1, 2, 3\]\.map/);
+  assert.match(view,/left: `\$\{\(item.lane \+ 0.5\) \* 25\}%`/);
+  assert.match(avatar,/left: `\$\{\(lane \+ 0.5\) \* 25\}%`/);
+  assert.match(avatar,/s\.key === skin && s\.character === character/);
+  assert.match(view,/move\(Math\.sign\(dx\)\)/);
+  assert.match(view,/move\(Math\.sign\(target - runRef\.current\.lane\)\)/);
+  assert.match(view,/aria-label="Left lane control"[\s\S]*?onClick=\{\(\) => move\(-1\)\}/);
+  assert.match(view,/aria-label="Right lane control"[\s\S]*?onClick=\{\(\) => move\(1\)\}/);
+  assert.match(css,/photonArenaFlow/); assert.match(css,/prefers-reduced-motion/);
+  assert.equal((css.match(/\.theme-photon_theme_\w+ \.photon-arena::before/g)||[]).length,17);
 });
-
-test("Photon run counters and results show Photons, not reflections or points", () => {
-  const view = readFileSync(new URL("./photon-fury.tsx", import.meta.url), "utf8");
-  assert.match(view, /className="photon-results">\s*<b>\{photonRunReward\(run\)\} PHOTONS<\/b>\s*<\/div>/);
-  assert.match(view, /className="photon-hud"><b>\{photonRunReward\(run\)\} PHOTONS<\/b>/);
-  assert.doesNotMatch(view, /\{run\.reflections\} REFLECTIONS|\{photonTotalPoints\(run\)\} POINTS|INCLUDES.*MAGICIAN POINTS/);
-  assert.match(view, /p_reflections: current\.reflections/);
-  assert.match(view, /resolveOwnedPhotonCharacter\(data\?\.selected_character_key, keys\)/);
+test('in-run progress is points only; end-of-run rewards are photons and no score exists', () => {
+  const view=readFileSync(new URL('./photon-fury.tsx',import.meta.url),'utf8');
+  assert.match(view,/<b>\{photonTotalPoints\(run\)\} POINTS<\/b>/);
+  assert.match(view,/<b>\{photonRunReward\(run\)\} PHOTONS<\/b>/);
+  assert.doesNotMatch(view,/run\.score|REFLECTIONS<|SCORE<|\{run\.reflections\} REFLECTIONS/);
+  assert.match(view,/p_reflections: current\.reflections/);
+  assert.match(view,/data\.rules_version !== PHOTON_RULES\.version/);
+});
+test('damage uses heart-only animation; cooldowns in the bottom footer show tenths and HALT is interactive', () => {
+  const view=readFileSync(new URL('./photon-fury.tsx',import.meta.url),'utf8');
+  assert.match(view,/className="photon-damage-hearts"/);
+  assert.match(view,/aria-label=\{`\$\{damage\} hearts lost`\}/);
+  assert.match(view,/className=\{damage - i < 1 \? "partial" : ""\}/);
+  const footer=view.slice(view.indexOf('<footer className="photon-footer">'));
+  assert.match(footer,/cooldown\.toFixed\(1\)/); assert.match(footer,/abilityCooldown\.toFixed\(1\)/);
+  assert.match(view,/<h3>HALT<\/h3>/); assert.match(view,/Choose another lane\. Z \/ X \/ C \/ V/);
+  assert.match(view,/event\.target\.closest\("input,textarea,select,\[contenteditable=true\]"\)/);
 });

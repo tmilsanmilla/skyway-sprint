@@ -776,6 +776,7 @@ export type CharacterCategory =
   | "trickster"
   | "misc";
 export type CharacterRarity =
+  | "default"
   | "common"
   | "uncommon"
   | "rare"
