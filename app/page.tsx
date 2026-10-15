@@ -2512,7 +2512,7 @@ function SkywayGame() {
     const recoveryError = params.get("error")?.trim();
     const pixelError = params.get("pixel_error")?.trim();
     if (pixelError) {
-      setAuthMode("signin"); setAuthMessage(pixelError);
+      setAuthMessage(pixelError);
       window.history.replaceState({}, "", window.location.pathname);
     } else if (params.has("pixel_connected")) {
       window.history.replaceState({}, "", window.location.pathname);
