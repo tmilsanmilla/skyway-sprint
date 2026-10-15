@@ -11,17 +11,7 @@ export type PixelProfile = {
   username: string;
   email: string;
   emailVerified: boolean;
-  profileVersion: number;
-  credentialVersion: number;
 };
-export function normalizePixelUsername(value: string) {
-  return value.trim().toLowerCase().replace(/\s+/g, " ");
-}
-export function pixelVersion(value: unknown) {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
-    throw new Error("Pixel Pulse returned an invalid profile version.");
-  return value;
-}
 export function pixelProfile(
   claims: Record<string, unknown>,
   info: Record<string, unknown>,
@@ -37,8 +27,8 @@ export function pixelProfile(
   const username = info.preferred_username;
   if (
     typeof username !== "string" ||
-    !/^[a-z0-9_ ]{3,25}$/.test(normalizePixelUsername(username)) ||
-    normalizePixelUsername(username) !== normalizePixelUsername(String(claims.preferred_username || ""))
+    !/^[a-z0-9_]{3,24}$/.test(username) ||
+    username !== claims.preferred_username
   )
     throw new Error("Choose your shared username on Pixel Pulse first.");
   const email =
@@ -54,50 +44,12 @@ export function pixelProfile(
     info.email_verified !== claims.email_verified
   )
     throw new Error("Pixel Pulse returned an invalid email.");
-  for (const field of ["profile_version", "credential_version"])
-    if (claims[field] !== undefined && info[field] !== undefined && claims[field] !== info[field])
-      throw new Error("Pixel Pulse returned conflicting profile versions.");
   return {
     subject: claims.sub,
-    username: normalizePixelUsername(username),
+    username,
     email,
     emailVerified: info.email_verified,
-    profileVersion: pixelVersion(info.profile_version ?? claims.profile_version ?? 0),
-    credentialVersion: pixelVersion(info.credential_version ?? claims.credential_version ?? 0),
   };
-}
-
-export type PixelManagementOperation = "status" | "sync" | "link" | "create";
-export async function verifyPixelManagementTicket(
-  token: string,
-  operation: PixelManagementOperation,
-  keys: JWTVerifyGetKey,
-  now = Date.now(),
-) {
-  if (!token || token.length > 8192) throw new Error("Invalid account ticket.");
-  const { payload } = await jwtVerify(token, keys, {
-    issuer: PIXEL_ISSUER,
-    audience: PIXEL_CLIENT_ID,
-    algorithms: ["EdDSA"],
-    currentDate: new Date(now),
-    clockTolerance: 5,
-    maxTokenAge: 60,
-    requiredClaims: ["sub", "iat", "exp", "jti"],
-  });
-  if (
-    payload.aud !== PIXEL_CLIENT_ID ||
-    payload.ticket_version !== 1 ||
-    payload.purpose !== "pixel-pulse-account-management" ||
-    payload.operation !== operation ||
-    !Number.isInteger(payload.iat) || !Number.isInteger(payload.exp) ||
-    payload.exp! <= payload.iat! || payload.exp! - payload.iat! > 60 ||
-    typeof payload.jti !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(payload.jti)
-  ) throw new Error("Invalid account ticket.");
-  // Versions must be present on management tickets, not inferred from sign-in.
-  pixelVersion(payload.profile_version); pixelVersion(payload.credential_version);
-  if (typeof payload.name !== "string" || normalizePixelUsername(payload.name) !== payload.preferred_username)
-    throw new Error("Invalid account ticket.");
-  return { profile: pixelProfile(payload, payload), jti: payload.jti, expiresAt: payload.exp! };
 }
 
 export function validatePixelMetadata(metadata: Record<string, unknown>) {
@@ -125,4 +77,3 @@ export function validatePixelMetadata(metadata: Record<string, unknown>) {
     throw new Error("Pixel Pulse signing algorithm is unsupported.");
   return algorithm;
 }
-import { jwtVerify, type JWTVerifyGetKey } from "jose";

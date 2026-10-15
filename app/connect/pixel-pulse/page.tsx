@@ -12,7 +12,6 @@ export default function PixelPulseConnection() {
   const [password, setPassword] = useState("");
   const [existing, setExisting] = useState<string | null>(null);
   const [linked, setLinked] = useState(false);
-  const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   useEffect(() => {
@@ -26,7 +25,7 @@ export default function PixelPulseConnection() {
       })
       .catch(() => {
         if (active) setMessage("Could not check your session. Try again.");
-      }).finally(() => { if (active) setReady(true); });
+      });
     return () => {
       active = false;
     };
@@ -76,7 +75,7 @@ export default function PixelPulseConnection() {
           Your Pixel Pulse username is used across connected websites. Existing
           Skyway progress stays on the same account.
         </p>
-        {!ready ? <p role="status">Checking your connection…</p> : !isPixelPulseAvailable ? (
+        {!isPixelPulseAvailable ? (
           <p role="status">
             Pixel Pulse linking is still being connected.{" "}
           <Link href="/">Use existing Skyway sign-in</Link>.

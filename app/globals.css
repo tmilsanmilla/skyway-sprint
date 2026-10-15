@@ -14410,5 +14410,3 @@ footer p small {
 .pixel-link-option { margin: 20px 0; padding: 20px; border: 1px solid #393c6b; border-radius: 12px; background: #14162d; }
 .pixel-link-option p { color: #c4c9e5; font-size: 15px; line-height: 1.6; }
 .pixel-link-card a { color: #95cafa; }
-.pixel-link-confirmation { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:1rem; background:#183e31; color:#d7ffe3; border:2px solid #72ed9d; font-size:1rem; grid-column:1 / -1; }
-.pixel-link-confirmation button { padding:.25rem .75rem; color:inherit; background:transparent; border:1px solid currentColor; cursor:pointer; }

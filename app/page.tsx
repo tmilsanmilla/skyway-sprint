@@ -1883,8 +1883,6 @@ export default function Home() {
 
 function SkywayGame() {
   const [pixelLinked, setPixelLinked] = useState(false);
-  const [pixelConnectionMessage, setPixelConnectionMessage] = useState("");
-  const pixelPendingSuccessRef = useRef(false);
   const [stardust, setStardust] = useState(0);
   const [runXpTotal, setRunXpTotal] = useState<number | null>(null);
   const [runXpError, setRunXpError] = useState(false);
@@ -2517,7 +2515,6 @@ function SkywayGame() {
       setAuthMode("signin"); setAuthMessage(pixelError);
       window.history.replaceState({}, "", window.location.pathname);
     } else if (params.has("pixel_connected")) {
-      pixelPendingSuccessRef.current = true;
       window.history.replaceState({}, "", window.location.pathname);
     }
     if (token) {
@@ -11867,11 +11864,12 @@ function SkywayGame() {
           setUsernameInput(profile.username);
           setUsernameRequired(false);
         } else setUsernameRequired(true);
-        setPixelLinked(Boolean(pixelIdentity?.linked || user.app_metadata?.provider === "pixel-pulse"));
-        if (pixelPendingSuccessRef.current && pixelIdentity?.linked && user.app_metadata?.provider === "pixel-pulse") {
-          setPixelConnectionMessage("Linking successful");
-          pixelPendingSuccessRef.current = false;
-        }
+        setPixelLinked(
+          Boolean(
+            pixelIdentity?.linked ||
+            user.app_metadata?.provider === "pixel-pulse",
+          ),
+        );
         setIsAdmin(Boolean(admin));
         setAdminRole(role);
         const restoredTestMode = false;
@@ -12208,8 +12206,6 @@ function SkywayGame() {
     }
   };
   const signOut = async () => {
-    setPixelConnectionMessage("");
-    pixelPendingSuccessRef.current = false;
     const signingOutUserId = userIdRef.current;
     authSessionGenerationRef.current += 1;
     authSessionUserIdRef.current = null;
@@ -13856,7 +13852,6 @@ function SkywayGame() {
           <h1>
             {recoveryToken
               ? "RESET PASSWORD"
-              : isPixelPulseAvailable ? "WELCOME TO SKYWAY"
               : authMode === "signin"
                 ? "WELCOME BACK"
                 : "JOIN THE RUN"}
@@ -13900,16 +13895,6 @@ function SkywayGame() {
                 {authBusy ? "PLEASE WAIT…" : "SAVE NEW PASSWORD →"}
               </button>
             </form>
-          ) : isPixelPulseAvailable ? (
-            <>
-              <p>Use your Pixel Pulse account to keep your Skyway progress and one shared username.</p>
-              <button className="pixel-auth-button" type="button" disabled={authBusy} onClick={() => {
-                setAuthBusy(true); setAuthMessage("Opening Pixel Pulse…");
-                void continueWithPixelPulse("sign-in").catch(error => { setAuthBusy(false); setAuthMessage(error.message); });
-              }}>CONTINUE WITH PIXEL PULSE</button>
-              <small className="pixel-link-note">Already signed in to Pixel Pulse? You can continue without entering your password again.</small>
-              {authMessage && <div className="auth-message" role="status">{authMessage}</div>}
-            </>
           ) : (
             <>
               <form onSubmit={submitAuth} autoComplete="on">
@@ -14023,6 +14008,39 @@ function SkywayGame() {
                   ? "New runner? Create an account"
                   : "Already registered? Sign in"}
               </button>
+              {isPixelPulseAvailable && (
+                <>
+                  <button
+                    className="pixel-auth-button"
+                    type="button"
+                    disabled={authBusy}
+                    onClick={() => {
+                      setAuthBusy(true);
+                      setAuthMessage("Opening Pixel Pulse…");
+                      void continueWithPixelPulse(
+                        authMode === "signup" ? "create" : "sign-in",
+                      ).catch((error) => {
+                        setAuthBusy(false);
+                        setAuthMessage(error.message);
+                      });
+                    }}
+                  >
+                    CONTINUE WITH PIXEL PULSE
+                  </button>
+                  <a
+                    className="pixel-link-note"
+                    href="/connect/pixel-pulse?mode=link"
+                  >
+                    Already have both accounts? Link account (highly
+                    recommended)
+                  </a>
+                  <small className="pixel-link-note">
+                    Signed into Pixel Pulse already? Continue without entering
+                    your password again. Use one username across connected
+                    websites.
+                  </small>
+                </>
+              )}
             </>
           )}
           {!recoveryToken && (
@@ -14069,7 +14087,6 @@ function SkywayGame() {
       <div
         className={`game-layout view-${mainView}${showPlayerLevel ? " has-player-level" : ""}`}
       >
-        {pixelConnectionMessage && <div className="pixel-link-confirmation" role="status">{pixelConnectionMessage}<button type="button" aria-label="Dismiss linking confirmation" onClick={() => setPixelConnectionMessage("")}>×</button></div>}
         {showPlayerLevel && (
           <div className="report-utility-bar">
             <LevelProgress
@@ -16689,8 +16706,30 @@ function SkywayGame() {
                 </div>
               )}
 
-              {isPixelPulseAvailable && !pixelLinked && <a className="settings-action pixel-link-note" href="/connect/pixel-pulse?mode=link">LINK PIXEL PULSE (HIGHLY RECOMMENDED)</a>}
-              {pixelLinked ? <div className="pixel-linked-settings"><b>LINKED · PIXEL PULSE · {username}</b><p>Your shared username, email and password are managed on Pixel Pulse.</p><a href="https://pixel-pulse-websites.vercel.app/?account=1" target="_blank" rel="noopener noreferrer">OPEN PIXEL PULSE</a></div> : usernameRequired || editUsername ? (
+              {isPixelPulseAvailable && !pixelLinked && (
+                <a
+                  className="settings-action pixel-link-note"
+                  href="/connect/pixel-pulse?mode=link"
+                >
+                  LINK PIXEL PULSE (HIGHLY RECOMMENDED)
+                </a>
+              )}
+              {pixelLinked ? (
+                <div className="pixel-linked-settings">
+                  <b>PIXEL PULSE · {username}</b>
+                  <p>
+                    Your shared username and password are managed on Pixel
+                    Pulse.
+                  </p>
+                  <a
+                    href="https://pixel-pulse-websites.vercel.app/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    OPEN PIXEL PULSE
+                  </a>
+                </div>
+              ) : usernameRequired || editUsername ? (
                 <form onSubmit={saveUsername}>
                   <label>
                     USERNAME

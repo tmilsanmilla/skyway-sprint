@@ -237,9 +237,7 @@ async function route(request: Request, context: Context) {
       await oidc.fetchUserInfo(configuration, tokens.access_token, claims.sub),
     );
     const raw = pixelRandom();
-    // Commit owned credential retirement even when a later profile collision blocks sign-in.
-    await neonServerSql`select app_private.pixel_retire_credentials(${profile.subject}::uuid,${profile.credentialVersion}::bigint)`;
-    await neonServerSql`select app_private.pixel_bind_account_v2(${profile.subject}::uuid,${profile.username}::text,${profile.email}::text,${profile.emailVerified}::boolean,${attempt.link_user_id}::uuid,${pixelHash(raw)}::text,${attempt.intent}::text,${profile.profileVersion}::bigint,${profile.credentialVersion}::bigint,${attempt.intent === "sign-in"}::boolean)`;
+    await neonServerSql`select app_private.pixel_bind_account(${profile.subject}::uuid,${profile.username}::text,${profile.email}::text,${profile.emailVerified}::boolean,${attempt.link_user_id}::uuid,${pixelHash(raw)}::text,${attempt.intent}::text)`;
     const response = NextResponse.redirect(
       new URL("/?pixel_connected=1", pixelOrigin()),
       303,
