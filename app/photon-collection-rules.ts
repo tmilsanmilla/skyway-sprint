@@ -1,7 +1,7 @@
 import {
   PHOTON_CHARACTERS,
   type PhotonCharacterKey,
-} from "./photon-fury-rules.ts";
+} from "./photon-fury-rules";
 export const PHOTON_BOX_COST = 200;
 /** Independent rarity/type rolls; duplicate ownership never changes these odds. */
 export const PHOTON_BOX_ODDS = {

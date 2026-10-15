@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { createRequire, registerHooks } from 'node:module';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
 import { PHOTON_STARTERS } from './photon-fury-rules.ts';
-import { PHOTON_SKINS, PHOTON_THEMES } from './photon-collection-rules.ts';
+registerHooks({resolve(s,c,next){return next(s==='./photon-fury-rules'&&c.parentURL?.endsWith('photon-collection-rules.ts')?s+'.ts':s,c);}});
+const { PHOTON_SKINS, PHOTON_THEMES } = await import('./photon-collection-rules.ts');
 
 // Execute the actual TSX components, not a rewritten JSX fixture. No browser/auth/DB is involved.
 const require=createRequire(import.meta.url);

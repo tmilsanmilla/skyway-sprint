@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PHOTON_CHARACTERS } from './photon-fury-rules.ts';
-import { PHOTON_SKINS, PHOTON_THEMES, PHOTON_BOX_COST, PHOTON_BOX_ODDS, rollPhotonMysteryBox, settlePhotonMysteryBox, photonDuplicateGems } from './photon-collection-rules.ts';
+import { registerHooks } from 'node:module';
+registerHooks({resolve(s,c,next){return next(s==='./photon-fury-rules'&&c.parentURL?.endsWith('photon-collection-rules.ts')?s+'.ts':s,c);}});
+const { PHOTON_SKINS, PHOTON_THEMES, PHOTON_BOX_COST, PHOTON_BOX_ODDS, rollPhotonMysteryBox, settlePhotonMysteryBox, photonDuplicateGems } = await import('./photon-collection-rules.ts');
 const sequence = (values) => { let i=0; return () => { assert.ok(i<values.length,'roll requested an unexpected random value'); return values[i++]; }; };
 // A, B=one Rush character +2skins, C. Every RNG decision is independently supplied.
 const oneBonusBox = (a,c,tail=[]) => rollPhotonMysteryBox(sequence([a,.35,0,0,0,0,.999,.999,c,...tail]));
