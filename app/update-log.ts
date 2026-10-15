@@ -5,7 +5,7 @@ export interface UpdateLogEntry {
   readonly changes: readonly string[];
 }
 
-export const LATEST_UPDATE_VERSION = "2.1";
+export const LATEST_UPDATE_VERSION = "2.2";
 export const VISIBLE_UPDATE_LIMIT = 10;
 
 /**
@@ -15,6 +15,21 @@ export const VISIBLE_UPDATE_LIMIT = 10;
  * what players will notice rather than database, deployment, or code details.
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
+  {
+    id: "2026-10-15-map-refresh",
+    publishedAt: "2026-10-15T23:02:29Z",
+    title: "MAP REFRESH + PHOTON FURY",
+    changes: [
+      "Ruins replaces Alley: four lanes, shared character bans, and a Pumpkin each wave. Miss three in a row and the run ends.",
+      "Refreshed map obstacles and character rules. On Terminal, use Z, X and C to face left, forward or right before swinging your sword.",
+      "Attack prices rise with each purchase in a wave. Most obstacles have a four-purchase limit; Snowflakes are uncapped.",
+      "Duplicate Skyway pulls now award Stardust for direct character and cosmetic unlocks. Box quantities stop at 99.",
+      "Photon Fury has a futuristic arena, 16 characters, four starters, 48 special skins, 17 themes and 200-Photon Mystery Boxes.",
+      "Everyone restarts at level 0 and 0 XP with a new leveling curve, clear XP progress and end-of-run awards. Accounts, Gems, inventory, scores and paid mode unlocks are kept.",
+      "Casual 1v1 requires level 5 for free. New Ranked unlocks need level 25 and 100 Gems; Photon Fury needs level 15 and 225 Gems.",
+      "Snowflakes preserve Gem streaks, Melons give more score as waves increase, leaderboards load properly, and music keeps a steadier, slightly slower beat.",
+    ],
+  },
   {
     id: "2026-10-10-photon-starter-speed",
     publishedAt: "2026-10-10T21:05:15-04:00",
