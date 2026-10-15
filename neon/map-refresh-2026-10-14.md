@@ -70,6 +70,11 @@ sign-in, production Data API access or a real two-device duel.
 Pumpkin collection outcomes are bounded participant receipts; this update does
 not claim server-authoritative physics or a complete anti-cheat system.
 
-Keep release source separate from the three unrelated unpublished auth commits
-above remote `d6a5f3ff8276735a368ba96686a22fe697794628`. Prepare a game-only
-candidate from that remote ancestor, verify it, and publish only that candidate.
+The verified production baseline is `c38cb36441034eed3fd1fec45b3e6206343121f6`.
+The release retains that exact authentication implementation rather than
+activating the never-live account-management work already present on GitHub.
+Pending authentication source remains preserved in the original local checkout.
+The isolated candidate is a normal fast-forward descendant of GitHub's
+`d6a5f3ff8276735a368ba96686a22fe697794628`, with game changes applied and the
+never-live authentication batch omitted from its final tree. Verify that all
+`lib`, `app/api`, `app/connect` and authentication SQL files match production.

@@ -16,12 +16,10 @@ Passwords stay on Pixel Pulse (or Skyway for one-time existing-account proof).
 Private local cookies contain random tokens; only hashes are stored in Neon,
 with a seven-day maximum and explicit sign-out revocation. The game issues
 120-second, fixed `authenticated` database tokens for the mapped game UUID.
-The Data API trusts `/api/pixel-pulse/database-keys`, which combines the existing
-managed Neon public keys with Skyway's dedicated Pixel verification key. Its
-external gateway configuration validates the native Neon audience; the managed
-Neon Auth service and password accounts remain active. Pixel tokens include both
-the native Neon audience and Skyway audience; native tokens, role claims and
-database/RLS settings remain unchanged. Test both token classes,
+Register Skyway's dedicated public verification key for this Neon branch only,
+using the Skyway audience and the existing managed Data API configuration.
+Pixel tokens include both the native Neon audience and Skyway audience; native
+tokens, role claims and database/RLS settings remain unchanged. Test both token classes,
 cross-account isolation and denied private-schema access before enabling it.
 
 Required deployment settings: `PIXEL_PULSE_GAME_SIGNING_KEY` (private RSA JWK,
@@ -36,31 +34,6 @@ No Saved SQL Editor copies or account resets are needed.
 `scripts/test-pixel-db.mjs` is rollback-only. It accepts a
 `SKYWAY_TEST_DATABASE_URL` or uses the existing Neon CLI login; set
 `NEON_CLI_PATH` when invoking the CLI through Node. Never commit credentials.
-
-On October 12, 2026 at 17:44 UTC, the explicitly approved gateway-only reconnect
-passed live native password sign-in, native signed-user data access, Pixel token
-access, own-row isolation, private-schema denial and session revocation. All
-eight existing accounts, passwords, inventory, stats, profiles, administrator
-roles, table/RLS policies and function permissions were unchanged. The current
-linking guards were also applied directly with unchanged player-data checksums.
-
-`scripts/test-pixel-live.mjs` creates and removes only exact disposable test
-accounts. `scripts/test-pixel-oidc-live.mjs` exercises actual provider redirects,
-PKCE, signed ID tokens, callback replay rejection, cookie reuse without another
-password, four starters for new accounts, and ownership-proven linking with the
-original game UUID and progress preserved. Its `--callback-only` mode explicitly
-does not test or enable the public start route; it seeds temporary login attempts
-when publishing is unavailable. Both callback flows passed on the deployed site.
-
-Activation remains blocked: Vercel returned `api-deployments-free-per-day` (402)
-on October 12 at 17:46 UTC. `NEXT_PUBLIC_PIXEL_PULSE_ENABLED` remains `false` and
-the central hub must retain Connecting. After the deployment allowance resets,
-set that flag to `true`, deploy the verified auth-only source, run the OIDC test
-without `--callback-only`, verify the visible UI, then mark the hub connected.
-Do not enable a hub entry or claim the public flow is complete before that test.
-`reconnect-pixel-gateway.mjs` is an approval-gated maintenance script, not a
-routine test; it automatically restores the original gateway if verification
-fails. Never delete the Auth service, database or branch for a gateway repair.
 
 Skyway Sprint uses managed Neon Auth (Neon's managed Better Auth), Neon Data
 API for browser database calls, and Cloudflare for live 1v1 signaling. Supabase
