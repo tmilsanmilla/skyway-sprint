@@ -244,6 +244,9 @@ test("Gambit royal score changes after three waves and last-life means still ali
   assert.equal(getGambitWaveEffects(schedule, 7, 1).scoreMultiplier, 12);
   assert.equal(getGambitWaveEffects(schedule, 7, 0).scoreMultiplier, 2);
   assert.equal(getGambitWaveEffects(schedule, 7, 1.5).scoreMultiplier, 2);
+  assert.equal(getGambitWaveEffects(schedule, 7, 0.8).scoreMultiplier, 12);
+  assert.equal(getGambitWaveEffects(schedule, 7, 1.24).scoreMultiplier, 12);
+  assert.equal(getGambitWaveEffects(schedule, 7, 1.25).scoreMultiplier, 2);
 });
 
 test("Gambit 1v1 steals preserve fractional coins and royal applies both effects", () => {

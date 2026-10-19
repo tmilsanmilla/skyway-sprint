@@ -26,7 +26,14 @@ import {
   isCurrentLaneAllowed,
   resolveCurrentInteraction,
   validateArenaMapRules,
+  pitchKatanaActiveSeconds,
 } from "./arena-map-rules.ts";
+test("Pitch guard divides once by wave speed, never changes the fixed cooldown",()=>{
+  assert.equal(pitchKatanaActiveSeconds(1),.4);
+  assert.equal(pitchKatanaActiveSeconds(1.25),.32);
+  assert.equal(pitchKatanaActiveSeconds(2),.2);
+  assert.equal(pitchKatanaActiveSeconds(NaN),.4);
+});
 
 test("armory prices and map inventories match the shared 1v1 catalog", () => {
   assert.deepEqual(
@@ -50,12 +57,14 @@ test("armory prices and map inventories match the shared 1v1 catalog", () => {
     assert.equal(available.includes("current"), mapId === "skyway");
     assert.equal(available.includes("car"), mapId !== "terminal");
     assert.equal(available.includes("barrel"), !["terminal", "skyway", "volcano"].includes(mapId));
-    assert.equal(available.includes("snowflake"), ["classic", "desert", "skyway", "pitch", "grove", "meadow"].includes(mapId));
+    assert.equal(available.includes("snowflake"), mapId !== "terminal");
     for (const kind of ["log", "spike", "rock"]) assert.equal(available.includes(kind), mapId !== "terminal");
     assert.equal(getAttackPointCost(mapId, "current"), mapId === "skyway" ? 13 : null);
     assert.equal(getAttackPointCost(mapId, "car"), mapId === "terminal" ? null : 14);
   }
   assert.deepEqual(getAvailableAttacks("terminal"), []);
+  assert.equal(getAttackPointCost("terminal", "snowflake"), null);
+  assert.equal(canPurchaseAttack("terminal", "snowflake", {}), false);
   assert.equal(getAttackPointCost("skyway", "snowflake"), 12);
   assert.equal(getAttackPointCost("meadow", "snowflake"), 11, "formula overrides inconsistent worked example");
   const counts = { rock: 1, barrel: 2, snowflake: 6 };

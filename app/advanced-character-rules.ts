@@ -4,6 +4,7 @@
  * or Supabase dependencies so the client can render the returned state while
  * an authoritative 1v1 service validates the same transitions.
  */
+import { roundedHealthForConditions } from "./mastery-rules.ts";
 
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
@@ -706,7 +707,7 @@ export const getGambitWaveEffects = (
   const permanentScoreActive =
     schedule.permanentScoreStartsAtWave !== null &&
     safeWave >= schedule.permanentScoreStartsAtWave;
-  const safeHearts = finiteOr(currentHearts);
+  const safeHearts = roundedHealthForConditions(currentHearts);
   // "Last life" applies while alive at one heart or less, including half HP.
   const onLastLife = safeHearts > 0 && safeHearts <= 1;
   const invincible = isWaveInGambitWindow(

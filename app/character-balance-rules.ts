@@ -5,6 +5,8 @@
  * the calculations here makes client previews and authoritative server tests agree.
  */
 
+import { roundedHealthForConditions } from "./mastery-rules.ts";
+
 export type HazardKind =
   | "barrel"
   | "car"
@@ -67,11 +69,11 @@ export type CharacterRarity =
   | "legendary"
   | "mythic";
 
-/** Mythic characters may be used in Endless and Casual, never Ranked 1v1. */
+/** Unrestricted collections belong in Endless/Unlimited, not ordinary duels. */
 export const canUseCharacterInMatch = (
   rarity: CharacterRarity,
-  matchKind: "endless" | "casual-1v1" | "ranked-1v1",
-) => matchKind !== "ranked-1v1" || rarity !== "mythic";
+  matchKind: "endless" | "casual-1v1" | "ranked-1v1" | "unlimited-1v1",
+) => matchKind === "endless" || matchKind === "unlimited-1v1" || rarity !== "mythic";
 
 export interface TankDamageInput {
   readonly character: TankCharacterKey;
@@ -116,9 +118,9 @@ const emptyConsumed = () => ({
   sentinelFirstAnalyzedHit: false,
 });
 
-/** Damage reduction granted by Rampart at its current exact HP total. */
+/** HP conditions use half-heart bands, while damage and stored HP stay exact. */
 export const getRampartDamageReduction = (currentHearts: number) => {
-  const hearts = Math.max(0, finiteOr(currentHearts));
+  const hearts = roundedHealthForConditions(currentHearts);
   if (hearts <= 0.5) return 0.5;
   if (hearts <= 1) return 0.4;
   if (hearts <= 1.5) return 0.3;
@@ -135,7 +137,7 @@ export const getColossusRockDamage = (
   currentHearts: number,
   normalRockDamage = 2,
 ) => {
-  const hearts = Math.max(0, finiteOr(currentHearts));
+  const hearts = roundedHealthForConditions(currentHearts);
   if (hearts >= 10) return 0;
   if (hearts >= 7) return Math.min(normalRockDamage, 1);
   if (hearts >= 5) return Math.min(normalRockDamage, 1.5);
@@ -244,8 +246,8 @@ export const calculateTankDamage = (
       reasons.push("bulwark-20-percent-reduction");
       break;
     case "tank_guard":
-      damage *= 0.7;
-      reasons.push("guard-30-percent-reduction");
+      damage *= 0.65;
+      reasons.push("guard-35-percent-reduction");
       break;
     case "tank_brace":
       damage *= 1.5;
@@ -332,13 +334,13 @@ export const getTankScoreMultiplier = (
   if (character === "tank_guard") return 0.9;
   if (character === "tank_brace" && weaponEquipped) return 1.15;
   if (character === "tank_colossus") {
-    return 1 + Math.max(0, finiteOr(currentHearts) - 3) * 0.05;
+    return 1 + Math.max(0, roundedHealthForConditions(currentHearts) - 3) * 0.05;
   }
   return 1;
 };
 
 export const getColossusHazardSpeedMultiplier = (currentHearts: number) =>
-  clamp(1 - Math.max(0, finiteOr(currentHearts) - 3) * 0.05, 0.65, 1);
+  clamp(1 - Math.max(0, roundedHealthForConditions(currentHearts) - 3) * 0.05, 0.65, 1);
 
 export const getColossusWaveEndHearts = (
   currentHearts: number,

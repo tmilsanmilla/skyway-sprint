@@ -55,7 +55,7 @@ test('bonuses multiply, turn delays add, and the 35% faster baseline is the new 
   close(PHOTON_RULES.baseTravelSpeed, .288 * 1.35);
   assert.equal(photonSpeed(0), 1); assert.equal(photonSpeed(100), 1.004 ** 100);
   assert.equal(photonObstacleSpeed(createPhotonRun()), 1);
-  assert.equal(PHOTON_RULES.price, 225); assert.equal(PHOTON_RULES.unlockLevel, 15);
+  assert.equal(PHOTON_RULES.price, 225); assert.equal(PHOTON_RULES.unlockLevel, 25);
 });
 test('base and Magnet hazard percentages cover exactly 100%', () => {
   assert.equal(Object.values(PHOTON_WEIGHTS).reduce((a, b) => a + b, 0), 100);
@@ -64,14 +64,14 @@ test('base and Magnet hazard percentages cover exactly 100%', () => {
   assert.deepEqual([.01,.11,.21,.31,.46,.71,.91].map(r => pickPhotonHazard(r,'photon_magnet')), ['rock','car','needle','log','spike','barrel','warpstone']);
   for (let i = 0; i < 100; i++) assert.notEqual(pickPhotonHazard(i / 100, 'photon_bear'), 'warpstone');
 });
-test('default saber has .1 input delay, .4 fixed guard, one-second cooldown, and seven durability', () => {
+test('default saber has .1 input delay, speed-scaled .4 guard, fixed cooldown and seven durability', () => {
   let run = activatePhotonSaber(quiet());
   assert.equal(run.hp, 4); assert.equal(run.durability, 7); assert.equal(run.guardUntil, 0); assert.equal(run.saberStartsAt, .1);
   assert.equal(activatePhotonSaber(run), run);
-  run = seconds(run, .1); close(run.guardUntil, .5); assert.equal(run.saberStartsAt, null);
-  assert.equal(photonGuardSeconds({ ...run, elapsed: 1000 }), .4);
+  run = seconds(run, .1); close(run.guardUntil, .1 + .4 / photonSpeed(.1)); assert.equal(run.saberStartsAt, null);
+  close(photonGuardSeconds({ ...run, elapsed: 1000 }), .4 / photonSpeed(1000));
   run = seconds(run, .400001);
-  assert.equal(run.hp, 3.5); assert.equal(run.durability, 6); close(run.cooldownUntil, 1.5);
+  assert.equal(run.hp, 3.5); assert.equal(run.durability, 6); close(run.cooldownUntil, .1 + .4 / photonSpeed(.1) + 1);
   assert.equal(run.guardUntil, 0); assert.equal(run.reflections, 0);
   assert.equal(activatePhotonSaber(run), run);
   assert.equal(seconds(run, .05).hp, 3.5, 'a whiff is charged once only');
@@ -83,19 +83,21 @@ test('a collision before input delay expires cannot be reflected', () => {
 test('one swing reflects exactly one obstacle and starts cooldown immediately on the block', () => {
   const ready = armed();
   const run = advancePhotonRun({ ...ready, items: [{ id: 1, kind: 'car', lane: 1, y: .74 }, { id: 2, kind: 'log', lane: 1, y: .75 }] }, .01);
-  assert.equal(run.reflections, 1); assert.equal(run.durability, 6); assert.equal(run.hp, 3);
+  assert.equal(run.reflections, 1); assert.equal(run.durability, 7); assert.equal(run.hp, 3);
   assert.equal(run.guardUntil, 0); close(run.cooldownUntil, run.elapsed + 1);
   assert.equal(activatePhotonSaber(run), run);
 });
-test('only cars and needles wear the standard saber on reflection; a broken saber never activates', () => {
+test('reflections protect durability for cars and needles; a broken saber never activates', () => {
   for (const kind of Object.keys(PHOTON_WEIGHTS)) {
     const run = contact('photon_tick', kind, { guard: true });
     assert.equal(run.reflections, 1); assert.equal(run.hp, 4);
-    assert.equal(run.durability, ['car','needle'].includes(kind) ? 6 : 7);
+    assert.equal(run.durability, 7);
     assert.equal(run.needleUntil, 0);
   }
   const broken = { ...createPhotonRun(), durability: 0 };
   assert.equal(activatePhotonSaber(broken), broken);
+  assert.equal(contact('photon_tick','needle').durability,6);
+  assert.equal(contact('photon_tick','car').durability,7);
 });
 test('ordinary contact damage remains half-heart granular and never regenerates automatically', () => {
   for (const [kind, damage] of Object.entries({ rock: 2, car: 1, log: 1, spike: 1, barrel: .5 })) {
@@ -106,8 +108,8 @@ test('ordinary contact damage remains half-heart granular and never regenerates 
 test('needles stack four seconds and roll exactly once per actual lane change, including delayed turns', () => {
   let run = contact('photon_tick', 'needle', { elapsed: 2, needleUntil: 4 });
   assert.equal(run.needleUntil, 8);
-  run = movePhoton(run, 1, .3499); assert.equal(run.hp, 3.5);
-  run = movePhoton(run, -1, .35); assert.equal(run.hp, 3.5);
+  run = movePhoton(run, 1, .4499); assert.equal(run.hp, 3.5);
+  run = movePhoton(run, -1, .45); assert.equal(run.hp, 3.5);
   assert.equal(movePhoton({ ...run, lane: 3 }, 1, 0).hp, 3.5);
   assert.equal(movePhoton({ ...run, elapsed: 8 }, 1, 0).hp, 3.5);
   let delayed = movePhoton(quiet('photon_burner', { needleUntil: 4 }), 1, 0);
@@ -134,25 +136,26 @@ test('generated hazards never stack or overtake in a lane and always leave one e
     assert.ok(run.items.length <= 3);
   }
 });
-test('Photons use only whole points and the four-point minimum, never score or elapsed time', () => {
-  for (const [points, reward] of [[0,0],[3.99,0],[4,1],[5,2],[7,10],[10,37],[-1,0],[NaN,0]]) assert.equal(photonReward(points), reward);
+test('Photons use only whole points with minimum five, or sixteen for Jolt', () => {
+  for (const [points, reward] of [[0,0],[3.99,0],[4,0],[5,1],[7,5],[8,10],[10,26],[-1,0],[NaN,0]]) assert.equal(photonReward(points), reward);
+  for (const [points,reward] of [[15.99,0],[16,1],[17,3],[20,33]]) assert.equal(photonReward(points,'jolt_shockwave'),reward);
   const tick = { ...quiet('photon_tick'), reflections: 7 };
-  assert.equal(photonRunReward({ ...tick, elapsed: 1 }), 10);
-  assert.equal(photonRunReward({ ...tick, elapsed: 1000 }), 10);
+  assert.equal(photonRunReward({ ...tick, elapsed: 1 }), 5);
+  assert.equal(photonRunReward({ ...tick, elapsed: 1000 }), 5);
   assert.equal(Object.hasOwn(tick, 'score'), false);
 });
 test('Magician adds one bonus point per complete 45 active seconds before the Photon reward', () => {
   const run = quiet('photon_magician', { elapsed: 89.999, reflections: 5 });
   assert.equal(photonBonusPoints(run), 1); assert.equal(photonTotalPoints(run), 6);
   assert.equal(photonBonusPoints({ ...run, elapsed: 90 }), 2);
-  assert.equal(photonRunReward({ ...run, elapsed: 90 }), 10);
+  assert.equal(photonRunReward({ ...run, elapsed: 90 }), 5);
   assert.equal(photonBonusPoints({ ...run, characterKey: 'photon_tick' }), 0);
 });
 test('Tick guards .5s with .8s cooldown; Trumpet has five HP and twelve durability', () => {
   const tick = contact('photon_tick', 'log', { guard: true });
-  close(tick.cooldownUntil, tick.elapsed + .8); assert.equal(photonGuardSeconds(tick), .5);
+  close(tick.cooldownUntil, tick.elapsed + .8); close(photonGuardSeconds(tick), .5 / photonSpeed(tick.elapsed));
   const trumpet = contact('photon_trumpet', 'car', { guard: true });
-  assert.equal(trumpet.hp, 5); assert.equal(trumpet.durability, 11); close(trumpet.cooldownUntil, trumpet.elapsed + .8);
+  assert.equal(trumpet.hp, 5); assert.equal(trumpet.durability, 12); close(trumpet.cooldownUntil, trumpet.elapsed + .8);
   const injured = { ...trumpet, hp: 4 }; assert.equal(healPhoton(injured), injured);
 });
 test('Saxophone heals .5 every25s while intact, with exactly10% durability cost and .25 input/1.2 cooldown', () => {
@@ -178,7 +181,7 @@ test('Wizard wraps only with3+durability; missing uses durability but no HP', ()
     const left = quiet('photon_wizard', { lane: 0, durability }); assert.equal(movePhoton(left, -1, 1), left);
   }
   const missed = seconds(activatePhotonSaber(quiet('photon_wizard')), .500001);
-  assert.equal(missed.hp, 4); assert.equal(missed.durability, 6); close(missed.cooldownUntil, 1.5);
+  assert.equal(missed.hp, 4); assert.equal(missed.durability, 6); close(missed.cooldownUntil, .1+.4/photonSpeed(.1)+1);
 });
 test('Nuclear BOMB keeps exactly one randomly selected hazard, loses .5HP, has15s cooldown and no input delay', () => {
   const items = [{id:1,kind:'car',lane:0,y:.3},{id:2,kind:'rock',lane:1,y:.2},{id:3,kind:'needle',lane:3,y:.4}];
@@ -194,7 +197,7 @@ test('Burner doubles points before squaring rewards, speeds hazards30%, and dela
   for (const kind of Object.keys(PHOTON_WEIGHTS)) close(photonHazardSpeed(quiet('photon_burner'), kind) / photonHazardSpeed(quiet(), kind), 1.3);
   const blocked = contact('photon_burner', 'rock', { guard: true });
   assert.equal(photonPoints(blocked), 2); close(blocked.cooldownUntil, blocked.elapsed + 2);
-  assert.equal(photonGuardSeconds(blocked), .3);
+  close(photonGuardSeconds(blocked), .3/photonSpeed(blocked.elapsed));
   assert.equal(photonRunReward({ ...blocked, reflections: 5 }), photonReward(10));
   const turn = movePhoton(quiet('photon_burner'), 1, 1);
   assert.equal(turn.lane, 1); close(turn.pendingTurn.at, .05);
@@ -275,10 +278,10 @@ test('Wrench converts only nearest own-lane hazard; empty lanes and cooldowns ma
   assert.equal(twisted.wireCooldownUntil, 20); assert.equal(wireTwistPhoton(twisted), twisted);
   const empty = quiet('photon_wrench'); assert.equal(wireTwistPhoton(empty), empty);
   close(photonHazardSpeed(run,'barrel') / photonHazardSpeed({...run,characterKey:'photon_magician'},'barrel'), 1.07);
-  assert.equal(photonGuardSeconds(run), .9); assert.equal(getPhotonCharacter('photon_wrench').cooldownSeconds, 2);
+  close(photonGuardSeconds(run), .9/photonSpeed(run.elapsed)); assert.equal(getPhotonCharacter('photon_wrench').cooldownSeconds, 2);
 });
 test('Wrench double-point chance is4% per remaining durability after a reflection', () => {
-  for (const [kind, boundary] of [['rock',.28], ['car',.24], ['needle',.24]]) {
+  for (const [kind, boundary] of [['rock',.28], ['car',.28], ['needle',.28]]) {
     assert.equal(photonPoints(contact('photon_wrench',kind,{guard:true,random:()=>boundary-.00001})), 2);
     assert.equal(photonPoints(contact('photon_wrench',kind,{guard:true,random:()=>boundary})), 1);
   }
@@ -308,7 +311,7 @@ test('Oyster slows every hazard8%, reverses all directional inputs once and tele
     assert.equal(touched.lane,lane); assert.equal(touched.needleUntil,0); assert.equal(touched.hp,4); assert.equal(photonPoints(touched),0);
   }
   const reflected=contact('photon_oyster','needle',{guard:true});
-  assert.equal(reflected.lane,1); assert.equal(photonPoints(reflected),1); assert.equal(reflected.durability,6);
+  assert.equal(reflected.lane,1); assert.equal(photonPoints(reflected),1); assert.equal(reflected.durability,7);
 });
 test('Spade loses.5HP each second after2s stillness; real lane changes reset it and successful blocks heal by durability chance', () => {
   const run=quiet('photon_spade');
@@ -322,7 +325,7 @@ test('Spade loses.5HP each second after2s stillness; real lane changes reset it 
 });
 test('each of the16 characters applies exactly one whiff charge and its own cooldown', () => {
   for(const key of keys) {
-    const c=getPhotonCharacter(key), end=c.saberInputDelaySeconds+c.guardSeconds;
+    const c=getPhotonCharacter(key), end=c.saberInputDelaySeconds+c.guardSeconds/photonSpeed(c.saberInputDelaySeconds);
     const run=seconds(activatePhotonSaber(quiet(key)),end+.000001);
     assert.equal(run.hp,c.maxHp-c.missDamage,key); assert.equal(run.durability,c.durability-1,key);
     close(run.cooldownUntil,end+c.cooldownSeconds);
@@ -360,7 +363,8 @@ test('new run receipts bind own actor/version/rules, preserve old receipts, reje
   assert.match(sql,/u uuid:=app_private\.photon_user\(\)/);
   assert.match(sql,/if not app_private\.owns_photon_character\(u,k\) then raise exception 'Character locked'/);
   assert.match(sql,/where id=p_run_id and user_id=u for update/);
-  assert.match(sql,new RegExp(`rules_version=${PHOTON_RULES.version}`));
+  const patch=readFileSync(new URL('../neon/update-2-3-economy.sql',import.meta.url),'utf8');
+  assert.match(patch,new RegExp(`rules_version=${PHOTON_RULES.version}`));
   assert.match(sql,/if r\.finished_at is not null then/);
   assert.match(sql,/p:=n\*r\.point_multiplier\+x/);
   assert.match(sql,/v:=case/); assert.match(sql,/Invalid playtime/); assert.match(sql,/Invalid reflections/); assert.match(sql,/Invalid bonus/);

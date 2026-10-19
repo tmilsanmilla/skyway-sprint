@@ -1,0 +1,55 @@
+.mastery-track-medic_remedy {
+  background: radial-gradient(ellipse at 20% 40%, #ff6b1a77, transparent 25%), repeating-linear-gradient(25deg, #442a32 0 38px, #693b30 40px 45px, #312d38 48px 80px);
+  border-color: #de8057;
+}
+.mastery-track-medic_salve {
+  background: repeating-linear-gradient(90deg, #32443b 0 19%, #5a5c3c 19% 20%);
+  border-color: #87966c;
+}
+.mastery-vault-pole {
+  position: absolute;
+  z-index: 42;
+  top: 80%;
+  height: 78px;
+  width: 6px;
+  border: 1px solid #f4f0ce;
+  background: #a1a390;
+  transform: rotate(12deg);
+  pointer-events: none;
+}
+.mastery-vault-pole.broken { height: 30px; transform: rotate(35deg); }
+.mastery-trial-phase-finale .mastery-trial-piece,
+.mastery-trial-phase-complete .mastery-trial-piece { opacity: 0.25; }
+.mastery-trial-phase-finale.mastery-track-runner_dash > .runner,
+.mastery-trial-phase-finale.mastery-track-medic_bloom > .runner {
+  animation: mastery-forward-dash 3s ease-in forwards;
+}
+.mastery-trial-phase-finale.mastery-track-runner_stride > .runner {
+  animation: mastery-stride-finale 3s ease-in-out forwards;
+}
+.mastery-trial-phase-finale.mastery-track-runner_stride .mastery-trial-lane:not(:nth-child(3)) {
+  animation: mastery-lane-fall 3s ease-in forwards;
+}
+.mastery-trial-phase-finale.mastery-track-medic_remedy {
+  animation: mastery-volcano-freeze 3s ease-out forwards;
+}
+.mastery-trial-phase-finale.mastery-track-trickster_smoke::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: conic-gradient(from 140deg at 50% -20%, transparent, #fff9cb99 15deg, transparent 30deg);
+  animation: mastery-rescue-light 1.5s ease-in-out infinite alternate;
+}
+.mastery-trial-controls button:disabled { opacity: 0.55; }
+@keyframes mastery-forward-dash { 0%, 30% { transform: translateY(0); } 100% { transform: translateY(-330px) scale(0.6); } }
+@keyframes mastery-stride-finale { 0%, 25% { transform: translateX(-90px); } 10%, 35% { transform: translateX(90px); } 50%, 100% { left: 50%; transform: translateX(0); } }
+@keyframes mastery-lane-fall { 50% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(100%); opacity: 0; } }
+@keyframes mastery-volcano-freeze { to { background-color: #bddfeb; box-shadow: inset 0 0 180px 120px #b1e7f2; border-color: #d0f6ff; } }
+@keyframes mastery-rescue-light { to { transform: rotate(14deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .mastery-trial-phase-finale > .runner,
+  .mastery-trial-phase-finale .mastery-trial-lane,
+  .mastery-trial-phase-finale.mastery-track-medic_remedy,
+  .mastery-trial-phase-finale::after { animation: none; }
+}

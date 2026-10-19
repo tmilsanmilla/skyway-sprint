@@ -10,10 +10,25 @@ import {
   shouldAnnounceHydratedVersusWave,
   shouldBlockNonVersusStart,
   shouldNotifyServerBeforeVersusExit,
+  reconcileVersusProgress,
 } from "./versus-session-rules.ts";
 
 const MATCH_ID = "7a6f803f-8124-4ddd-8d90-a59fda1bd3b5";
 const STORED_SESSION = { matchId: MATCH_ID, status: "playing" };
+
+test("a failed score heartbeat followed by an older snapshot cannot wrap score to zero", () => {
+  for (const localScore of [199, 201, 400, 2_000_000]) {
+    assert.deepEqual(reconcileVersusProgress({ preserveRunState: true,
+      localScore, localWave: 3, savedScore: 0, savedWave: 2 }),
+    { score: localScore, wave: 3 });
+  }
+  assert.deepEqual(reconcileVersusProgress({ preserveRunState: false,
+    localScore: 1000, localWave: 10, savedScore: 300, savedWave: 3 }),
+  { score: 300, wave: 3 });
+  assert.deepEqual(reconcileVersusProgress({ preserveRunState: true,
+    localScore: 1000, localWave: 10, savedScore: 1200, savedWave: 11 }),
+  { score: 1200, wave: 11 });
+});
 
 test("persists only resumable tab-scoped 1v1 sessions", () => {
   assert.equal(

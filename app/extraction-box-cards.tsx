@@ -1,4 +1,4 @@
-import { EXTRACTION_BOXES, EXTRACTION_MAX_QUANTITY, EXTRACTION_RARITIES, PULL_PROFILES, canOpenBox, affordableBoxQuantity, type ExtractionOption, type PullProfile } from "./extraction-rules";
+import { EXTRACTION_BOXES, EXTRACTION_MAX_QUANTITY, EXTRACTION_RARITIES, PULL_PROFILES, extractionOddsValid, EXTRACTION_ODDS_NOTICE, affordableBoxQuantity, type ExtractionOption, type PullProfile } from "./extraction-rules";
 
 type Quantities = Record<ExtractionOption, number>;
 type Props = {
@@ -12,7 +12,8 @@ export function ExtractionBoxCards({ level, gems, busy, quantities, extracting, 
     {(Object.keys(EXTRACTION_BOXES) as ExtractionOption[]).map(
       (option) => {
         const box = EXTRACTION_BOXES[option];
-        const levelLocked = !canOpenBox(option, level);
+        const levelLocked = !Number.isFinite(level) || level<box.minLevel;
+        const oddsLocked = !box.pulls.every(extractionOddsValid);
         const batchLimit = EXTRACTION_MAX_QUANTITY;
         const maxQuantity = levelLocked ? 0 : affordableBoxQuantity(option, gems);
         const quantity = Math.max(
@@ -37,6 +38,7 @@ export function ExtractionBoxCards({ level, gems, busy, quantities, extracting, 
             <strong className="box-price">♦ {box.cost}</strong>
             <small className="box-level">{levelLocked ? `UNLOCKS AT LEVEL ${box.minLevel}` : `LEVEL ${box.minLevel}+ · ${box.pullCount} PULLS`}</small>
             <small className="box-mix">{box.mix}</small>
+            {oddsLocked&&<p role="status">{EXTRACTION_ODDS_NOTICE}</p>}
             <details className="booster-odds">
               <summary>VIEW PULL ODDS</summary>
               {Array.from(new Set<PullProfile>(box.pulls)).map((profile) => (
@@ -99,6 +101,7 @@ export function ExtractionBoxCards({ level, gems, busy, quantities, extracting, 
               aria-label={`Open ${quantity} ${box.name} with ${quantity * box.pullCount} pulls for ${totalCost} gems`}
               disabled={
                 busy ||
+                oddsLocked ||
                 maxQuantity < 1 ||
                 quantity > maxQuantity
               }
@@ -106,7 +109,7 @@ export function ExtractionBoxCards({ level, gems, busy, quantities, extracting, 
             >
               {busy && extracting === option
                 ? "OPENING…"
-                : levelLocked ? `LEVEL ${box.minLevel} REQUIRED` : "OPEN"}{" "}
+                : levelLocked ? `LEVEL ${box.minLevel} REQUIRED` : oddsLocked ? "ODDS UNAVAILABLE" : "OPEN"}{" "}
               <span>TOTAL ♦ {totalCost}</span>
             </button>
           </article>

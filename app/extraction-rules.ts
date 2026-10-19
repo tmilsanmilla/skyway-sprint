@@ -12,11 +12,14 @@ export const EXTRACTION_RARITIES: readonly ExtractionRarity[] = [
   "mythic",
 ];
 export const PULL_PROFILES = {
-  normal: { characterPercent: 7, weights: [42, 32, 15, 9, 2, 0] },
-  bonus: { characterPercent: 13, weights: [32, 27, 17, 14, 10, 0] },
-  rare: { characterPercent: 18, weights: [27, 24, 19, 16, 14, 0] },
-  legendary: { characterPercent: 20, weights: [22, 21, 20, 19, 17, 1] },
+  normal: { characterPercent: 9, weights: [42, 32, 15, 9, 2, 0] },
+  // Exact Bonus rarity distribution confirmed by the player on 2026-10-18.
+  bonus: { characterPercent: 14, weights: [33, 28, 17, 13, 9, 0] },
+  rare: { characterPercent: 17, weights: [28, 24, 19, 16, 13, 0] },
+  legendary: { characterPercent: 18, weights: [22, 21, 20, 19, 17, 1] },
 } as const;
+export const extractionOddsValid = (profile: PullProfile) => PULL_PROFILES[profile].weights.reduce<number>((sum, n) => sum + n, 0) === 100;
+export const EXTRACTION_ODDS_NOTICE = "These pull odds are unavailable. No Gems will be spent.";
 export const EXTRACTION_BOXES = {
   normal: {
     name: "NORMAL BOX",
@@ -127,7 +130,7 @@ export const directUnlockCost = (
   return itemType === "character" ? prices.character : prices.cosmetic;
 };
 export const canOpenBox = (option: ExtractionOption, level: number) =>
-  Number.isFinite(level) && level >= EXTRACTION_BOXES[option].minLevel;
+  Number.isFinite(level) && level >= EXTRACTION_BOXES[option].minLevel && EXTRACTION_BOXES[option].pulls.every(extractionOddsValid);
 export const affordableBoxQuantity = (
   option: ExtractionOption,
   gems: number,
@@ -154,6 +157,7 @@ export const rollExtraction = (
   )
     throw new Error("Invalid extraction roll");
   const rules = PULL_PROFILES[profile];
+  if (!extractionOddsValid(profile)) throw new Error(EXTRACTION_ODDS_NOTICE);
   let cumulative = 0;
   for (let i = 0; i < rules.weights.length; i++) {
     cumulative += rules.weights[i];

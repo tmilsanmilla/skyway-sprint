@@ -26,13 +26,14 @@ try {
 }
 const noop=()=>{};
 const props={character:'photon_magician',characters:PHOTON_STARTERS,weapon:'lightsaber',skins:[],skinChoices:{},themes:[],theme:'default',weapons:[],level:15,gems:500,photons:200,busy:false,running:false,results:[],onEquip:noop,onBuyWeapon:noop,onOpen:noop,onSkin:noop,onTheme:noop};
-test('actual collection SSR renders48 special skins,17 themes,default choices and no direct character purchase',()=>{
+test('actual collection SSR renders 80 paid skins plus 16 default looks, 24 themes and equip controls',()=>{
   const html=renderToStaticMarkup(React.createElement(PhotonCollection,props));
   for(const skin of PHOTON_SKINS)assert.ok(html.includes(skin.name),skin.name);
   for(const theme of PHOTON_THEMES)assert.ok(html.includes(theme.name),theme.name);
-  assert.equal((html.match(/CLASS="photon-skin-preview"/gi)||[]).length,48);
+  assert.equal((html.match(/CLASS="photon-skin-preview"/gi)||[]).length,96);
   assert.match(html,/MYSTERY BOX · 200 PHOTONS/);
-  assert.match(html,/CHARACTER LOCKED/);assert.match(html,/DEFAULT · OWNED/);
+  assert.match(html,/CHARACTER LOCKED/);assert.match(html,/>DEFAULT</);assert.match(html,/>EQUIPPED</);
+  assert.match(html,/grid-template-columns:repeat\(3/);assert.match(html,/grid-template-columns:repeat\(5/);
   assert.doesNotMatch(html,/BUY CHARACTER|DIRECT UNLOCK/);
 });
 test('actual avatar uses the selected skin only on its own character and retains correct four-lane coordinates',()=>{
@@ -46,6 +47,8 @@ test('actual reward result rendering distinguishes new rewards,duplicates and Ge
     {kind:'character',key:'photon_tick',is_new:true},
     {kind:'skin',key:'photon_tick_pro',is_new:false,duplicate_gems:10},
     {kind:'gems',key:'gems',amount:20},
+    {kind:'stardust',key:'stardust_75',amount:75},
   ]}));
   assert.match(html,/Chrono Pilot/);assert.match(html,/DUPLICATE · \+10 GEMS/);assert.match(html,/\+20 GEMS/);assert.match(html,/>NEW</);
+  assert.match(html,/\+75 STARDUST/);
 });

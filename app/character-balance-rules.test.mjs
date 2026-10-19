@@ -85,7 +85,8 @@ test("hidden HUD totals preserve the attached display rules", () => {
 
 test("ranked rejects mythics without restricting casual or endless", () => {
   assert.equal(canUseCharacterInMatch("mythic", "ranked-1v1"), false);
-  assert.equal(canUseCharacterInMatch("mythic", "casual-1v1"), true);
+  assert.equal(canUseCharacterInMatch("mythic", "casual-1v1"), false);
+  assert.equal(canUseCharacterInMatch("mythic", "unlimited-1v1"), true);
   assert.equal(canUseCharacterInMatch("mythic", "endless"), true);
   assert.equal(canUseCharacterInMatch("legendary", "ranked-1v1"), true);
 });
@@ -134,7 +135,7 @@ test("Guard, Brace, Ironclad, Hammer and Warden apply their exact tradeoffs", ()
       baseDamage: 1,
       currentHearts: 4,
     }).damage,
-    0.7,
+    0.65,
   );
   assert.equal(getTankScoreMultiplier("tank_guard", 4), 0.9);
 
@@ -248,8 +249,10 @@ test("Bastion charges per full second, negates at 20, and is consumed by a hit",
   assert.equal(hit.consumed.bastionCharge, true);
 });
 
-test("Rampart reductions switch at exact half-heart thresholds", () => {
-  assert.equal(getRampartDamageReduction(2.01), 0);
+test("Rampart reductions use nearest-half-heart bands without rounding actual damage", () => {
+  assert.equal(getRampartDamageReduction(2.01), 0.2);
+  assert.equal(getRampartDamageReduction(2.25), 0);
+  assert.equal(getRampartDamageReduction(0.8), 0.4);
   assert.equal(getRampartDamageReduction(2), 0.2);
   assert.equal(getRampartDamageReduction(1.5), 0.3);
   assert.equal(getRampartDamageReduction(1), 0.4);

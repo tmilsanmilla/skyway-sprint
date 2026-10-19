@@ -115,3 +115,23 @@ export const shouldAnnounceHydratedVersusWave = ({
 }): boolean =>
   !preserveRunState ||
   restoredWave !== previousWave;
+
+/** Invalidation/poll responses can predate a frame or a queued heartbeat.
+ * Only a fresh restore/final result replaces progress; background reads must
+ * never rewind a live local run while its writes are still in flight. */
+export const reconcileVersusProgress = ({
+  preserveRunState, localScore, localWave, savedScore, savedWave,
+}: {
+  preserveRunState: boolean;
+  localScore: number;
+  localWave: number;
+  savedScore: number;
+  savedWave: number;
+}) => {
+  const score = Number.isFinite(savedScore) ? Math.max(0, savedScore) : 0;
+  const wave = Number.isFinite(savedWave) ? Math.max(1, Math.floor(savedWave)) : 1;
+  return {
+    score: preserveRunState ? Math.max(Number.isFinite(localScore) ? localScore : 0, score) : score,
+    wave: preserveRunState ? Math.max(Number.isFinite(localWave) ? localWave : 1, wave) : wave,
+  };
+};

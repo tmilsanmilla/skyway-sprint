@@ -6,9 +6,9 @@ import { PHOTON_GUIDE } from './photon-guide.ts';
 test('the beginner guide explains four lanes,Q,single blocks,misses and photons without formulas or jargon', () => {
   assert.equal(PHOTON_GUIDE.steps.length,3);
   const copy=[PHOTON_GUIDE.introduction,...PHOTON_GUIDE.steps.map(s=>`${s.title} ${s.text}`),PHOTON_GUIDE.needle].join(' ');
-  for(const pattern of [/four lanes/i,/press Q or tap LIGHTSABER/i,/one obstacle.*point/i,/half a heart/i,/cars and needles.*breaks/i,/Photons are this mode’s currency/i,/points turn into Photons.*end of the run/i,/at least 4 points; 7 points earn 10 Photons/i]) assert.match(copy,pattern);
+  for(const pattern of [/four lanes/i,/press Q or tap LIGHTSABER/i,/one obstacle.*point/i,/half a heart/i,/unblocked needles.*cars do not/i,/Photons are this mode’s currency/i,/points turn into Photons.*end of the run/i,/at least 5 points; 8 points earn 10 Photons/i]) assert.match(copy,pattern);
   assert.doesNotMatch(copy,/formula|\d+%|\*|cooldown|durability|spawn chances/i);
-  assert.ok(copy.split(/\s+/).length<160);
+  assert.ok(copy.split(/\s+/).length<175);
 });
 test('Photon has its own futuristic arena with aligned four-lane inputs and equipped appearance', () => {
   const view=readFileSync(new URL('./photon-fury.tsx',import.meta.url),'utf8');

@@ -1,5 +1,65 @@
 # Skyway Sprint on Neon
 
+## Update 2.3 coordinated release
+
+Apply these sources together, in order, after auditing the current installed
+functions. They are not a new database import and must not be combined with
+historical account migrations or old progression resets.
+
+1. `update-2-3-duel-access.sql`
+2. `update-2-3-economy.sql`
+3. `update-2-3-duel-modes.sql`
+4. `update-2-3-gem-streak.sql`
+5. `update-2-3-masteries.sql`
+6. `update-2-3-health.sql`
+7. `update-2-3-guard.sql`
+8. `update-2-3-smoke.sql`
+9. `update-2-3-admin.sql`
+
+The separately approved `update-2-3-profile-access.sql` repairs native username
+onboarding after those migrations. It changes no profile or managed Auth rows
+during installation. The existing exact own-row SELECT policy is checked before
+granting three named read columns; pre-existing table-level own-row SELECT is
+retained, not newly granted or revoked. The setter uses the signed-in identity,
+transaction locks and a server-clock 720-hour rename limit. First choices and
+canonical no-ops do not consume a rename. Linked names remain Pixel-managed.
+There is no direct profile write grant or anonymous setter access.
+
+After SQL application, use the existing Data API's **Refresh schema cache**
+control in Neon. Managed Data API routing did not pick up the new functions
+from SQL notification alone during this release. Verify actual signed HTTP
+calls after refreshing, not only that the functions exist in PostgreSQL.
+
+The release resets only level/XP for version `20261017`, once. Existing mode
+entitlements are retained before resetting XP. Accounts, native credentials,
+roles, bans, balances, ownership and results must compare unchanged before
+commit. A replay must not reset XP earned after the first application. The
+release restores only exact, audited own-match endpoints to signed-in users;
+private helpers, global maintenance functions and anonymous access stay closed.
+
+Mastery quests have one active questline, ordered stages, owned-context sessions,
+monotonic event receipts, time/rate limits and replay protection. Trials do not
+award score, Gems, XP, Photons or leaderboard results. Gameplay remains
+client-simulated: these checks do not establish server-authoritative collision
+verification. Smoke holds use server time plus active-play heartbeats; Dash
+healing consumes a short-lived, single-use eligible block receipt. Actual HP
+and damage remain fractional; only ability conditions use half-heart rounding.
+
+Use `node scripts/test-update-2-3-client.mjs`,
+`node scripts/test-update-2-3-sql.mjs`, and
+`node scripts/test-masteries-sql.mjs` for local regression checks. SQL fixtures
+create dedicated temporary PostgreSQL clusters without real credentials or
+production account rows. Never run their fixture setup against Neon. A real
+signed-in Data API check and production browser check are separate release
+requirements, not implied by local fixture success.
+
+The existing character roster is intentionally retained. Unlimited's specified
+collection requirements are not silently lowered to compensate for characters
+that have not yet been designed. Pixel Pulse activation, auth-provider changes,
+Saved SQL Editor copies and historical reset migrations are outside this release.
+Snowflakes may be purchased on every non-Terminal map, even where they do not
+spawn naturally. Terminal retains no attack coins and no obstacle shop.
+
 ## Pixel Pulse shared sign-in
 
 `pixel-pulse-01-sessions.sql` and `pixel-pulse-02-link.sql` add a separate,
@@ -191,3 +251,44 @@ role, reports, bans, progression, and multiplayer history. Supabase password
 hashes are not compatible with managed Neon Auth, so migrated players use
 Forgot Password once to set a Neon Auth password. New accounts are provisioned
 with starter stats, inventory, and loadout by triggers on `neon_auth.user`.
+
+## Update 2.3 coordinated release
+
+The pending client must ship with these migrations, in this order:
+`update-2-3-duel-access.sql`, `update-2-3-economy.sql`,
+`update-2-3-duel-modes.sql`, `update-2-3-gem-streak.sql`,
+`update-2-3-masteries.sql`, `update-2-3-health.sql`,
+`update-2-3-guard.sql`, `update-2-3-smoke.sql`, and
+`update-2-3-admin.sql`.
+
+Generate the single guarded transaction with
+`node scripts/build-update-2-3-release.mjs`. It fingerprints all existing game
+tables and the actual managed Auth user/account tables before and after the
+migration, failing the transaction if protected data changes. Only the four
+XP/progression fields and obsolete XP award amounts are reset, once for registry
+version `20261017`. Existing mode access, balances, inventory, accounts, native
+credentials, roles, bans, reports and results are preserved. Reapplication must
+preserve XP earned after that reset. Saved queries are not runtime state and
+are not recreated by this release.
+
+The own-match access repair is pinned to the October 19 installed definitions,
+including the newer QOL attack prices/caps and Meadow coin receipts. It never
+grants private helpers. The admin dispatcher clones the actual audited wrapper,
+retaining its in-game command interception; no command or report clearing is
+performed by installation. No coin setter is added.
+
+Mastery trials remain client-simulated gameplay. Own-account receipts, playtime,
+event ordering, action rates, ownership and replay checks bound progress but
+are not authoritative server collision detection. Online Smoke holds additionally
+use server charge time, recent verified active play and a shared per-wave bomb
+budget. Dash healing consumes a fresh, single-use server block receipt. Actual
+HP remains fractional; only ability conditions use half-heart bands. Remedy has
+3 starting HP and 3.5 maximum HP.
+
+`scripts/test-update-2-3-sql.mjs` imports the current read-only schema/function
+export into disposable local PostgreSQL, tests the complete transaction and
+reapplication, and verifies that deliberate synthetic wallet/account tampering
+rolls back. `scripts/test-masteries-sql.mjs` and its `--gem-streak --actions`
+variant test quests/trials and the guarded action RPCs. These local test scripts
+never connect to Neon, use real account rows, send mail or commit fixtures.
+Their fixture SQL is explicitly LOCAL-ONLY and must not be run in production.

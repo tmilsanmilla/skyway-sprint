@@ -13,7 +13,7 @@ test("new client uses secret server bans, class picker, no practice entry and fi
   assert.doesNotMatch(page, /startBotPractice|PRACTICE VS BOT|set_1v1_map_priorities|updateAdminTestMode/);
   assert.match(page, /modeRules = GAME_MODE_RULES\[isVersusRun \? "normal" : mode\]/);
   assert.match(page, /characterKey === rngAssignedCharacterRef.current/);
-  assert.match(page, /melonBaseScore\(wave\)/);
+  assert.match(page, /melonBaseScore\(wave,isVersusRun\?versusMode:undefined\)/);
 });
 test("music and map effects are layered on the SFX bus with reusable licensed samples", async () => {
   const audio = await readFile(new URL("./audio-engine.ts", import.meta.url), "utf8");

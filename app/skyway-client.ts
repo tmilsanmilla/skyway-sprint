@@ -135,9 +135,39 @@ type DataSession = {
 
 let dataSession: DataSession | null = null;
 let pixelTokenRefresh: Promise<string | null> | null = null;
+let nativeTokenRefresh: { session: DataSession; promise: Promise<string | null> } | null = null;
+const jwtClaims = (token: string): { exp?: number; sub?: string } => {
+  try {
+    return JSON.parse(atob(token.split(".")[1].replaceAll("-", "+").replaceAll("_", "/")));
+  } catch {
+    return {};
+  }
+};
 const dataToken = async () => {
   const current = dataSession;
-  if (!current?.pixelPulse) return current?.accessToken ?? null;
+  if (!current) return null;
+  if (!current.pixelPulse) {
+    if ((jwtClaims(current.accessToken).exp ?? 0) > Date.now() / 1000 + 30)
+      return current.accessToken;
+    if (nativeTokenRefresh?.session !== current) {
+      const promise = (async () => {
+        const { data, error } = await managedAuthClient.getBetterAuthInstance().token({
+          fetchOptions: { headers: { "X-Force-Fetch": "true" } },
+        });
+        if (dataSession !== current) throw new Error("The signed-in account changed.");
+        if (error || !data?.token || data.token.split(".").length !== 3 ||
+          jwtClaims(data.token).sub !== current.userId ||
+          (jwtClaims(data.token).exp ?? 0) <= Date.now() / 1000)
+          throw new Error("Your session could not be refreshed. Please try again.");
+        current.accessToken = data.token;
+        return current.accessToken;
+      })().finally(() => {
+        if (nativeTokenRefresh?.session === current) nativeTokenRefresh = null;
+      });
+      nativeTokenRefresh = { session: current, promise };
+    }
+    return nativeTokenRefresh.promise;
+  }
   let expires = 0;
   try {
     expires = JSON.parse(

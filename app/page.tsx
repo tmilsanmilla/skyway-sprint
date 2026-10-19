@@ -5,6 +5,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -13,6 +14,14 @@ import { AdminPlayerEditor } from "./admin-player-editor";
 import { isMigrationMaintenanceMode } from "./migration-maintenance";
 import { getRecentUpdates } from "./update-log";
 import { PhotonFury } from "./photon-fury";
+import { useMasteries } from "./use-masteries";
+import { CharacterMastery, FlairPicker, MasteryShop } from "./mastery-menu";
+import { inventoryFlairs, getFlairEffects } from "./flair-rules";
+import { roundedHealthForConditions, strideShieldSeconds, salveWaveHeal, salveLowHealthMultipliers, guardBlueDamage, type MasteryKey } from "./mastery-rules";
+import { createMasteryRuntime, startMasteryWave, decorateMasteryItem, pruneMasteryRuntime, resolveBloomCollection, resolveMasteryMiss, consumeBloomAbility, guardBlueGemPickup, vaultAvailable, resolveMasteryVault, resolveGuardContact, smokeNearMissSeconds, spendLocalSmoke, smokeOverlayBands, type SmokeStrength } from "./mastery-engine";
+import "./mastery.css";
+import { MasteryTrialDisclaimer } from "./mastery-trial";
+import { MasteryTrialGame } from "./mastery-trial-game";
 import {
   cumulativeXpForLevel,
   HARDCORE_SCORE_MULTIPLIER,
@@ -37,6 +46,8 @@ import {
   activeRotatingMode,
   nextRotationAt,
   melonBaseScore,
+  isDuelCharacterAllowed,
+  unlimitedRequirements,
   type DuelMode,
   type RotatingMode,
 } from "./update-19-rules";
@@ -50,6 +61,7 @@ import {
   shouldAnnounceHydratedVersusWave,
   shouldBlockNonVersusStart,
   shouldNotifyServerBeforeVersusExit,
+  reconcileVersusProgress,
 } from "./versus-session-rules";
 import { CloudflareVersusRealtime, realtimeMode } from "./cloudflare-realtime";
 import {
@@ -170,7 +182,6 @@ import {
   CURRENT_RULES,
   GROVE_RULES,
   MAP_IDS,
-  PITCH_KATANA_RULES,
   VOLCANO_RULES,
   activatePitchKatana,
   applyMapHealthModifiers,
@@ -189,6 +200,7 @@ import {
   getCurrentAllowedLaneIndexes,
   getFactoryObstacleSpeedMultiplier,
   getMapRules,
+  pitchKatanaActiveSeconds,
   getNewVolcanoStationaryDamage,
   isCharacterClassAllowed,
   isPitchKatanaMovementLocked,
@@ -259,6 +271,9 @@ type Item = {
   sharedCourse?: boolean;
   attackCoinReplacement?: boolean;
   spawnedWave?: number;
+  dashGreen?: boolean;
+  guardBlue?: boolean;
+  bloomFirst?: boolean;
 };
 type GameMode = EndlessMode;
 type OracleProphecy = "no-hit" | "completion" | "near-death";
@@ -461,6 +476,10 @@ type PlayerProgression = {
   completed_runs: number;
   ranked_unlocked: boolean;
   ranked_purchased: boolean;
+  casual_unlocked?: boolean;
+  rotating_unlocked?: boolean;
+  unlimited_unlocked?: boolean;
+  photon_unlocked?: boolean;
   progression_version: number;
   xp_awarded?: number;
 };
@@ -1052,7 +1071,6 @@ const normalizeVersusObstacle = (value: unknown): Kind | null => {
   return null;
 };
 const BOT_MAX_HEARTS = 3;
-const STRIDE_SHIELD_MS = 250;
 const BLITZ_COOLDOWN_MS = 10000;
 const HAMMER_COOLDOWN_MS = 20000;
 const VIAL_ENDLESS_COOLDOWN_MS = 120000;
@@ -1072,6 +1090,7 @@ const simulateBotWave = (
   maximumHearts: number = BOT_MAX_HEARTS,
   sentDamageMultiplier = 1,
   random: () => number = Math.random,
+  smokeExposure = 0,
 ) => {
   let nextHearts = currentHearts;
   let chilled = false;
@@ -1086,7 +1105,7 @@ const simulateBotWave = (
   attacks.forEach((attack) => {
     const dodgeChance = Math.max(
       0.3,
-      0.68 - waveNumber * 0.008 - (chilled ? 0.18 : 0),
+      0.68 - waveNumber * 0.008 - (chilled ? 0.18 : 0) - Math.min(0.2, Math.max(0,smokeExposure)/50),
     );
     if (random() < dodgeChance) {
       dodged += 1;
@@ -1185,7 +1204,7 @@ const CLASS_CHARACTERS = {
     { key: "medic_patch", name: "Patch", rarity: "default" },
     { key: "medic_bloom", name: "Bloom", rarity: "common" },
     { key: "medic_remedy", name: "Remedy", rarity: "common" },
-    { key: "medic_salve", name: "Salve", rarity: "common" },
+    { key: "medic_salve", name: "Salve", rarity: "uncommon" },
     { key: "medic_reserve", name: "Reserve", rarity: "uncommon" },
     { key: "medic_sprout", name: "Sprout", rarity: "uncommon" },
     { key: "medic_mender", name: "Mender", rarity: "rare" },
@@ -1356,7 +1375,7 @@ const CHARACTER_ABILITIES = {
   },
   runner_vault: {
     name: "HAZARD VAULT",
-    description: "Vaults over the first spike or log hit each wave.",
+    description: "Vaults over the first spike or log each wave, then gains 80% speed and 90% score for 1 second.",
   },
   runner_spark: {
     name: "CRYSTAL CHARGE",
@@ -1379,7 +1398,7 @@ const CHARACTER_ABILITIES = {
   },
   medic_salve: {
     name: "DEEP SALVE",
-    description: "Heals 1.5 HP after a wave only when at 1 HP or less.",
+    description: "At 1 HP or less, heals 2 HP after a wave, twice per run. After both uses, wave healing stops.",
   },
   medic_sprout: {
     name: "SEED WARD",
@@ -1442,7 +1461,7 @@ const CHARACTER_ABILITIES = {
   },
   medic_remedy: {
     name: "COLD REMEDY",
-    description: "Can heal 1 HP from the first snowflake collected each wave.",
+    description: "Starts at 3 HP, can reach 3.5 HP, and heals 1 HP from the first snowflake collected each wave.",
   },
   medic_reserve: {
     name: "RESERVE DOSE",
@@ -1466,7 +1485,7 @@ const CHARACTER_ABILITIES = {
   tank_guard: {
     name: "GUARDED PACE",
     description:
-      "Takes 30% less damage from every source and earns 10% less score.",
+      "Takes 35% less damage from every source and earns 10% less score.",
   },
   tank_ironclad: {
     name: "IRON SHELL",
@@ -1589,7 +1608,7 @@ const CHARACTER_ABILITIES = {
   trickster_smoke: {
     name: "SMOKE BOMB",
     description:
-      "Press E every 20 seconds to teleport to a currently safe lane.",
+      "Press E every 12 seconds to teleport to a currently safe lane.",
   },
   trickster_clockwork: {
     name: "CLOCKWORK SLOW",
@@ -1704,7 +1723,9 @@ const getValidatedVersusCharacter = (
   return { characterKey, characterClass };
 };
 const getCharacterMaxHearts = (characterKey: string, characterClass: string) =>
-  characterKey === "trickster_phantom"
+  characterKey === "medic_remedy"
+    ? 3.5
+    : characterKey === "trickster_phantom"
     ? 3
     : characterKey === "medic_patch"
       ? 4
@@ -2467,6 +2488,45 @@ function SkywayGame() {
     [authBusy, setAuthBusy] = useState(false),
     [passwordResetBusy, setPasswordResetBusy] = useState(false),
     [authMessage, setAuthMessage] = useState("");
+  const masteries = useMasteries(authReady && !guest ? userIdRef.current : null);
+  const [trialRequest,setTrialRequest]=useState<MasteryKey|null>(null);
+  const [activeTrial,setActiveTrial]=useState<MasteryKey|null>(null);
+  const [trialBusy,setTrialBusy]=useState(false);
+  const trialOwnerRef=useRef<string|null>(null);
+  const trialStartIntentRef=useRef(0);
+  const recordMastery = masteries.record;
+  const flushMastery = masteries.flush;
+  const refreshMasteries = masteries.refresh;
+  const beginMasterySession = masteries.begin;
+  const endMasterySession = masteries.end;
+  useEffect(()=>{if(over&&!running&&!activeTrial)void gemClaimQueueRef.current.catch(()=>undefined).then(()=>endMasterySession());},[over,running,activeTrial,endMasterySession]);
+  const salveUsesRef = useRef(0);
+  const masteryRuntimeRef = useRef(createMasteryRuntime());
+  const smokeChargeRef = useRef<{ actionId:string; startedAt:number; matchId:string|null; userId:string|null; generation:number; runtime:ReturnType<typeof createMasteryRuntime>; pending:Promise<boolean> }|null>(null);
+  const masteryItemVelocityRef=useRef(new Map<number,number>());
+  const masteryItemPositionRef=useRef(new Map<number,number>());
+  const smokeBusyRef = useRef(false);
+  const smokeMutationVersionRef = useRef(0);
+  const botSmokeUntilRef = useRef(0);
+  const botSmokeExposureRef = useRef(0);
+  const performSmokeActionRef = useRef<((heldSeconds:number, actionId?:string)=>Promise<void>)|null>(null);
+  const [incomingMasterySmoke,setIncomingMasterySmoke] = useState<{strength:SmokeStrength|null; until:number; flairTop:number}>({strength:null,until:0,flairTop:0});
+  const flairPostHitUntilRef = useRef(0);
+  const strideFocusUntilRef = useRef(0);
+  const strideFocusCooldownRef = useRef(0);
+  const dashShieldUntilRef = useRef(0);
+  const strideShieldUntilRef = useRef(0);
+  const masteryFrameMsRef = useRef(0);
+  const masteryHeartsRef = useRef(hearts);
+  const masteryHealSourceRef = useRef<"bloom"|"snowflake"|"other">("other");
+  const masteryVersusContextRef=useRef("");
+  useEffect(()=>{
+    const owner=authReady&&!guest?userIdRef.current:null;
+    if(trialOwnerRef.current===owner)return;
+    trialOwnerRef.current=owner;trialStartIntentRef.current++;
+    setTrialRequest(null);setActiveTrial(null);setTrialBusy(false);
+  },[authReady,guest,authSessionRefresh]);
+  useEffect(()=>{if(paused||wavePause||!running)smokeChargeRef.current=null;},[paused,wavePause,running]);
   const [settingsOpen, setSettingsOpen] = useState(false),
     [adminOpen, setAdminOpen] = useState(false),
     [isAdmin, setIsAdmin] = useState(false),
@@ -2591,7 +2651,9 @@ function SkywayGame() {
       if (cancelled || owner !== userIdRef.current || error) return;
       if (
         data?.active_mode === "rng" ||
-        data?.active_mode === "hardcore_duel"
+        data?.active_mode === "hardcore_duel" ||
+        data?.active_mode === "quicksand" ||
+        data?.active_mode === "mundane"
       ) {
         setRotatingMode(data.active_mode);
         if (!versusMatchRef.current && !versusSearchingRef.current)
@@ -2648,6 +2710,10 @@ function SkywayGame() {
         ),
         ranked_unlocked: payload.ranked_unlocked === true,
         ranked_purchased: payload.ranked_purchased === true,
+        casual_unlocked: payload.casual_unlocked === true,
+        rotating_unlocked: payload.rotating_unlocked === true,
+        unlimited_unlocked: payload.unlimited_unlocked === true,
+        photon_unlocked: payload.photon_unlocked === true,
         progression_version: Math.max(
           0,
           Math.floor(Number(payload.progression_version) || 0),
@@ -3105,7 +3171,8 @@ function SkywayGame() {
     : "runner_ace";
   const availableClass = getCharacterClassKey(availableCharacter);
   const classBlockedByGameMode =
-    endlessCharacter(mode, availableCharacter) !== availableCharacter;
+    endlessCharacter(mode, availableCharacter) !== availableCharacter ||
+    (isVersusRun && !isDuelCharacterAllowed(versusMode,{...getCharacterDefinition(availableCharacter),classKey:availableClass}));
   const classBlockedByMap =
     !effectiveCharacterTestMode &&
     isVersusRun &&
@@ -3121,6 +3188,65 @@ function SkywayGame() {
   const activeCharacter = (runCharacterOverride ??
     equippedCharacter) as CharacterKey;
   const activeClass = getCharacterClassKey(activeCharacter);
+  const ownedCharacterKeys = useMemo(()=>CHARACTER_ROSTER.filter(c => isCharacterOwned(unlocks,c.key)).map(c => c.key),[unlocks]);
+  const ownedFlairs = useMemo(()=>inventoryFlairs(CHARACTER_ROSTER, ownedCharacterKeys),[ownedCharacterKeys]);
+  const equippedFlair = ownedFlairs.find(f => f.key === (masteries.flair ?? activeCharacter)) ?? null;
+  const flairQuest = equippedFlair ? masteries.account.quests[equippedFlair.key as MasteryKey] : null;
+  const flairEffects = getFlairEffects(equippedFlair, activeCharacter, !!flairQuest?.mastered && !!flairQuest.flairRewriteEnabled, hearts, getCharacterMaxHearts(activeCharacter,activeClass));
+  const mastered = !!masteries.account.quests[activeCharacter as MasteryKey]?.mastered && !!masteries.account.quests[activeCharacter as MasteryKey]?.masteryEnabled;
+  useEffect(()=>{
+    const amount=Math.max(0,hearts-masteryHeartsRef.current);
+    masteryHeartsRef.current=hearts;
+    if(running&&amount>0)recordMastery({type:"heal",amount,source:masteryHealSourceRef.current});
+    masteryHealSourceRef.current="other";
+  },[hearts,running,recordMastery]);
+  useEffect(()=>{
+    const matchId=versusMatchRef.current;
+    if(!isOnlineVersus||versusPhase!=="playing"||!matchId)return;
+    const context=`${matchId}:${activeCharacter}`;
+    let cancelled=false,attempts=0,timer:ReturnType<typeof setTimeout>|undefined;
+    const begin=async()=>{
+      if(cancelled||masteryVersusContextRef.current===context)return;
+      if(masteryVersusContextRef.current&&!await endMasterySession())return;
+      if(cancelled)return;
+      masteryVersusContextRef.current=context;attempts++;
+      const session=await beginMasterySession(matchId,"1v1",activeCharacter);
+      if(!session&&masteryVersusContextRef.current===context){masteryVersusContextRef.current="";if(!cancelled&&attempts<3)timer=setTimeout(()=>void begin(),attempts*1500);}
+      if(session&&activeCharacter==="medic_salve"){
+        const runtime=masteryRuntimeRef.current,uid=userIdRef.current;
+        try{const {data,error}=await supabase.rpc("get_mastery_salve_uses",{p_context_id:matchId});
+          if(!cancelled&&!error&&userIdRef.current===uid&&versusMatchRef.current===matchId&&masteryRuntimeRef.current===runtime&&Number.isInteger(Number(data)))salveUsesRef.current=Math.max(0,Math.min(3,Number(data)));
+        }catch{/* Restores stay conservatively exhausted until a later successful read. */}
+      }
+    };
+    void begin();
+    return()=>{cancelled=true;if(timer)clearTimeout(timer);};
+  },[isOnlineVersus,versusPhase,activeCharacter,beginMasterySession,endMasterySession]);
+  useEffect(()=>{
+    const matchId=versusMatchRef.current,uid=userIdRef.current;
+    if(!isOnlineVersus||!matchId||versusPhase!=="playing")return;
+    let cancelled=false,busy=false;
+    const refresh=async()=>{
+      if(busy||cancelled)return;busy=true;
+      const mutation=smokeMutationVersionRef.current;
+      try{
+        const {data,error}=await supabase.rpc("get_mastery_smoke_effect",{p_match_id:matchId});
+        if(cancelled||versusMatchRef.current!==matchId||userIdRef.current!==uid)return;
+        if(error)return; // A failed poll never erases a working run or grants an effect.
+        const raw=data?.strength;
+        const strength:SmokeStrength|null=raw==="mild"||raw==="grey"||raw==="heavy-grey"?raw:null;
+        setIncomingMasterySmoke({strength,until:Date.parse(String(data?.active_until??""))||0,flairTop:Math.max(0,Math.min(0.4,Number(data?.flair_top)||0))});
+        if(activeCharacter==="trickster_smoke"&&!smokeBusyRef.current&&mutation===smokeMutationVersionRef.current){
+          const remaining=Number(data?.own_bombs_remaining);
+          if(mastered&&Number.isInteger(remaining))masteryRuntimeRef.current.smokeBombs=Math.max(0,Math.min(3,remaining));
+          const until=Date.parse(String(data?.own_cooldown_until??""));
+          if(Number.isFinite(until))masteryRuntimeRef.current.smokeCooldownUntil=masteryRuntimeRef.current.elapsed+Math.max(0,(until-Date.now())/1000);
+        }
+      }catch{/* Keep the last server-timed effect on a temporary network failure. */}finally{busy=false;}
+    };
+    void refresh();const timer=setInterval(()=>void refresh(),1000);
+    return()=>{cancelled=true;clearInterval(timer);};
+  },[isOnlineVersus,versusPhase,activeCharacter,mastered]);
   const previousVersusOpponentHeartsRef = useRef(versusOpponentHearts);
   const previousPlayerHeartsRef = useRef(hearts);
   const previousVersusPhaseRef = useRef<VersusPhase>(versusPhase);
@@ -3367,6 +3493,8 @@ function SkywayGame() {
     const awardRun = async () => {
       await gemClaimQueueRef.current.catch(() => undefined);
       if (userIdRef.current !== awardUserId) return;
+      await endMasterySession();
+      if (userIdRef.current !== awardUserId) return;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         if (userIdRef.current !== awardUserId) return;
         const scope = "endless";
@@ -3441,7 +3569,7 @@ function SkywayGame() {
       if (progressionAwardPromiseRef.current === pendingAward)
         progressionAwardPromiseRef.current = null;
     });
-  }, [applyProgressionPayload, guest, over, playScope, progressionRunVersion]);
+  }, [applyProgressionPayload, guest, over, playScope, progressionRunVersion,endMasterySession]);
   useEffect(() => {
     if (running && !over) {
       setRunXpTotal(null);
@@ -3509,7 +3637,8 @@ function SkywayGame() {
       if (error) {
         console.error("Could not verify player access:", error.message);
         setPlayerAccessError(error.message);
-        setRunning(false);
+        setPaused(true);
+        if(state.current.running&&!versusMatchRef.current)setPauseMenuOpen(true);
         audioEngine.stop();
         setPlayerAccessChecking(false);
         return null;
@@ -3518,7 +3647,8 @@ function SkywayGame() {
         setPlayerAccessError(
           "The access service returned an invalid response.",
         );
-        setRunning(false);
+        setPaused(true);
+        if(state.current.running&&!versusMatchRef.current)setPauseMenuOpen(true);
         setPlayerAccessChecking(false);
         audioEngine.stop();
         return null;
@@ -3617,7 +3747,7 @@ function SkywayGame() {
     versusOpponentCharacter,
   ]);
   const queueGemClaim = useCallback(
-    (contextId: string, pickupId: number, requestUserId: string) => {
+    (contextId: string, pickupId: number, requestUserId: string,guardBlue=false) => {
       const requestStreakGeneration = gemStreakGenerationRef.current;
       const pickupWave = waveRef.current;
       const claim = async () => {
@@ -3658,7 +3788,7 @@ function SkywayGame() {
           }
           gemStreakResetPendingRef.current = false;
         }
-        const { data, error } = await supabase.rpc("claim_player_gem", {
+        const { data, error } = await supabase.rpc(guardBlue?"claim_mastery_blue_gem":"claim_player_gem", {
           p_context_id: contextId,
           p_pickup_id: String(pickupId),
         });
@@ -3682,6 +3812,7 @@ function SkywayGame() {
           gemsRef.current = Math.max(0, totalGems);
           setGems(gemsRef.current);
         }
+        if(data?.is_new===true)recordMastery({type:"gem"});
         const awarded = Number(data?.gems_awarded);
         const authoritativeStreak = Number(data?.streak);
         const streakResponseIsCurrent =
@@ -3698,7 +3829,7 @@ function SkywayGame() {
       const queued = gemClaimQueueRef.current.then(claim, claim);
       gemClaimQueueRef.current = queued.catch(() => undefined);
     },
-    [applyProgressionPayload, showAbilityNotice],
+    [applyProgressionPayload, showAbilityNotice,recordMastery],
   );
   const queueEndlessGemStreakReset = useCallback(() => {
     gemStreakRef.current = 0;
@@ -3848,6 +3979,21 @@ function SkywayGame() {
     [applyFreezeEffect],
   );
   const resetCharacterAbilityState = useCallback((restoredWave?: number) => {
+    masteryRuntimeRef.current = createMasteryRuntime(restoredWave ?? 1);
+    masteryFrameMsRef.current=0;
+    masteryHealSourceRef.current="other";
+    masteryVersusContextRef.current="";
+    masteryItemVelocityRef.current.clear();masteryItemPositionRef.current.clear();
+    salveUsesRef.current=restoredWave===undefined?0:3;
+    if(restoredWave!==undefined)masteryRuntimeRef.current.smokeCooldownUntil=20;
+    botSmokeUntilRef.current=0;botSmokeExposureRef.current=0;
+    strideFocusUntilRef.current=0;strideFocusCooldownRef.current=restoredWave===undefined?0:30;
+    dashShieldUntilRef.current=0;strideShieldUntilRef.current=0;
+    flairPostHitUntilRef.current=0;
+    smokeChargeRef.current = null;
+    smokeBusyRef.current = false;
+    smokeMutationVersionRef.current++;
+    setIncomingMasterySmoke({strength:null,until:0,flairTop:0});
     pumpkinMissedRef.current = 0;
     setPumpkinsMissed(0);
     pumpkinWaveRef.current = 0;
@@ -4564,6 +4710,8 @@ function SkywayGame() {
       if (trackProgression && progressionAwardPromiseRef.current)
         await progressionAwardPromiseRef.current;
       if (resetIntent !== progressionResetIntentRef.current) return;
+      if(!await endMasterySession()){showAbilityNotice("QUEST PROGRESS IS STILL SYNCING · TRY AGAIN",1400);return;}
+      if (resetIntent !== progressionResetIntentRef.current) return;
       if (trackProgression && userIdRef.current) {
         const startingUserId = userIdRef.current;
         const pendingStart = startProgressionRun();
@@ -4591,7 +4739,9 @@ function SkywayGame() {
       runIsTestModeRef.current = nextRunIsTestMode;
       setRunIsTestMode(nextRunIsTestMode);
       const runMapRules = getMapRules(runMapId);
-      const candidateCharacter = availableCharacter;
+      const candidateCharacter = trackProgression && mapOverride === undefined && mode === "normal" && masteries.randomizer
+        ? ownedCharacterKeys[Math.floor(Math.random()*ownedCharacterKeys.length)] ?? "runner_ace"
+        : availableCharacter;
       const candidateClass = getCharacterClassKey(candidateCharacter);
       const candidateBlockedByMode =
         endlessCharacter(mode, candidateCharacter) !== candidateCharacter;
@@ -4605,6 +4755,22 @@ function SkywayGame() {
             ? candidateCharacter
             : "runner_ace"));
       const runClass = getCharacterClassKey(runCharacter);
+      if (trackProgression && userIdRef.current && progressionRunIdRef.current) {
+        if (candidateCharacter !== availableCharacter) {
+          const uid=userIdRef.current;
+          const {error}=await supabase.rpc("set_loadout",{p_slot:"character",p_item:runCharacter});
+          if(uid!==userIdRef.current||resetIntent!==progressionResetIntentRef.current)return;
+          if(error){showAbilityNotice("RANDOM CHARACTER COULD NOT BE EQUIPPED · TRY AGAIN",1400);return;}
+          setSelectedCharacter(runCharacter);
+          await refreshMasteries();
+          if(uid!==userIdRef.current||resetIntent!==progressionResetIntentRef.current)return;
+        }
+        await beginMasterySession(progressionRunIdRef.current,"endless",runCharacter);
+        if(resetIntent!==progressionResetIntentRef.current)return;
+      }
+      salveUsesRef.current=0;
+      flairPostHitUntilRef.current=0;
+      strideFocusUntilRef.current=0;strideFocusCooldownRef.current=0;
       const runBaseStartingHearts = getCharacterStartingHearts(
         runCharacter,
         runClass,
@@ -4631,6 +4797,7 @@ function SkywayGame() {
       waveProgressRef.current = 0;
       setWaveProgress(0);
       setHearts(runStartingHearts);
+      masteryHeartsRef.current=runStartingHearts;
       setWave(1);
       terminalSwordRef.current = { durability: 4, cooldownUntil: 0 };
       terminalFacingRef.current = 0;
@@ -4684,6 +4851,7 @@ function SkywayGame() {
         waveAnnouncementTimerRef.current = null;
       }
       resetCharacterAbilityState();
+      recordMastery({type:"run-start"});
       if (runCharacter === "trickster_echo") {
         const progress = {
           ...echoProgressRef.current,
@@ -4737,9 +4905,16 @@ function SkywayGame() {
       showAbilityNotice,
       soundtrack,
       startProgressionRun,
+      beginMasterySession,
+      endMasterySession,
+      refreshMasteries,
+      masteries.randomizer,
+      ownedCharacterKeys,
+      recordMastery,
     ],
   );
   const resetGameToMenu = () => {
+    void endMasterySession();
     setRunCharacterOverride(null);
     cancelPendingProgressionStart();
     progressionStartIntentRef.current += 1;
@@ -5278,6 +5453,7 @@ function SkywayGame() {
       pitchKatanaRef.current,
       Date.now(),
       frozenUntilRef.current > Date.now(),
+      getWaveSpeedMultiplier(wave),
     );
     if (!preflight.activated) {
       const message =
@@ -5291,11 +5467,12 @@ function SkywayGame() {
       showAbilityNotice(message, 850);
       return;
     }
-    const beginGuard = (authoritativeCooldown?: unknown) => {
+    const beginGuard = (authoritativeCooldown?: unknown, authoritativeActiveUntil?: unknown) => {
       const activation = activatePitchKatana(
         pitchKatanaRef.current,
         Date.now(),
         frozenUntilRef.current > Date.now(),
+        getWaveSpeedMultiplier(wave),
       );
       if (!activation.activated) {
         showAbilityNotice("KATANA COULD NOT ARM", 900);
@@ -5307,13 +5484,15 @@ function SkywayGame() {
           : NaN;
       pitchKatanaRef.current = {
         ...activation.state,
+        activeUntilMs: typeof authoritativeActiveUntil==="string" && Number.isFinite(Date.parse(authoritativeActiveUntil))
+          ? Math.min(activation.state.activeUntilMs,Date.parse(authoritativeActiveUntil)) : activation.state.activeUntilMs,
         cooldownUntilMs: Number.isFinite(parsedCooldown)
           ? parsedCooldown
           : activation.state.cooldownUntilMs,
       };
       setPitchKatanaVersion((value) => value + 1);
       void audioEngine.playSfx("shield");
-      showAbilityNotice("KATANA ACTIVE · 0.4 SECOND GUARD", 650);
+      showAbilityNotice(`KATANA ACTIVE · ${pitchKatanaActiveSeconds(getWaveSpeedMultiplier(wave)).toFixed(2)} SECOND GUARD`, 650);
       if (pitchKatanaTimerRef.current)
         clearTimeout(pitchKatanaTimerRef.current);
       pitchKatanaTimerRef.current = setTimeout(
@@ -5331,7 +5510,7 @@ function SkywayGame() {
             );
           pitchKatanaTimerRef.current = null;
         },
-        (PITCH_KATANA_RULES.activeSeconds + 0.02) * 1000,
+        Math.max(0,pitchKatanaRef.current.activeUntilMs-Date.now())+20,
       );
     };
     if (isOnlineVersus && versusMatchRef.current) {
@@ -5352,12 +5531,13 @@ function SkywayGame() {
           }
           beginGuard(
             data?.katana_cooldown_until ?? data?.katana_cooldown_ends_at,
+            data?.active_until ?? data?.katana_active_until,
           );
         });
       return;
     }
     beginGuard();
-  }, [activeMapId, applyDirectMapDamage, isOnlineVersus, showAbilityNotice]);
+  }, [activeMapId, applyDirectMapDamage, isOnlineVersus, showAbilityNotice,wave]);
   const completeMove = useCallback(
     (destination: number, direction: number) => {
       state.current.lane = destination;
@@ -5388,11 +5568,15 @@ function SkywayGame() {
       if (hasCharacterAbility("tank_atlas")) atlasLaneElapsedRef.current = 0;
       if (hasCharacterAbility("runner_stride")) {
         strideMoveCountRef.current += 1;
-        if (strideMoveCountRef.current % 3 === 0) {
-          grantInvincibility(STRIDE_SHIELD_MS);
-          showAbilityNotice("FLOW STRIDE · 0.25 SECOND SHIELD", 650);
+        const seconds=strideShieldSeconds(strideMoveCountRef.current,mastered,strideFocusUntilRef.current>masteryRuntimeRef.current.elapsed);
+        if (seconds>0) {
+          strideShieldUntilRef.current=Date.now()+seconds*1000;
+          grantInvincibility(seconds*1000);
+          showAbilityNotice(`FLOW STRIDE · ${seconds} SECOND SHIELD`, 650);
         }
       }
+      recordMastery({type:"lane-change"});
+      if(flairEffects.laneChangeScore>0){scoreRef.current+=flairEffects.laneChangeScore;setScore(scoreRef.current);}
       if (hasCharacterAbility("tank_bastion")) {
         bastionChargeRemainingRef.current = 20000;
         bastionArmorChargedRef.current = false;
@@ -5441,6 +5625,9 @@ function SkywayGame() {
       hasCharacterAbility,
       isOnlineVersus,
       showAbilityNotice,
+      mastered,
+      recordMastery,
+      flairEffects.laneChangeScore,
     ],
   );
   const move = useCallback(
@@ -5511,7 +5698,7 @@ function SkywayGame() {
       };
       const combinedTurnDelay = addTurnDelays(
         frozenUntilRef.current > Date.now()
-          ? getFrozenTurnDelaySeconds(activeMapId)
+          ? mastered && hasCharacterAbility("medic_remedy") ? 0.1 : getFrozenTurnDelaySeconds(activeMapId)
           : 0,
         activeMapId === "volcano" ? VOLCANO_RULES.turnDelaySeconds : 0,
       );
@@ -5542,6 +5729,7 @@ function SkywayGame() {
       completeMove,
       hasCharacterAbility,
       showAbilityNotice,
+      mastered,
     ],
   );
   const startMobileLaneGesture = useCallback(
@@ -5623,6 +5811,35 @@ function SkywayGame() {
       museGame
     )
       return;
+    if (mastered && activeCharacter === "medic_bloom") {
+      const runtime=masteryRuntimeRef.current;
+      const targetLane=consumeBloomAbility(runtime,state.current.lane,activeLaneCount,Math.random());
+      if(targetLane===null){showAbilityNotice("BLOOM · GEM ALREADY GROWN THIS WAVE",850);return;}
+      const nextItem:Item={id:id.current++,kind:"gem",lane:targetLane,y:-10,spawnedWave:wave};
+      Object.assign(nextItem,decorateMasteryItem(runtime,nextItem,activeCharacter,true,false,Math.random(),false));
+      // Queue behind any current object instead of overlapping or overtaking it.
+      const inLane=itemsSnapshotRef.current.filter(item=>item.lane===targetLane);
+      if(inLane.length)nextItem.y=Math.min(-10,...inLane.map(item=>item.y-MIN_SAME_LANE_GAP));
+      const nextItems=[...itemsSnapshotRef.current,nextItem];itemsSnapshotRef.current=nextItems;setItems(nextItems);
+      showAbilityNotice(`BLOOM · GEM GROWN IN LANE ${targetLane+1}`,1100);
+      setAbilityStateVersion(value=>value+1);return;
+    }
+    if (mastered && activeCharacter === "runner_vault") {
+      if(!vaultAvailable(masteryRuntimeRef.current,wave)){showAbilityNotice("VAULT · POLE RECOVERING",850);return;}
+      masteryRuntimeRef.current.vaultPressedAt=masteryRuntimeRef.current.elapsed;
+      showAbilityNotice("VAULT · POLE READY FOR 0.25 SECONDS",650);return;
+    }
+    if (mastered && activeCharacter === "tank_guard") {
+      const contextId=isOnlineVersus?versusMatchRef.current:progressionRunIdRef.current;
+      const uid=userIdRef.current,runtime=masteryRuntimeRef.current,enabled=!runtime.guard.mode;
+      if(uid&&contextId)void Promise.resolve().then(()=>supabase.rpc("set_mastery_guard_mode",{p_context_id:contextId,p_enabled:enabled})).then(({error})=>{
+        if(userIdRef.current!==uid||masteryRuntimeRef.current!==runtime)return;
+        if(error){showAbilityNotice(error.message.toUpperCase(),1200);return;}
+        runtime.guard.mode=enabled;showAbilityNotice(enabled?"GUARD MODE · TANK BLUE OBJECTS":"GUARD · 35% DAMAGE REDUCTION",1100);setAbilityStateVersion(value=>value+1);
+      }).catch(()=>{if(userIdRef.current===uid&&masteryRuntimeRef.current===runtime)showAbilityNotice("GUARD MODE COULD NOT SYNC · TRY AGAIN",1100);});
+      else{runtime.guard.mode=enabled;showAbilityNotice(enabled?"GUARD MODE · TANK BLUE OBJECTS":"GUARD · 35% DAMAGE REDUCTION",1100);setAbilityStateVersion(value=>value+1);}
+      return;
+    }
     if (
       activeCharacter === "runner_zenith" &&
       wave >= 15 &&
@@ -5733,8 +5950,10 @@ function SkywayGame() {
         return;
       }
       dashBoostRemainingRef.current = 1000;
-      dashCooldownRemainingRef.current = 5000;
+      dashCooldownRemainingRef.current = 5000-(mastered?1000:0)-flairEffects.dashCooldownReduction*1000;
+      dashShieldUntilRef.current=Date.now()+350;
       grantInvincibility(350);
+      recordMastery({type:"dash"});
       showAbilityNotice("JET DASH · SPEED BURST + DODGE SHIELD", 950);
       void audioEngine.playSfx("move");
       return;
@@ -5965,34 +6184,7 @@ function SkywayGame() {
       showAbilityNotice("STEEL SPEAR · BARRELS 75% SLOWER · 15 SECONDS", 1200);
       return;
     }
-    if (activeCharacter === "trickster_smoke") {
-      if (smokeCooldownUntilRef.current > Date.now()) {
-        showAbilityNotice("SMOKE BOMB · RECHARGING", 700);
-        return;
-      }
-      const occupied = new Set(
-        itemsSnapshotRef.current
-          .filter(
-            (item) => isHazardKind(item.kind) && item.y >= 42 && item.y <= 104,
-          )
-          .map((item) => item.lane),
-      );
-      const safeLanes = getTrackLanes(activeLaneCount).filter(
-        (candidate) => !occupied.has(candidate),
-      );
-      const destination =
-        safeLanes[Math.floor(Math.random() * safeLanes.length)] ??
-        state.current.lane;
-      state.current.lane = destination;
-      setLane(destination);
-      grantInvincibility(350);
-      smokeCooldownUntilRef.current = Date.now() + 20000;
-      showAbilityNotice(
-        `SMOKE BOMB · TELEPORTED TO LANE ${destination + 1}`,
-        1000,
-      );
-      return;
-    }
+    if (activeCharacter === "trickster_smoke") { void performSmokeActionRef.current?.(0); return; }
     if (activeCharacter === "trickster_rogue") {
       const meter = rogueGrazeMeterRef.current;
       if (meter >= 10) {
@@ -6515,7 +6707,87 @@ function SkywayGame() {
     versusPhase,
     versusOpponentLane,
     wave,
+    mastered,
+    flairEffects.dashCooldownReduction,
+    recordMastery,
   ]);
+  const performSmokeAction = useCallback(async (heldSeconds:number,actionId=crypto.randomUUID()) => {
+    if(activeCharacter!=="trickster_smoke"||!state.current.running||state.current.paused||state.current.wavePause||smokeBusyRef.current)return;
+    const runtime=masteryRuntimeRef.current;
+    const matchId=versusMatchRef.current;
+    const userId=userIdRef.current;
+    const generation=authSessionGenerationRef.current;
+    const isAttack=isVersusRun&&heldSeconds>=3;
+    if(runtime.elapsed<runtime.smokeCooldownUntil||mastered&&runtime.smokeBombs<=0){showAbilityNotice(mastered&&runtime.smokeBombs<=0?"SMOKE · NO BOMBS LEFT THIS WAVE":"SMOKE BOMB · RECHARGING",800);return;}
+    const occupied=new Set(itemsSnapshotRef.current.filter(item=>isHazardKind(item.kind)&&item.y>=42&&item.y<=104).map(item=>item.lane));
+    const safeLanes=getTrackLanes(activeLaneCount).filter(candidate=>!occupied.has(candidate));
+    if(!isAttack&&safeLanes.length===0){showAbilityNotice("SMOKE · NO SAFE LANE YET",800);return;}
+    let strength:SmokeStrength|null=null;
+    if(isOnlineVersus&&matchId){
+      smokeBusyRef.current=true;
+      smokeMutationVersionRef.current++;
+      try{
+        const {data,error}=await supabase.rpc("use_mastery_smoke",{p_match_id:matchId,p_hold_seconds:isAttack?(mastered&&heldSeconds>=10?10:mastered&&heldSeconds>=5?5:3):0,p_action_id:actionId});
+        if(versusMatchRef.current!==matchId||userIdRef.current!==userId||authSessionGenerationRef.current!==generation||masteryRuntimeRef.current!==runtime)return;
+        if(error){showAbilityNotice(error.message.toUpperCase(),1300);return;}
+        if(mastered)runtime.smokeBombs=Math.max(0,Math.min(3,Number(data?.bombs_remaining) || 0));
+        const cooldown=Date.parse(String(data?.cooldown_until??""));
+        runtime.smokeCooldownUntil=runtime.elapsed+Math.max(0,Number.isFinite(cooldown)?(cooldown-Date.now())/1000:isAttack?20:5);
+        strength=isAttack?data?.strength??"mild":null;
+      }catch{if(masteryRuntimeRef.current===runtime)showAbilityNotice("SMOKE COULD NOT SYNC · TRY AGAIN",1100);return;}
+      finally{if(masteryRuntimeRef.current===runtime){smokeBusyRef.current=false;smokeMutationVersionRef.current++;}}
+    }else{
+      const spent=spendLocalSmoke(runtime,mastered,heldSeconds,isVersusRun);
+      if(!spent){showAbilityNotice("SMOKE · NOT ENOUGH BOMBS",900);return;}
+      strength=spent.attack?.strength??null;
+    }
+    smokeCooldownUntilRef.current=Date.now()+Math.max(0,runtime.smokeCooldownUntil-runtime.elapsed)*1000;
+    if(isAttack){
+      // Practice uses the same spend/cooldown rules; the bot's next dodge is delayed by smoke.
+      if(isBotPractice)botSmokeUntilRef.current=Date.now()+10000;
+      recordMastery({type:"smoke",opponent:true});
+      showAbilityNotice(`SMOKE SENT · ${strength?.toUpperCase()}${mastered?` · ${runtime.smokeBombs} BOMBS LEFT`:""}`,1300);
+    }else{
+      const originalLane=state.current.lane;
+      const latestItems=itemsSnapshotRef.current;
+      const latestOccupied=new Set(latestItems.filter(item=>isHazardKind(item.kind)&&item.y>=42&&item.y<=104).map(item=>item.lane));
+      const latestSafe=getTrackLanes(activeLaneCount).filter(candidate=>!latestOccupied.has(candidate));
+      if(!latestSafe.length){showAbilityNotice("SMOKE · NO SAFE LANDING · SHIELD DEPLOYED",1000);grantInvincibility(350);return;}
+      const timeToImpact=smokeNearMissSeconds(latestItems,originalLane,item=>item.id===undefined?0:masteryItemVelocityRef.current.get(item.id)??0,kind=>isHazardKind(kind as Kind));
+      const alternatives=latestSafe.filter(candidate=>candidate!==originalLane);
+      const destination=(alternatives.length?alternatives:latestSafe)[Math.floor(Math.random()*(alternatives.length||latestSafe.length))];
+      state.current.lane=destination;setLane(destination);grantInvincibility(350);
+      if(isOnlineVersus&&matchId)void supabase.rpc("update_1v1_position",{p_match_id:matchId,p_lane_index:destination});
+      recordMastery({type:"smoke",timeToImpact:destination!==originalLane?timeToImpact:undefined});
+      showAbilityNotice(`SMOKE BOMB · LANE ${destination+1}${mastered?` · ${runtime.smokeBombs} BOMBS LEFT`:""}`,1000);
+    }
+    setAbilityStateVersion(value=>value+1);
+  },[activeCharacter,activeLaneCount,grantInvincibility,isBotPractice,isOnlineVersus,isVersusRun,mastered,recordMastery,showAbilityNotice]);
+  performSmokeActionRef.current=performSmokeAction;
+  const beginSmokeHold = useCallback(()=>{
+    if(activeCharacter!=="trickster_smoke"||!isVersusRun||smokeChargeRef.current||!state.current.running||state.current.paused||state.current.wavePause)return false;
+    const actionId=crypto.randomUUID(),matchId=versusMatchRef.current,userId=userIdRef.current,runtime=masteryRuntimeRef.current,generation=authSessionGenerationRef.current;
+    const pending=isOnlineVersus&&matchId?Promise.resolve().then(()=>supabase.rpc("begin_mastery_smoke_charge",{p_match_id:matchId,p_action_id:actionId})).then(({error})=>{
+      if(error&&versusMatchRef.current===matchId&&userIdRef.current===userId)showAbilityNotice(error.message.toUpperCase(),1200);
+      return !error&&versusMatchRef.current===matchId&&userIdRef.current===userId&&masteryRuntimeRef.current===runtime&&authSessionGenerationRef.current===generation;
+    }).catch(()=>{if(masteryRuntimeRef.current===runtime)showAbilityNotice("SMOKE CHARGE COULD NOT SYNC · TRY AGAIN",1100);return false;}):Promise.resolve(true);
+    smokeChargeRef.current={actionId,startedAt:runtime.elapsed,matchId,userId,generation,runtime,pending};
+    showAbilityNotice(mastered?"HOLD E · 3s MILD / 5s GREY / 10s HEAVY":"HOLD E 3s TO THROW MILD SMOKE",1100);return true;
+  },[activeCharacter,isOnlineVersus,isVersusRun,mastered,showAbilityNotice]);
+  const releaseSmokeHold = useCallback(()=>{
+    const charge=smokeChargeRef.current;if(!charge)return;
+    smokeChargeRef.current=null;
+    const held=Math.max(0,masteryRuntimeRef.current.elapsed-charge.startedAt);
+    void charge.pending.then(ok=>{if(ok&&versusMatchRef.current===charge.matchId&&userIdRef.current===charge.userId&&authSessionGenerationRef.current===charge.generation&&masteryRuntimeRef.current===charge.runtime)void performSmokeActionRef.current?.(held,charge.actionId);});
+  },[]);
+  const triggerStrideFocus = useCallback(()=>{
+    if(activeCharacter!=="runner_stride"||!mastered||!state.current.running||state.current.paused||state.current.wavePause)return;
+    const now=masteryRuntimeRef.current.elapsed;
+    if(strideFocusCooldownRef.current>now){showAbilityNotice("STRIDE F · RECHARGING",750);return;}
+    strideFocusUntilRef.current=now+15;strideFocusCooldownRef.current=now+30;
+    showAbilityNotice("STRIDE F · 0.3 SECOND DODGE SHIELDS · 15 SECONDS",1100);
+    setAbilityStateVersion(value=>value+1);
+  },[activeCharacter,mastered,showAbilityNotice]);
   const submitMuseInput = useCallback((pressed: string) => {
     const normalized = pressed.toUpperCase();
     if (!["A", "S", "D", "F"].includes(normalized)) return;
@@ -7502,9 +7774,16 @@ function SkywayGame() {
             getCharacterMaxHearts(characterKey, characterClass),
           ).maxHp;
     const previousClientWave = waveRef.current;
-    const restoredWave = Math.max(1, Number(snapshot.self?.wave) || 1);
+    const restoredProgress = reconcileVersusProgress({
+      preserveRunState,
+      localScore: scoreRef.current,
+      localWave: previousClientWave,
+      savedScore: Number(snapshot.self?.score),
+      savedWave: Number(snapshot.self?.wave),
+    });
+    const restoredWave = restoredProgress.wave;
     waveRef.current = restoredWave;
-    const restoredScore = Math.max(0, Number(snapshot.self?.score) || 0);
+    const restoredScore = restoredProgress.score;
     const restoredHearts = Math.min(
       restoredMaxHearts,
       normalizeVersusHearts(Number(snapshot.self?.hearts) || 0),
@@ -7614,10 +7893,17 @@ function SkywayGame() {
     if (!preserveRunState)
       timeStopUsedRef.current = Boolean(snapshot.self?.zenith_time_stop_used);
     applyVersusTimeStopState(snapshot.self ?? {});
+    scoreRef.current = restoredScore;
     setScore(restoredScore);
     setWave(restoredWave);
-    setHearts(restoredHearts);
-    state.current.hearts = restoredHearts;
+    // Only Terminal has authoritative cross-player sword damage. An ordinary
+    // background snapshot must not undo a local hit/heal/ability before its
+    // serialized state write arrives at the server.
+    if (!preserveRunState || restoredMap === "terminal") {
+      setHearts(restoredHearts);
+      state.current.hearts = restoredHearts;
+      if(!preserveRunState)masteryHeartsRef.current=restoredHearts;
+    }
     // A mid-wave poll must not erase locally collected coins that are waiting
     // for the intermission-only batch receipt. The authoritative balance is
     // applied immediately after that batch succeeds.
@@ -8021,7 +8307,7 @@ function SkywayGame() {
       return;
     }
     const effectiveVersusMode = versusMode;
-    if (effectiveVersusMode === "casual" && playerProgression.level < 5) {
+    if (effectiveVersusMode === "casual" && !playerProgression.casual_unlocked && playerProgression.level < MODE_UNLOCKS.casual.level) {
       setVersusResult("REACH LEVEL 5 TO PLAY CASUAL 1V1 · NO GEMS REQUIRED");
       return;
     }
@@ -8029,17 +8315,17 @@ function SkywayGame() {
       effectiveVersusMode === "ranked" &&
       !playerProgression.ranked_unlocked
     ) {
-      setVersusResult("RANKED REQUIRES LEVEL 25 AND A ONE-TIME 100-GEM UNLOCK");
+      setVersusResult("RANKED REQUIRES LEVEL 35 AND A ONE-TIME 235-GEM UNLOCK");
       return;
     }
     if (
-      (effectiveVersusMode === "rng" ||
-        effectiveVersusMode === "hardcore_duel") &&
-      (playerProgression.level < 5 || effectiveVersusMode !== rotatingMode)
+      (["rng","hardcore_duel","quicksand","mundane"].includes(effectiveVersusMode)) &&
+      ((!playerProgression.rotating_unlocked && playerProgression.level < MODE_UNLOCKS.rotating.level) || effectiveVersusMode !== rotatingMode)
     ) {
-      setVersusResult("REACH LEVEL 5 AND CHOOSE TODAY’S ACTIVE MODE");
+      setVersusResult("REACH LEVEL 15 AND CHOOSE TODAY’S ACTIVE MODE");
       return;
     }
+    if(effectiveVersusMode==="unlimited"&&!playerProgression.unlimited_unlocked){setVersusResult("COMPLETE THE UNLIMITED REQUIREMENTS FIRST");return;}
     if (versusSearchingRef.current || versusLeaving || versusMatchRef.current)
       return;
     versusReconnectIntentRef.current += 1;
@@ -8390,7 +8676,7 @@ function SkywayGame() {
   };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (mainView === "photon" || matchSetup) return;
+      if (mainView === "photon" || matchSetup || activeTrial || trialRequest) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, [contenteditable="true"]'))
         return;
@@ -8468,9 +8754,12 @@ function SkywayGame() {
       }
       if (e.key === "e" || e.key === "E") {
         e.preventDefault();
+        if(e.repeat&&["runner_vault","medic_bloom","tank_guard"].includes(activeCharacter))return;
+        if(activeCharacter==="trickster_smoke"&&isVersusRun){if(!e.repeat)beginSmokeHold();return;}
         if (e.repeat && activeCharacter === "trickster_echo") return;
         triggerCharacterAction();
       }
+      if(e.key.toLowerCase()==="f"&&activeCharacter==="runner_stride"&&mastered){e.preventDefault();if(!e.repeat)triggerStrideFocus();}
       if (
         e.key === "Enter" &&
         !state.current.running &&
@@ -8485,6 +8774,7 @@ function SkywayGame() {
         reset();
     };
     const keyUp = (e: KeyboardEvent) => {
+      if(e.key.toLowerCase()==="e"&&activeCharacter==="trickster_smoke")releaseSmokeHold();
       if (
         (e.key === "e" || e.key === "E") &&
         activeCharacter === "trickster_echo"
@@ -8525,7 +8815,13 @@ function SkywayGame() {
     triggerPitchKatana,
     triggerTerminalSword,
     triggerCharacterAction,
+    triggerStrideFocus,
+    beginSmokeHold,
+    releaseSmokeHold,
+    mastered,
     usernameRequired,
+    activeTrial,
+    trialRequest,
   ]);
   useEffect(() => {
     if (!pulseGame) return;
@@ -8656,6 +8952,9 @@ function SkywayGame() {
         return;
       }
       const currentSpeedMultiplier = getWaveSpeedMultiplier(wave);
+      startMasteryWave(masteryRuntimeRef.current,wave);
+      masteryRuntimeRef.current.elapsed+=dt/1000;
+      if(isBotPractice&&botSmokeUntilRef.current>Date.now())botSmokeExposureRef.current+=dt/1000;
       const pacerRushActive =
         activeCharacter === "runner_pacer" && pacerRushRemainingRef.current > 0;
       if (hasCharacterAbility("runner_velocity")) {
@@ -8691,11 +8990,13 @@ function SkywayGame() {
       }
       const missingHealthRatio = Math.max(
         0,
-        Math.min(1, 1 - state.current.hearts / Math.max(0.5, maxHearts)),
+        Math.min(1, 1 - roundedHealthForConditions(state.current.hearts) / Math.max(0.5, maxHearts)),
       );
       let characterSpeedMultiplier = 1;
       if (pacerRushActive) characterSpeedMultiplier *= 3;
-      if (hasCharacterAbility("runner_dash")) characterSpeedMultiplier *= 1.06;
+      if (hasCharacterAbility("runner_dash")) characterSpeedMultiplier *= mastered?1.15:1.06;
+      characterSpeedMultiplier *= salveLowHealthMultipliers(state.current.hearts,mastered&&activeCharacter==="medic_salve").speed;
+      if(masteryRuntimeRef.current.vaultUntil>masteryRuntimeRef.current.elapsed)characterSpeedMultiplier*=masteryRuntimeRef.current.vaultSpeed;
       if (dashBoostRemainingRef.current > 0) characterSpeedMultiplier *= 1.5;
       if (blitzBoostRemainingRef.current > 0) characterSpeedMultiplier *= 2;
       if (hasCharacterAbility("runner_tempo"))
@@ -8715,7 +9016,7 @@ function SkywayGame() {
       const obstacleSpeedMultiplier =
         currentSpeedMultiplier *
         characterSpeedMultiplier *
-        (hardcoreDuel ? 1.1 : 1);
+        (hardcoreDuel ? 1.1 : versusMode==="quicksand"&&isVersusRun ? 4 : 1);
       if (activeMapId === "volcano") {
         const previousStationaryMs = volcanoStationaryMsRef.current;
         const nextStationaryMs = previousStationaryMs + dt;
@@ -9031,6 +9332,7 @@ function SkywayGame() {
                 1500,
               );
             }
+            const masteryTags=decorateMasteryItem(masteryRuntimeRef.current,{id:nextItemId,kind},activeCharacter,mastered,flairEffects.dashGreenDenominator===90,Math.random(),isHazardKind(kind));
             const nextItems = [
               ...currentItems,
               {
@@ -9040,6 +9342,7 @@ function SkywayGame() {
                 kind,
                 scheduledAt,
                 spawnedWave: wave,
+                ...masteryTags,
               },
             ];
             itemsSnapshotRef.current = nextItems;
@@ -9063,6 +9366,7 @@ function SkywayGame() {
             terminalConsumedRef.current,
           );
         }
+        old=old.map(item=>({...item,...decorateMasteryItem(masteryRuntimeRef.current,item,activeCharacter,mastered,flairEffects.dashGreenDenominator===90,Math.random(),isHazardKind(item.kind))}));
         let clearDamagedLane = false;
         let relayDischarge = false;
         const getItemSpeedFactor = (item: Item) => {
@@ -9100,11 +9404,11 @@ function SkywayGame() {
             }
             if (
               hasCharacterAbility("tank_colossus") &&
-              state.current.hearts > 3
+              roundedHealthForConditions(state.current.hearts) > 3
             )
               speedFactor *= Math.max(
                 0.2,
-                1 - (state.current.hearts - 3) * 0.05,
+                1 - (roundedHealthForConditions(state.current.hearts) - 3) * 0.05,
               );
             if (
               hasCharacterAbility("trickster_jester") &&
@@ -9211,6 +9515,11 @@ function SkywayGame() {
               frontY = separatedY;
             });
         });
+        old.forEach(item=>{
+          const y=nextYById.get(item.id)??item.y,previous=masteryItemPositionRef.current.get(item.id)??item.y;
+          masteryItemVelocityRef.current.set(item.id,Math.max(0,y-previous)/(dt/1000));
+          masteryItemPositionRef.current.set(item.id,y);
+        });
         const activeProspectorWarnings = prospectorWarningRef.current.filter(
           (warning) => warning.spawnAt > Date.now(),
         );
@@ -9222,6 +9531,7 @@ function SkywayGame() {
           setProspectorWarnings(activeProspectorWarnings);
         }
         const advanced = old.flatMap((item) => {
+          if(state.current.hearts<=0)return [item];
           const isHazard = isHazardKind(item.kind);
           const n = {
             ...item,
@@ -9306,6 +9616,50 @@ function SkywayGame() {
           ) {
             let phantomIgnore = false;
             if (n.sharedCourse) terminalConsumedRef.current.add(n.id);
+            const masteryRuntime=masteryRuntimeRef.current;
+            if(isHazard&&n.kind!=="snowflake"&&flairEffects.postHitSeconds>0&&flairPostHitUntilRef.current>masteryRuntime.elapsed){
+              flairPostHitUntilRef.current=masteryRuntime.elapsed+flairEffects.postHitSeconds;
+              if(flairEffects.postHitInvincible)grantInvincibility(flairEffects.postHitSeconds*1000);
+            }
+            if(n.dashGreen&&activeCharacter==="runner_dash"&&mastered&&dashShieldUntilRef.current>Date.now()){
+              masteryRuntime.resolvedMisses.add(n.id);
+              const greenEventId=crypto.randomUUID();
+              recordMastery({type:"block",source:"dash",green:true,event_id:greenEventId});
+              const before=state.current.hearts;
+              if(isOnlineVersus&&versusMatchRef.current){
+                const matchId=versusMatchRef.current,uid=userIdRef.current,generation=authSessionGenerationRef.current;
+                void flushMastery().then(async ok=>{
+                  if(!ok||userIdRef.current!==uid||authSessionGenerationRef.current!==generation||versusMatchRef.current!==matchId||masteryRuntimeRef.current!==masteryRuntime)return;
+                  const {data,error}=await supabase.rpc("apply_mastery_heal",{p_match_id:matchId,p_event_id:greenEventId,p_kind:"dash-green"});
+                  if(userIdRef.current!==uid||authSessionGenerationRef.current!==generation||versusMatchRef.current!==matchId||masteryRuntimeRef.current!==masteryRuntime||!state.current.running)return;
+                  if(error){showAbilityNotice("GREEN DASH · HEAL COULD NOT SYNC",1100);return;}
+                  const authoritative=Number(data?.hearts);
+                  if(Number.isFinite(authoritative)){const healed=Math.max(state.current.hearts,Math.min(maxHearts,authoritative,state.current.hearts+1));state.current.hearts=healed;setHearts(healed);}
+                }).catch(()=>{if(masteryRuntimeRef.current===masteryRuntime)showAbilityNotice("GREEN DASH · HEAL COULD NOT SYNC",1100);});
+              }else{
+                state.current.hearts=Math.min(maxHearts,before+(healingEnabled?getAllowedHealing(activeMapId,1):0));setHearts(state.current.hearts);
+                if(state.current.hearts>before)recordMastery({type:"heal",source:"other",amount:state.current.hearts-before});
+              }
+              grantInvincibility(2000);void audioEngine.playSfx("heal");
+              showAbilityNotice(isOnlineVersus?"GREEN DASH · 2 SECOND SHIELD · HEAL SYNCING":"GREEN DASH · +1 HP · 2 SECOND SHIELD",1100);return [];
+            }
+            if(mastered&&activeCharacter==="tank_guard"&&isHazard&&(n.guardBlue||n.kind==="snowflake"||invincibleUntilRef.current<=Date.now())){
+              const contact=resolveGuardContact(masteryRuntime,n.kind as import("./mastery-rules").MasteryHazard,wave,(waveProgressRef.current%WAVE_PROGRESS_LENGTH)/WAVE_PROGRESS_LENGTH,!!n.guardBlue);
+              if(contact.immune){void audioEngine.playSfx("shield");showAbilityNotice(`GUARD MEMORY · ${n.kind.toUpperCase()} IMMUNE`,800);return [];}
+              if(contact.blue){
+                masteryRuntime.resolvedMisses.add(n.id);
+                const damage=guardBlueDamage(state.current.hearts);
+                collisionWaveRef.current=wave;
+                if(damage>0){recordMastery({type:"damage",hazard:n.kind as import("./mastery-rules").MasteryHazard,before:state.current.hearts,damage,baseDamage:0.5});applyCharacterSelfDamage(damage,"GUARD BLUE · TYPE IMMUNITY FOR THIS WAVE");}
+                else showAbilityNotice("GUARD BLUE · TYPE IMMUNITY FOR THIS WAVE",1000);
+                return [];
+              }
+            }
+            if(isHazard&&mastered&&activeCharacter==="trickster_smoke"&&masteryRuntime.smokeBombs===0&&Math.random()<0.5){
+              const occupied=new Set(old.filter(item=>isHazardKind(item.kind)&&item.y>=42&&item.y<=104).map(item=>item.lane));
+              const safe=getTrackLanes(activeLaneCount).filter(candidate=>candidate!==state.current.lane&&!occupied.has(candidate));
+              if(safe.length){const destination=safe[Math.floor(Math.random()*safe.length)];state.current.lane=destination;setLane(destination);if(isOnlineVersus&&versusMatchRef.current)void supabase.rpc("update_1v1_position",{p_match_id:versusMatchRef.current,p_lane_index:destination});showAbilityNotice("LIFEGUESS · HIT DODGED",900);return [];}
+            }
             if (
               activeMapId === "terminal" &&
               (n.kind === "rock" || n.kind === "spikes")
@@ -9355,6 +9709,7 @@ function SkywayGame() {
             ) {
               if (processedPickupIdsRef.current.has(n.id)) return [];
               processedPickupIdsRef.current.add(n.id);
+              masteryRuntimeRef.current.resolvedMisses.add(n.id);
               if (hasCharacterAbility("runner_courier")) {
                 courierBoostRemainingRef.current = 4000;
                 showAbilityNotice("SPECIAL DELIVERY · SCORE ×1.25", 900);
@@ -9654,10 +10009,11 @@ function SkywayGame() {
                     applyAuthoritativeVersusPoints(data?.obstacle_points);
                   });
             } else if (n.kind === "gem") {
+              masteryRuntime.resolvedMisses.add(n.id);
               void audioEngine.playSfx("gem");
               const streakPickup = isVersusRun
                 ? null
-                : advanceGemStreak({
+                : n.guardBlue?guardBlueGemPickup(gemStreakRef.current):advanceGemStreak({
                     consecutivePickups: gemStreakRef.current,
                   });
               if (streakPickup)
@@ -9716,15 +10072,17 @@ function SkywayGame() {
                 healingEnabled &&
                 hasCharacterAbility("medic_bloom") &&
                 !reviveFlyingRef.current &&
-                bloomGemWaveRef.current !== wave
+                (mastered || bloomGemWaveRef.current !== wave)
               ) {
+                const healAmount=resolveBloomCollection(masteryRuntime,n.id,mastered);
                 bloomGemWaveRef.current = wave;
+                masteryHealSourceRef.current="bloom";
                 setHearts((value) => {
-                  const healed = Math.min(maxHearts, value + 0.5);
+                  const healed = Math.min(maxHearts, value + healAmount);
                   state.current.hearts = healed;
                   return healed;
                 });
-                showAbilityNotice("HEALING BLOOM · +0.5 HP", 850);
+                showAbilityNotice(`HEALING BLOOM · +${healAmount} HP`, 850);
               }
               if (hasCharacterAbility("medic_tonic")) {
                 setTonicIngredients((value) => value + 1);
@@ -9746,10 +10104,11 @@ function SkywayGame() {
                 gemRequestUserId &&
                 gemContextId
               )
-                queueGemClaim(gemContextId, n.id, gemRequestUserId);
+                queueGemClaim(gemContextId, n.id, gemRequestUserId,!!n.guardBlue&&!isVersusRun);
             } else if (n.kind === "melon") {
               void audioEngine.playSfx("gem");
-              const melonBeforeMap = melonBaseScore(wave) * currentCoinMultiplierRef.current * (hasCharacterAbility("runner_ranger") ? 2 : 1);
+              masteryRuntime.resolvedMisses.add(n.id);
+              const melonBeforeMap = melonBaseScore(wave,isVersusRun?versusMode:undefined) * currentCoinMultiplierRef.current * (hasCharacterAbility("runner_ranger") ? 2 : 1) * (n.guardBlue?3:1);
               const melonScore = activeMapId === "terminal"
                 ? terminalMelonScore(melonBeforeMap, Boolean(n.attackCoinReplacement))
                 : Math.max(0, Math.round(melonBeforeMap));
@@ -9829,6 +10188,7 @@ function SkywayGame() {
               showAbilityNotice("CURRENT · FORCED LANE PUSH", 850);
               return [];
             } else if (n.kind === "snowflake") {
+              recordMastery({type:"snowflake"});
               if (hardcoreDuel) {
                 applyDirectMapDamage(1, "SNOWFLAKE HIT");
                 return [];
@@ -9901,15 +10261,16 @@ function SkywayGame() {
                 healingEnabled &&
                 hasCharacterAbility("medic_remedy") &&
                 !reviveFlyingRef.current &&
-                remedySnowflakeWaveRef.current !== wave
+                (mastered ? damageTakenWaveRef.current !== wave : remedySnowflakeWaveRef.current !== wave)
               ) {
                 remedySnowflakeWaveRef.current = wave;
+                masteryHealSourceRef.current="snowflake";
                 setHearts((value) => {
-                  const healed = Math.min(maxHearts, value + 1);
+                  const healed = Math.min(maxHearts, value + (mastered?0.75:1));
                   state.current.hearts = healed;
                   return healed;
                 });
-                showAbilityNotice("COLD REMEDY · +1 HP", 900);
+                showAbilityNotice(`COLD REMEDY · +${mastered?0.75:1} HP`, 900);
               }
               if (hasCharacterAbility("tank_glacier")) {
                 void audioEngine.playSfx("shield");
@@ -9918,7 +10279,7 @@ function SkywayGame() {
               } else {
                 void audioEngine.playSfx("freeze");
                 applyFreezeEffect(
-                  hasCharacterAbility("runner_scout") ? 1500 : 3000,
+                  Math.max(0,(hasCharacterAbility("runner_scout") ? 1500 : 3000)-flairEffects.snowflakeDurationReduction*1000),
                 );
                 setFlash("freeze-hit");
                 setTimeout(() => {
@@ -9928,14 +10289,17 @@ function SkywayGame() {
             } else if (
               hasCharacterAbility("runner_vault") &&
               (n.kind === "spikes" || n.kind === "log") &&
-              wardenBlockWaveRef.current !== wave
+              vaultAvailable(masteryRuntime,wave)
             ) {
               wardenBlockWaveRef.current = wave;
+              recordMastery({type:"vault",hazard:n.kind});
+              const effect=resolveMasteryVault(masteryRuntime,wave,mastered)!;
+              if(effect.damage>0)applyCharacterSelfDamage(effect.damage,"VAULT · FLOP · POLE SNAPPED");
               void audioEngine.playSfx("shield");
               setFlash("shield");
               setTimeout(() => setFlash(""), 150);
               showAbilityNotice(
-                `VAULT · FIRST ${n.kind.toUpperCase()} BLOCKED`,
+                effect.status==="quick-recovery"?"VAULT · QUICK RECOVERY · RE-VAULT IN 15 SECONDS":effect.status==="flop"?"VAULT · FLOP · SLOWER SPEED / LOWER SCORE":`VAULT · ${n.kind.toUpperCase()} BLOCKED · SPEED +80% / SCORE +90%`,
               );
               return [];
             } else if (
@@ -9977,6 +10341,8 @@ function SkywayGame() {
               (activeCharacter === "trickster_gambit" &&
                 gambitInvincibleThroughWaveRef.current >= wave)
             ) {
+              if(dashShieldUntilRef.current>Date.now())recordMastery({type:"block",source:"dash"});
+              else if(strideShieldUntilRef.current>Date.now())recordMastery({type:"block",source:mastered?"stride":"stride-third"});
               setFlash("shield");
               setTimeout(() => setFlash(""), 120);
               showAbilityNotice(`${activeAbility.name} · HIT BLOCKED`);
@@ -10061,11 +10427,12 @@ function SkywayGame() {
               ).filter((characterKey) => hasCharacterAbility(characterKey));
               const damageReasons: string[] = [];
               for (const characterKey of damagePassiveKeys) {
+                if(characterKey==="tank_guard"&&mastered&&masteryRuntime.guard.mode)continue;
                 const tankResult = calculateTankDamage({
                   character: characterKey as TankCharacterKey,
                   source: n.kind as HazardKind,
                   baseDamage: abilityAdjustedDamage,
-                  currentHearts: state.current.hearts,
+                  currentHearts: roundedHealthForConditions(state.current.hearts),
                   bulwarkPlateAvailable: firstGuardWaveRef.current !== wave,
                   mercyPassiveActive: mercyChainActiveRef.current,
                   mercyContinuationRoll: Math.random(),
@@ -10161,10 +10528,11 @@ function SkywayGame() {
                 abilityAdjustedDamage *= getHeatfeastBenefits(
                   heatfeastStateRef.current.consumed,
                 ).selfDamageMultiplier;
+              if(mastered&&activeCharacter==="trickster_smoke"&&masteryRuntime.smokeBombs===0)abilityAdjustedDamage*=0.7;
               const damage = mapContactDamage(
                 activeMapId,
                 n.kind,
-                abilityAdjustedDamage,
+                abilityAdjustedDamage*flairEffects.damageMultiplier*(flairPostHitUntilRef.current>masteryRuntime.elapsed?flairEffects.postHitDamageMultiplier:1),
                 state.current.lane,
                 meadowBonusLaneRef.current,
               );
@@ -10178,6 +10546,8 @@ function SkywayGame() {
                 return [];
               }
               preserveFreezeThroughHit();
+              recordMastery({type:"damage",hazard:n.kind as import("./mastery-rules").MasteryHazard,before:state.current.hearts,damage,baseDamage:rawDamage});
+              if(flairEffects.postHitSeconds>0){flairPostHitUntilRef.current=masteryRuntime.elapsed+flairEffects.postHitSeconds;if(flairEffects.postHitInvincible)grantInvincibility(flairEffects.postHitSeconds*1000);}
               if (activeCharacter === "runner_drift") {
                 driftStackPercentRef.current = 0;
                 driftLastMoveAtRef.current = 0;
@@ -10389,7 +10759,7 @@ function SkywayGame() {
               }
               if (
                 nextHearts > 0 &&
-                nextHearts <= 1 &&
+                roundedHealthForConditions(nextHearts) <= 1 &&
                 hasCharacterAbility("medic_beacon") &&
                 !beaconActiveRef.current
               ) {
@@ -10446,6 +10816,10 @@ function SkywayGame() {
               return [];
             }
             return [];
+          }
+          if(n.y>=91){
+            const missed=resolveMasteryMiss(masteryRuntimeRef.current,n.id,activeCharacter,mastered,Math.random());
+            if(missed.damage>0){applyCharacterSelfDamage(missed.damage,missed.reason??"MISSED OBJECT");if(isHazard)recordMastery({type:"damage",hazard:n.kind as import("./mastery-rules").MasteryHazard,before:state.current.hearts+missed.damage,damage:missed.damage,baseDamage:missed.damage});}
           }
           if (n.y < 108) return [n];
           if (n.kind === "pumpkin") {
@@ -10509,6 +10883,15 @@ function SkywayGame() {
           });
         }
         const retainedIds = new Set(relayRetained.map((item) => item.id));
+        // Abilities and collision recovery may remove an object before it leaves
+        // the road. These are still misses, unless its special contact resolved it.
+        old.forEach(item=>{
+          if(retainedIds.has(item.id))return;
+          const missed=resolveMasteryMiss(masteryRuntimeRef.current,item.id,activeCharacter,mastered,Math.random());
+          if(missed.damage>0)applyCharacterSelfDamage(missed.damage,missed.reason??"MISSED OBJECT");
+        });
+        pruneMasteryRuntime(masteryRuntimeRef.current,retainedIds);
+        for(const id of masteryItemVelocityRef.current.keys())if(!retainedIds.has(id)){masteryItemVelocityRef.current.delete(id);masteryItemPositionRef.current.delete(id);}
         rogueGrazedItemIdsRef.current.forEach((itemId) => {
           if (!retainedIds.has(itemId))
             rogueGrazedItemIdsRef.current.delete(itemId);
@@ -10516,10 +10899,17 @@ function SkywayGame() {
         return relayRetained;
       });
       const rawProgressGain = (dt / 12) * (1 + wave * 0.01);
+      masteryFrameMsRef.current+=dt;
+      if(masteryFrameMsRef.current>=500){recordMastery({type:"frame",seconds:masteryFrameMsRef.current/1000,hp:state.current.hearts});masteryFrameMsRef.current=0;}
       const waveProgressGain = Math.max(1, Math.round(rawProgressGain));
       let characterScoreMultiplier = 1;
       if (hasCharacterAbility("runner_ace")) characterScoreMultiplier *= 1.1;
-      if (hasCharacterAbility("runner_dash")) characterScoreMultiplier *= 1.06;
+      if (hasCharacterAbility("runner_dash")) characterScoreMultiplier *= mastered?1.2:1.06;
+      characterScoreMultiplier*=flairEffects.scoreMultiplier;
+      characterScoreMultiplier*=salveLowHealthMultipliers(state.current.hearts,mastered&&activeCharacter==="medic_salve").score;
+      if(masteryRuntimeRef.current.vaultUntil>masteryRuntimeRef.current.elapsed)characterScoreMultiplier*=masteryRuntimeRef.current.vaultScore;
+      if(frozenUntilRef.current>Date.now())characterScoreMultiplier*=flairEffects.frozenScoreMultiplier;
+      if(flairPostHitUntilRef.current>masteryRuntimeRef.current.elapsed)characterScoreMultiplier*=flairEffects.postHitScoreMultiplier;
       if (
         hasCharacterAbility("runner_courier") &&
         courierBoostRemainingRef.current > 0
@@ -10567,7 +10957,7 @@ function SkywayGame() {
         characterScoreMultiplier *= 2;
       if (
         hasCharacterAbility("medic_halo") &&
-        state.current.hearts >= maxHearts
+        roundedHealthForConditions(state.current.hearts) >= roundedHealthForConditions(maxHearts)
       )
         characterScoreMultiplier *= 1.15;
       if (activeCharacter === "tank_reactor" && missingHealthRatio > 0)
@@ -10612,7 +11002,7 @@ function SkywayGame() {
         );
       currentCoinMultiplierRef.current = totalScoreMultiplier;
       scoreCarryRef.current +=
-        rawProgressGain * obstacleSpeedMultiplier * totalScoreMultiplier;
+        rawProgressGain * obstacleSpeedMultiplier / (versusMode==="quicksand"&&isVersusRun?4:1) * totalScoreMultiplier;
       const scoreGain = Math.floor(scoreCarryRef.current);
       scoreCarryRef.current -= scoreGain;
       if (pacerRushActive)
@@ -10700,7 +11090,7 @@ function SkywayGame() {
         );
         if (
           menderChargeRemainingRef.current === 0 &&
-          state.current.hearts < maxHearts
+          roundedHealthForConditions(state.current.hearts) < roundedHealthForConditions(maxHearts)
         ) {
           menderHealedWaveRef.current = wave;
           setHearts((value) => Math.min(maxHearts, value + 0.5));
@@ -10782,12 +11172,26 @@ function SkywayGame() {
     wildcardEffect,
     gambitRunReward,
     scribeHazard,
+    mastered,
+    recordMastery,
+    flushMastery,
+    versusMode,
+    flairEffects.damageMultiplier,
+    flairEffects.frozenScoreMultiplier,
+    flairEffects.postHitDamageMultiplier,
+    flairEffects.postHitInvincible,
+    flairEffects.postHitScoreMultiplier,
+    flairEffects.postHitSeconds,
+    flairEffects.scoreMultiplier,
+    flairEffects.snowflakeDurationReduction,
+    flairEffects.dashGreenDenominator,
   ]);
   useEffect(() => {
     if (!running) return;
     const next = Math.floor(waveProgress / WAVE_PROGRESS_LENGTH) + 1;
     if (next !== wave) {
       const completedWave = next - 1;
+      startMasteryWave(masteryRuntimeRef.current,next);
       setAttackPurchaseCounts({});
       let characterChoiceOpened = false;
       if (cometRemovalQueueRef.current.wave <= completedWave)
@@ -10888,13 +11292,15 @@ function SkywayGame() {
         mode === "normal" &&
         healingEnabled &&
         hasCharacterAbility("medic_reserve") &&
-        state.current.hearts >= maxHearts &&
+        roundedHealthForConditions(state.current.hearts) >= roundedHealthForConditions(maxHearts) &&
         !reserveHealStoredRef.current
       ) {
         reserveHealStoredRef.current = true;
         showAbilityNotice("RESERVE DOSE · 0.5 HP STORED", 1100);
       }
       const waveEndHearts = state.current.hearts;
+      const salveExhaustedBeforeHeal=hasCharacterAbility("medic_salve")&&salveUsesRef.current>=(mastered?3:2);
+      const salveHeal=salveWaveHeal(state.current.hearts,salveUsesRef.current,mastered);
       if (mode === "normal" && healingEnabled) {
         const sutureFullRestore =
           hasCharacterAbility("medic_suture") && completedWave % 3 === 0;
@@ -10904,9 +11310,7 @@ function SkywayGame() {
             : activeCharacter === "medic_patch"
               ? 1.5
               : hasCharacterAbility("medic_salve")
-                ? state.current.hearts <= 1
-                  ? 1.5
-                  : 0
+                ? salveHeal.heal
                 : hasCharacterAbility("medic_tonic")
                   ? 0.5
                   : hasCharacterAbility("medic_suture")
@@ -10935,10 +11339,10 @@ function SkywayGame() {
           showAbilityNotice("FIELD DRESSING · +1.5 HP", 1200);
         if (
           hasCharacterAbility("medic_salve") &&
-          state.current.hearts <= 1 &&
+          salveHeal.used &&
           state.current.hearts < maxHearts
         )
-          showAbilityNotice("DEEP SALVE · +1.5 HP", 1200);
+          showAbilityNotice("DEEP SALVE · +2 HP", 1200);
         if (sutureFullRestore && state.current.hearts < maxHearts)
           showAbilityNotice("TRIAGE CYCLE · HP RESTORED TO 5", 1200);
         if (
@@ -10957,18 +11361,20 @@ function SkywayGame() {
             ? maxHearts
             : sutureFullRestore
               ? maxHearts
-              : Math.min(maxHearts, state.current.hearts + getAllowedHealing(activeMapId, healAmount));
+              : Math.min(maxHearts, state.current.hearts + getAllowedHealing(activeMapId, healAmount+flairEffects.waveHealExtra));
+        if(hasCharacterAbility("medic_salve")&&salveHeal.used){salveUsesRef.current++;recordMastery({type:"salve-heal"});void flushMastery();}
         state.current.hearts = healedHearts;
         setHearts(healedHearts);
       }
+      recordMastery({type:"wave",wave:completedWave,salveExhausted:salveExhaustedBeforeHeal});
       if (activeCharacter === "medic_oracle" && oracleProphecies.length > 0) {
         let passiveChoiceOpened = false;
         const fulfilled = oracleProphecies.filter((prophecy) =>
           prophecy === "no-hit"
             ? collisionWaveRef.current !== completedWave
             : prophecy === "completion"
-              ? collisionWaveRef.current === completedWave && waveEndHearts > 1
-              : waveEndHearts <= 1,
+              ? collisionWaveRef.current === completedWave && roundedHealthForConditions(waveEndHearts) > 1
+              : roundedHealthForConditions(waveEndHearts) <= 1,
         );
         if (fulfilled.length === 0) {
           if (playScope === "single") queueEndlessGemStreakReset();
@@ -11133,7 +11539,10 @@ function SkywayGame() {
             ? getHeatfeastBenefits(heatfeastStateRef.current.consumed)
                 .opponentDamageMultiplier
             : 1,
+          Math.random,
+          botSmokeExposureRef.current,
         );
+        botSmokeExposureRef.current=0;
         practiceBotNextWaveHeartsRef.current = outcome.heartsAfterHealing;
         setVersusOpponentHearts(outcome.heartsAfterDamage);
         if (outcome.heartsAfterDamage <= 0) {
@@ -11221,6 +11630,10 @@ function SkywayGame() {
     acknowledgeSpawnedVersusAttacks,
     queueEndlessGemStreakReset,
     recordRuinsPumpkin,
+    mastered,
+    recordMastery,
+    flairEffects.waveHealExtra,
+    flushMastery,
   ]);
   useEffect(() => {
     if (
@@ -11591,6 +12004,8 @@ function SkywayGame() {
         versusStateSyncIntentRef.current !== syncIntent
       )
         return;
+      if(locallyEliminated){await gemClaimQueueRef.current.catch(()=>undefined);await endMasterySession();}
+      if(versusMatchRef.current!==matchId||versusStateSyncIntentRef.current!==syncIntent)return;
       await enqueueVersusStateSync(async () => {
         if (
           versusMatchRef.current !== matchId ||
@@ -11716,6 +12131,7 @@ function SkywayGame() {
     applyTerminalSnapshot,
     enqueueVersusStateSync,
     applyAuthoritativeVersusPoints,
+    endMasterySession,
   ]);
   useEffect(() => {
     if (playScope !== "versus" || versusPhase !== "playing" || !running || over)
@@ -12206,6 +12622,7 @@ function SkywayGame() {
     }
   };
   const signOut = async () => {
+    trialStartIntentRef.current++;setTrialRequest(null);setActiveTrial(null);setTrialBusy(false);
     const signingOutUserId = userIdRef.current;
     authSessionGenerationRef.current += 1;
     authSessionUserIdRef.current = null;
@@ -12816,6 +13233,8 @@ function SkywayGame() {
       }
       setRunCharacterOverride(null);
       setSelectedCharacter(characterKey);
+      await refreshMasteries();
+      if(userIdRef.current!==equipUserId)return;
       setInventoryStatus(
         `${getCharacterDefinition(characterKey).name} equipped.`,
       );
@@ -13343,6 +13762,9 @@ function SkywayGame() {
     }
   };
   const abilityAction = (() => {
+    if(mastered&&activeCharacter==="medic_bloom")return{label:"GROW GEM",status:masteryRuntimeRef.current.bloomAbilityUsed?"USED THIS WAVE":"FARTHEST LANE · ONCE PER WAVE",ready:!masteryRuntimeRef.current.bloomAbilityUsed};
+    if(mastered&&activeCharacter==="runner_vault")return{label:"TIME VAULT",status:vaultAvailable(masteryRuntimeRef.current,wave)?"PRESS E WITHIN 0.25s BEFORE CONTACT":`${Math.max(0,(masteryRuntimeRef.current.vaultNextAt??0)-masteryRuntimeRef.current.elapsed).toFixed(1)}s RECOVERY`,ready:vaultAvailable(masteryRuntimeRef.current,wave)};
+    if(mastered&&activeCharacter==="tank_guard")return{label:masteryRuntimeRef.current.guard.mode?"EXIT GUARD MODE":"ENTER GUARD MODE",status:masteryRuntimeRef.current.guard.mode?"TANK BLUE · NO PASSIVE REDUCTION":"35% LESS DAMAGE · TYPE MEMORY",ready:true};
     if (
       activeCharacter === "runner_zenith" &&
       wave >= 15 &&
@@ -13492,10 +13914,10 @@ function SkywayGame() {
       return {
         label: "SMOKE BOMB",
         status:
-          smokeCooldownUntilRef.current > Date.now()
-            ? `${Math.ceil((smokeCooldownUntilRef.current - Date.now()) / 1000)}s COOLDOWN`
-            : "TELEPORT TO A SAFE LANE",
-        ready: smokeCooldownUntilRef.current <= Date.now(),
+          masteryRuntimeRef.current.smokeCooldownUntil>masteryRuntimeRef.current.elapsed
+            ? `${Math.ceil(masteryRuntimeRef.current.smokeCooldownUntil-masteryRuntimeRef.current.elapsed)}s COOLDOWN`
+            : mastered?`${masteryRuntimeRef.current.smokeBombs}/3 BOMBS · ${isVersusRun?"TAP TELEPORT / HOLD TO THROW":"TELEPORT TO SAFETY"}`:isVersusRun?"TAP TELEPORT · HOLD 3s MILD THROW":"TELEPORT TO A SAFE LANE",
+        ready: masteryRuntimeRef.current.smokeCooldownUntil<=masteryRuntimeRef.current.elapsed&&(!mastered||masteryRuntimeRef.current.smokeBombs>0),
       };
     if (activeCharacter === "trickster_rogue")
       return {
@@ -14256,7 +14678,7 @@ function SkywayGame() {
             )}
           </nav>
         )}
-        {mainView === "photon" ? (
+        {activeTrial ? <MasteryTrialGame character={activeTrial} onEvent={recordMastery} onFinish={masteries.finish} serverFailed={masteries.trialFailed} onExit={()=>void endMasterySession().then(ok=>{if(ok){setActiveTrial(null);setInventoryOpen(true);}})} /> : mainView === "photon" ? (
           <PhotonFury
             key={userIdRef.current ?? "guest"}
             userId={guest ? null : userIdRef.current}
@@ -14264,6 +14686,7 @@ function SkywayGame() {
             gems={gems}
             testMode={adminTestModeActive}
             soundtrack={soundtrack}
+            onStardust={setStardust}
             onGems={(value) => {
               gemsRef.current = value;
               setGems(value);
@@ -14288,6 +14711,7 @@ function SkywayGame() {
           >
             {matchSetup && playScope === "versus" ? (
               <MatchSetupPanel
+                mode={versusMode}
                 setup={matchSetup}
                 now={weaponClock || Date.now()}
                 map={{
@@ -14322,9 +14746,7 @@ function SkywayGame() {
                       versusMap,
                       getCharacterClassKey(c.key),
                     ) &&
-                    ((!["ranked"].includes(versusMode) &&
-                      versusMap !== "ruins") ||
-                      c.rarity !== "mythic") &&
+                    isDuelCharacterAllowed(versusMode,{...c,classKey:getCharacterClassKey(c.key)}) &&
                     !ruinsBannedCharacters.includes(c.key),
                 ).map((c) => ({
                   key: c.key,
@@ -14359,6 +14781,10 @@ function SkywayGame() {
                 guest={guest}
                 rankedUnlocked={playerProgression.ranked_unlocked}
                 rankedPurchased={playerProgression.ranked_purchased}
+                casualUnlocked={playerProgression.casual_unlocked || playerProgression.level>=MODE_UNLOCKS.casual.level}
+                rotatingUnlocked={playerProgression.rotating_unlocked || playerProgression.level>=MODE_UNLOCKS.rotating.level}
+                unlimitedUnlocked={playerProgression.unlimited_unlocked}
+                requirements={unlimitedRequirements(CHARACTER_ROSTER.map(c=>({...c,classKey:getCharacterClassKey(c.key)})),ownedCharacterKeys,playerProgression.level,playerProgression.ranked_unlocked,!!playerProgression.photon_unlocked)}
                 gems={gems}
                 busy={versusLeaving}
                 searching={versusPhase === "searching"}
@@ -14571,6 +14997,7 @@ function SkywayGame() {
                           ))
                       }
                       onPointerDown={() => {
+                        if(activeCharacter==="trickster_smoke"&&isVersusRun){beginSmokeHold();return;}
                         if (
                           activeCharacter === "trickster_echo" &&
                           !echoKnowingState.awakened &&
@@ -14578,14 +15005,14 @@ function SkywayGame() {
                         )
                           triggerCharacterAction();
                       }}
-                      onPointerUp={cancelEchoKnowingHold}
-                      onPointerCancel={cancelEchoKnowingHold}
-                      onPointerLeave={cancelEchoKnowingHold}
+                      onPointerUp={()=>{cancelEchoKnowingHold();releaseSmokeHold();}}
+                      onPointerCancel={()=>{cancelEchoKnowingHold();smokeChargeRef.current=null;}}
+                      onPointerLeave={()=>{cancelEchoKnowingHold();smokeChargeRef.current=null;}}
                       onClick={
                         activeCharacter === "trickster_echo" &&
                         !echoKnowingState.awakened &&
                         echoQuestState.currentQuest === null
-                          ? undefined
+                          ||activeCharacter==="trickster_smoke"&&isVersusRun? undefined
                           : triggerCharacterAction
                       }
                       data-ability-version={abilityStateVersion}
@@ -14598,6 +15025,7 @@ function SkywayGame() {
                       </span>
                     </button>
                   )}
+                  {running&&mastered&&activeCharacter==="runner_stride"&&<button type="button" className="ability-action-button" style={{right:8,bottom:90}} disabled={paused||wavePause||strideFocusCooldownRef.current>masteryRuntimeRef.current.elapsed} onClick={triggerStrideFocus}><kbd>F</kbd><span><b>FOCUSED STRIDE</b><em>{strideFocusUntilRef.current>masteryRuntimeRef.current.elapsed?`${(strideFocusUntilRef.current-masteryRuntimeRef.current.elapsed).toFixed(1)}s · 0.3s SHIELDS`:strideFocusCooldownRef.current>masteryRuntimeRef.current.elapsed?`${(strideFocusCooldownRef.current-masteryRuntimeRef.current.elapsed).toFixed(1)}s COOLDOWN`:"15s SHIELD BOOST"}</em></span></button>}
                   {running &&
                     (hasCharacterAbility("medic_tonic") ||
                       waveForecast.length > 0 ||
@@ -15355,8 +15783,9 @@ function SkywayGame() {
                           style={{
                             left: `${((x.lane + 0.5) / activeLaneCount) * 100}%`,
                             top: `${x.y}%`,
+                            ...(x.dashGreen?{outline:"3px solid #7aff83",filter:"drop-shadow(0 0 9px #39f46b)"}:x.guardBlue?{outline:"3px solid #79caff",filter:"drop-shadow(0 0 9px #2ba8ff)"}:{}),
                           }}
-                          aria-label={x.kind}
+                          aria-label={`${x.dashGreen?"Green dash obstacle: ":x.guardBlue?"Blue Guard object: ":""}${x.kind}`}
                           role={
                             x.kind === "spikes" &&
                             (activeCharacter === "tank_warden" ||
@@ -15442,12 +15871,14 @@ function SkywayGame() {
                         )}
                       <div className="head" />
                       <div className="body" />
+                      {activeCharacter==="runner_vault"&&<i aria-label={masteryRuntimeRef.current.vaultStatus==="flop"&&masteryRuntimeRef.current.vaultUntil>masteryRuntimeRef.current.elapsed?"Snapped vault pole":"Vault pole"} style={{position:"absolute",width:5,height:58,background:"#c7b58c",border:"1px solid #493522",right:-12,top:-6,transform:masteryRuntimeRef.current.vaultStatus==="flop"&&masteryRuntimeRef.current.vaultUntil>masteryRuntimeRef.current.elapsed?"rotate(65deg) scaleY(.5)":"rotate(12deg)"}}/>}
                       <i className="arm a1" />
                       <i className="arm a2" />
                       <i className="leg g1" />
                       <i className="leg g2" />
                       <em />
                     </div>
+                    {smokeOverlayBands(mastered&&activeCharacter==="trickster_smoke"&&masteryRuntimeRef.current.smokeBombs===0,incomingMasterySmoke.until>Date.now()?incomingMasterySmoke.strength:null,incomingMasterySmoke.flairTop).map((band,index)=><i key={`mastery-smoke-${index}`} aria-label={`${band.kind} smoke`} style={{position:"absolute",zIndex:38,pointerEvents:"none",left:0,right:0,top:`${band.from*100}%`,height:`${(band.to-band.from)*100}%`,background:band.kind==="heavy"?"#30343a":band.kind==="grey"?"rgba(76,81,88,.86)":"rgba(155,165,175,.3)",boxShadow:"0 4px 18px #373e4870"}}/>)}
                     {activeMapId === "pitch" && isVersusRun && (
                       <button
                         type="button"
@@ -16971,6 +17402,8 @@ function SkywayGame() {
               <p className="box-duplicate-note">
                 Duplicates give Stardust. Spend it on the exact Skyway item you want.
               </p>
+              <MasteryShop state={masteries.account} photons={masteries.photons} ownedCharacters={ownedCharacterKeys} busy={masteries.busy} onPurchase={key=>void masteries.purchase(key)} onActivate={key=>void masteries.activate(key)} />
+              {masteries.error&&<p role="status">{masteries.error}</p>}
               <div ref={extractFeedbackRef} className="extract-feedback">
                 {extractAnimation !== "idle" && extractingOption ? (
                   <div
@@ -17068,6 +17501,7 @@ function SkywayGame() {
                   {guest ? "GUEST COLLECTION" : `${unlocks.length} UNLOCKS`}
                 </strong>
               </header>
+              <label className="endless-randomizer"><input type="checkbox" checked={masteries.randomizer} disabled={guest||running||masteries.busy} onChange={event=>void masteries.randomize(event.target.checked)}/> Random owned character when starting Endless</label>
               <div className="inventory-directory" aria-hidden="true">
                 <span>01 OBSTACLE</span>
                 {INVENTORY_CLASSES.map(({ label }, classIndex) => (
@@ -17535,6 +17969,8 @@ function SkywayGame() {
                                 )}
                               </div>
                             </details>
+                            <FlairPicker character={focusedCharacter.key} flairs={ownedFlairs} selected={masteries.flair} state={masteries.account} busy={masteries.busy||running} onEquip={key=>void masteries.equip(key)} />
+                            <CharacterMastery character={focusedCharacter.key} state={masteries.account} busy={masteries.busy||running} onToggle={(key,which,on)=>void masteries.toggle(key,which,on)} onTrial={key=>setTrialRequest(key)} />
                           </div>
                         )}
                       </details>
@@ -17892,6 +18328,18 @@ function SkywayGame() {
             </section>
           </div>
         )}
+        {trialRequest&&<MasteryTrialDisclaimer character={trialRequest} busy={trialBusy} onCancel={()=>{trialStartIntentRef.current++;setTrialRequest(null);}} onAccept={()=>void(async()=>{
+          if(trialBusy||!userIdRef.current)return;
+          if(running||isVersusRun){setInventoryStatus("Finish or leave your current run before starting a mastery trial.");return;}
+          setTrialBusy(true);
+          const uid=userIdRef.current,key=trialRequest,generation=authSessionGenerationRef.current,intent=++trialStartIntentRef.current;
+          const current=()=>userIdRef.current===uid&&authSessionGenerationRef.current===generation&&trialStartIntentRef.current===intent;
+          try{if(!await endMasterySession()||!current())return;
+            const {data,error}=await supabase.rpc("start_progression_run");if(!current())return;if(error||typeof data!=="string"){setInventoryStatus(error?.message??"Trial could not start. Try again.");return;}
+            const session=await beginMasterySession(data,"endless",key,key);if(!session||!current()){if(current())void supabase.rpc("sync_progression_run",{p_run_id:data,p_wave:1,p_active:false});return;}
+            setTrialRequest(null);setInventoryOpen(false);setMainView("endless");setActiveTrial(key);
+          }finally{if(current())setTrialBusy(false);}
+        })()}/>}
       </div>
     </main>
   );

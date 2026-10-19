@@ -14410,3 +14410,22 @@ footer p small {
 .pixel-link-option { margin: 20px 0; padding: 20px; border: 1px solid #393c6b; border-radius: 12px; background: #14162d; }
 .pixel-link-option p { color: #c4c9e5; font-size: 15px; line-height: 1.6; }
 .pixel-link-card a { color: #95cafa; }
+
+.mastery-trial-game { width: min(100%, 940px); margin: 20px auto; padding: 16px; border: 2px solid #7188a4; background: #101d31; border-radius: 16px; }
+.mastery-trial-game header,.mastery-trial-controls { display: flex; gap: 12px; justify-content: space-between; align-items: center; margin: 10px 0; }
+.mastery-trial-game button { min-height: 44px; padding: 10px 16px; background: #2e537b; color: white; border: 2px solid #8eaaca; border-radius: 6px; }
+.mastery-trial-track { position: relative; height: min(67vh, 690px); min-height: 360px; background: repeating-linear-gradient(0deg,#3b4557 0 42px,#354052 42px 84px); border: 6px solid #d7d7c2; overflow: hidden; touch-action: none; }
+.mastery-trial-lane { position: absolute; width: 20%; height: 100%; border-right: 2px dashed #d5cf9a88; }
+.mastery-trial-piece { position: absolute; width: 48px; height: 55px; transform: translate(-50%,-50%); }
+.mastery-trial-piece > span { display: grid; place-items: center; font-size: 42px; color: #97e8ff; text-shadow: 2px 2px #225d85; }
+.mastery-green { filter: drop-shadow(0 0 8px #39ff67) drop-shadow(0 0 6px #39ff67); outline: 3px solid #39ff67; }
+.mastery-red { filter: drop-shadow(0 0 8px #ff465d); outline: 3px solid #ff465d; }
+.mastery-blue { filter: drop-shadow(0 0 8px #4eacff); outline: 3px solid #4eacff; }
+.endless-randomizer { display: flex; gap: 10px; align-items: center; padding: 12px; font-size: 16px; }
+.endless-randomizer input { width: 22px; height: 22px; }
+.photon-skin-ascendant .body { background: #59e4c2; border: 3px solid #d5fff0; box-shadow: 0 0 0 3px #276a73; }
+.photon-skin-ascendant .head { box-shadow: -5px -5px #6fffe5,5px -5px #6fffe5; }
+.photon-skin-immortal .body { background: #f2cd6e; border: 3px solid #fff4c4; box-shadow: 0 0 0 4px #7c48a1,0 0 15px #f5cde9; }
+.photon-skin-immortal .head { box-shadow: -7px -6px #f8c36e,7px -6px #f8c36e,0 -9px #f8c36e; }
+.photon-skin-preview.skin-ascendant { background: linear-gradient(135deg,#144c58,#5debc5); }
+.photon-skin-preview.skin-immortal { background: linear-gradient(135deg,#544080,#ffe192); }

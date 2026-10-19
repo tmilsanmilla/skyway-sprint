@@ -42,12 +42,12 @@ test("players see only the latest ten updates while the source archive is kept",
   assert.equal(getRecentUpdates(UPDATE_LOG.slice(0, 3)).length, 3);
 });
 
-test("release numbers advance to 2.2 without using the archive count", () => {
-  assert.equal(LATEST_UPDATE_VERSION, "2.2");
-  assert.equal(getRecentUpdates()[0].id, "2026-10-15-map-refresh");
-  assert.equal(getRecentUpdates()[2].id, "2026-10-10-update-2-0");
+test("release numbers advance to 2.3 without using the archive count", () => {
+  assert.equal(LATEST_UPDATE_VERSION, "2.3");
+  assert.equal(getRecentUpdates()[0].id, "2026-10-19-masteries-and-duels");
+  assert.equal(getRecentUpdates()[3].id, "2026-10-10-update-2-0");
   assert.deepEqual(getRecentUpdates().map(({ version }) => version), [
-    "2.2", "2.1", "2.0", "1.9", "1.8", "1.7", "1.6", "1.5", "1.4", "1.3",
+    "2.3", "2.2", "2.1", "2.0", "1.9", "1.8", "1.7", "1.6", "1.5", "1.4",
   ]);
   assert.ok(getRecentUpdates().every(({ title }) => !/^UPDATE \d+:/.test(title)));
 });

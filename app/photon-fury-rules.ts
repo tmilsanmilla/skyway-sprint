@@ -1,8 +1,8 @@
 /** Photon-only rules. All clocks use active gameplay, never menu/pause time. */
 export const PHOTON_RULES = {
-  version: 20261014,
+  version: 20261017,
   lanes: 4,
-  unlockLevel: 15,
+  unlockLevel: 25,
   price: 225,
   startingHp: 4,
   durability: 7,
@@ -10,7 +10,7 @@ export const PHOTON_RULES = {
   cooldownSeconds: 1,
   inputDelaySeconds: 0.1,
   needleSeconds: 4,
-  needleDamageChance: 0.35,
+  needleDamageChance: 0.45,
   // The former 0.288 baseline is 35% faster, presented as the new 1×.
   baseTravelSpeed: 0.288 * 1.35,
   speedGrowth: 1.004,
@@ -292,7 +292,7 @@ export const PHOTON_WEAPONS = {
     photons: 0,
     gems: 0,
     description:
-      "Reflect one hazard per swing. Cars, needles and missed swings use 1 durability.",
+      "Reflect one hazard per swing. Unblocked needles and missed swings use 1 durability; cars do not.",
   },
   photon_blaster: {
     name: "Photon Blaster",
@@ -327,7 +327,7 @@ export const PHOTON_WEAPONS = {
     photons: 9000,
     gems: 270,
     description:
-      "Each lane change has a 65% chance to give 1 point and a separate 15% chance to deal 0.5 HP. Its Photon reward starts at 14 points using its own reward curve.",
+      "Each lane change has a 65% chance to give 1 point and a separate 15% chance to deal 0.5 HP. Its Photon reward starts at 16 points using its own reward curve.",
   },
 } as const;
 export const isPhotonWeaponKey = (key: unknown): key is PhotonWeaponKey =>
@@ -429,7 +429,7 @@ export const addTurnDelays = (...seconds: number[]) =>
 export const photonSpeed = (elapsed: number) =>
   PHOTON_RULES.speedGrowth ** Math.max(0, elapsed);
 export const photonGuardSeconds = (run: PhotonRun) =>
-  getPhotonCharacter(run.characterKey).guardSeconds;
+  getPhotonCharacter(run.characterKey).guardSeconds / photonSpeed(run.elapsed);
 export const photonObstacleSpeed = (run: PhotonRun) =>
   photonSpeed(run.elapsed) *
   (run.characterKey === "photon_bear" && run.stage === "chaos"
@@ -450,11 +450,11 @@ export const photonReward = (
   if (!Number.isFinite(points)) return 0;
   const p = Math.max(0, Math.floor(points));
   return weapon === "jolt_shockwave"
-    ? p >= 14
-      ? 2 * (p - 14) ** 2 + 1
+    ? p >= 16
+      ? 2 * (p - 16) ** 2 + 1
       : 0
-    : p >= 4
-      ? (p - 4) ** 2 + 1
+    : p >= 5
+      ? (p - 5) ** 2 + 1
       : 0;
 };
 export const photonBonusPoints = (run: PhotonRun) => {
@@ -585,7 +585,7 @@ const completePhotonTurn = (
     ],
     moveCount: previous.moveCount + 1,
   };
-  if (run.needleUntil > run.elapsed && random() < 0.35)
+  if (run.needleUntil > run.elapsed && random() < PHOTON_RULES.needleDamageChance)
     run.hp = Math.max(0, run.hp - 0.5);
   if (run.weaponKey === "ninjablade" && run.durability > 0 && random() < 0.15)
     loseDurability(run);
@@ -784,7 +784,7 @@ export const advancePhotonRun = (
     run = completePhotonTurn(run, run.pendingTurn.lane, random);
   if (run.hp <= 0) return run;
   if (run.saberStartsAt !== null && run.elapsed >= run.saberStartsAt) {
-    run.guardUntil = run.saberStartsAt + c.guardSeconds;
+    run.guardUntil = run.saberStartsAt + c.guardSeconds / photonSpeed(run.saberStartsAt);
     run.saberStartsAt = null;
   }
   if (run.elapsed >= run.nextSpawnAt) {
@@ -834,11 +834,6 @@ export const advancePhotonRun = (
         continue;
       }
       if (run.guardUntil > run.elapsed) {
-        if (
-          item.kind === "car" ||
-          (item.kind === "needle" && run.characterKey !== "photon_bear")
-        )
-          run.durability = Math.max(0, run.durability - 1);
         let points = bear
           ? run.stage === "chaos"
             ? 3
@@ -870,6 +865,8 @@ export const advancePhotonRun = (
         continue;
       }
       if (item.kind === "needle") {
+        // A reflection protects durability. Only actual needle contact uses it.
+        if (run.characterKey !== "photon_bear") loseDurability(run);
         if (run.weaponKey === "concentrated_laser") {
           run.hp = 0;
           continue;

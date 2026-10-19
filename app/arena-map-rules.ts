@@ -202,6 +202,8 @@ export const PITCH_KATANA_RULES = {
   cannotActivateWhileFrozen: true,
   rockBreaksForMatch: true,
 } as const;
+/** Scale only by wave progression: character/map/Quicksand speed is excluded. */
+export const pitchKatanaActiveSeconds = (waveSpeed: number) => PITCH_KATANA_RULES.activeSeconds / Math.max(1, Number.isFinite(waveSpeed) ? waveSpeed : 1);
 
 export const ONE_V_ONE_SCORING_RULES = {
   secondDeathBonus: 500,
@@ -536,7 +538,8 @@ export const chooseNaturalObstacle = (
 };
 
 export const isAttackAvailable = (mapId: MapId, attackId: AttackId): boolean =>
-  MAP_RULES[mapId].availableAttacks.includes(attackId);
+  mapId !== "terminal" &&
+  (attackId === "snowflake" || MAP_RULES[mapId].availableAttacks.includes(attackId));
 
 export const getAvailableAttacks = (mapId: MapId): readonly AttackId[] =>
   ATTACK_IDS.filter((attackId) => isAttackAvailable(mapId, attackId));
@@ -860,6 +863,7 @@ export const activatePitchKatana = (
   state: PitchKatanaState,
   nowMs: number,
   frozen: boolean,
+  waveSpeed = 1,
 ): PitchKatanaActivation => {
   if (state.broken) return { activated: false, reason: "broken", state };
   if (frozen) return { activated: false, reason: "frozen", state };
@@ -869,7 +873,7 @@ export const activatePitchKatana = (
   if (nowMs < state.cooldownUntilMs) {
     return { activated: false, reason: "cooldown", state };
   }
-  const activeUntilMs = nowMs + PITCH_KATANA_RULES.activeSeconds * 1_000;
+  const activeUntilMs = nowMs + pitchKatanaActiveSeconds(waveSpeed) * 1_000;
   return {
     activated: true,
     state: {
@@ -877,7 +881,7 @@ export const activatePitchKatana = (
       activationStartedAtMs: nowMs,
       activeUntilMs,
       cooldownUntilMs:
-        activeUntilMs + PITCH_KATANA_RULES.cooldownSeconds * 1_000,
+        nowMs + (PITCH_KATANA_RULES.activeSeconds + PITCH_KATANA_RULES.cooldownSeconds) * 1_000,
       movementLockedUntilMs:
         activeUntilMs +
         PITCH_KATANA_RULES.postActiveMovementLockSeconds * 1_000,

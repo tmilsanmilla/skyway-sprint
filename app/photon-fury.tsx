@@ -50,6 +50,7 @@ type Props = {
   testMode: boolean;
   soundtrack: Soundtrack;
   onGems: (gems: number) => void;
+  onStardust?: (stardust: number) => void;
 };
 const CHARACTER_KEYS = Object.keys(PHOTON_CHARACTERS) as PhotonCharacterKey[];
 const MISSING_CHARACTER_SETUP =
@@ -64,6 +65,7 @@ export function PhotonFury({
   testMode,
   soundtrack,
   onGems,
+  onStardust,
 }: Props) {
   const [unlocked, setUnlocked] = useState(false);
   const [balance, setBalance] = useState(0);
@@ -476,12 +478,13 @@ export function PhotonFury({
     else {
       applyProfile(data.profile);
       onGems(Number(data.gems));
+      if (Number.isFinite(Number(data.stardust))) onStardust?.(Number(data.stardust));
       setBoxResults(data.results ?? []);
       setStatus("MYSTERY BOX OPENED");
     }
   };
   const buyWeapon = async (key: PhotonWeaponKey) => {
-    if (busy || running || savePending || level < 35) return;
+    if (busy || running || savePending || level < 40) return;
     setBusy(true);
     const { data, error } = await supabase.rpc("purchase_catalog_item", {
       p_item_key: `photon_weapon_${key}`,
@@ -640,8 +643,8 @@ export function PhotonFury({
             onTheme={(key) => void equipItem(`theme:${key}`)}
           />
           <p className="photon-inventory-note">
-            One reflection per swing. Cars, needles and missed swings use
-            durability. Character and weapon descriptions explain exceptions.
+            One reflection per swing. Unblocked needles and missed swings use
+            durability; cars do not. Guard time shortens as the run speeds up.
           </p>
           <button
             onClick={() => {

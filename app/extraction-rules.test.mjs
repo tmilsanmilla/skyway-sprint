@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { EXTRACTION_BOXES, PULL_PROFILES, EXTRACTION_RARITIES, EXTRACTION_MAX_QUANTITY, canOpenBox, directUnlockCost, duplicateStardust, stardustUnlockLevel, affordableBoxQuantity, rollExtraction } from "./extraction-rules.ts";
+import { EXTRACTION_BOXES, PULL_PROFILES, EXTRACTION_RARITIES, EXTRACTION_MAX_QUANTITY, canOpenBox, directUnlockCost, duplicateStardust, stardustUnlockLevel, affordableBoxQuantity, rollExtraction, extractionOddsValid } from "./extraction-rules.ts";
 import { HARDCORE_SCORE_MULTIPLIER, endlessCharacter } from "./progression-rules.ts";
 
 test("booster box prices, pull mixes, level gates, and 99-box maximum match exactly", () => {
@@ -26,7 +26,7 @@ test("booster box prices, pull mixes, level gates, and 99-box maximum match exac
   assert.equal(canOpenBox("legendary",NaN),false);
 });
 test("independent category and rarity rolls preserve every specified percentage exactly", () => {
-  for (const [profile,expected] of Object.entries({normal:[7,42,32,15,9,2,0],bonus:[13,32,27,17,14,10,0],rare:[18,27,24,19,16,14,0],legendary:[20,22,21,20,19,17,1]})) {
+  for (const [profile,expected] of Object.entries({normal:[9,42,32,15,9,2,0],bonus:[14,33,28,17,13,9,0],rare:[17,28,24,19,16,13,0],legendary:[18,22,21,20,19,17,1]})) {
     const rules=PULL_PROFILES[profile];
     assert.deepEqual([rules.characterPercent,...rules.weights],expected);
     assert.equal(rules.weights.reduce((a,b)=>a+b,0),100);
@@ -39,6 +39,14 @@ test("independent category and rarity rolls preserve every specified percentage 
     EXTRACTION_RARITIES.forEach((r,i)=>assert.equal(counts[r],rules.weights[i]*100));
   }
   for(const invalid of [-1,1,Infinity,NaN]) assert.throws(()=>rollExtraction("normal",invalid,.5));
+  assert.equal(PULL_PROFILES.bonus.characterPercent,14);
+  assert.deepEqual(PULL_PROFILES.bonus.weights,[33,28,17,13,9,0]);
+  assert.equal(extractionOddsValid("bonus"),true);
+});
+test("Bonus rarity boundaries match the exact confirmed odds and never give Mythic", () => {
+  for(const [roll,rarity] of [[0,"common"],[.329999,"common"],[.33,"uncommon"],[.609999,"uncommon"],[.61,"rare"],[.779999,"rare"],[.78,"epic"],[.909999,"epic"],[.91,"legendary"],[.999999,"legendary"]]) {
+    assert.equal(rollExtraction("bonus",.5,roll).rarity,rarity);
+  }
 });
 test("no eligible box below level 20 contains any mythic-capable pull", () => {
   for(let level=0;level<20;level++) for(const [kind,box] of Object.entries(EXTRACTION_BOXES)) {

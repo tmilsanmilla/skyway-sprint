@@ -67,9 +67,8 @@ export function PhotonCollection({
         <summary>MYSTERY BOX · {PHOTON_BOX_COST} PHOTONS</summary>
         <p>
           One Traditional character, bonus characters and skins, then a theme
-          pack, Gems or an Intermediate skin. Duplicates are allowed:
-          repeat characters and themes return 5 Gems; Part B skins return 10
-          Gems, and Part C skins return 5 Gems.
+          pack, an Intermediate skin or Stardust. All duplicate characters,
+          skins and themes return 10 Gems.
         </p>
         <details>
           <summary>BOX ODDS</summary>
@@ -84,9 +83,9 @@ export function PhotonCollection({
             skin instead 45%.
           </p>
           <p>
-            Skins: all 16 characters equally likely; Intermediate 55% · Pro 40%
-            · Divine 5%. C: two themes 65% · 20 Gems 15% · Intermediate skin
-            20%.
+            Skins: all 16 characters equally likely; Intermediate 53% · Pro 35%
+            · Ascendant 8% · Divine 3% · Immortal 1%. C: two themes 72% ·
+            Intermediate skin 24% · 75 Stardust 4%.
           </p>
           <p>
             Themes: Common 40% · Uncommon 30% · Rare 15.1% · Epic 11.4% ·
@@ -119,8 +118,8 @@ export function PhotonCollection({
                     r.key}
                 </b>
                 <small>
-                  {r.kind === "gems"
-                    ? `+${r.amount} GEMS`
+                  {r.kind === "gems" || r.kind === "stardust"
+                    ? `+${r.amount} ${r.kind.toUpperCase()}`
                     : r.is_new
                       ? "NEW"
                       : `DUPLICATE · +${r.duplicate_gems ?? 0} GEMS`}
@@ -134,18 +133,19 @@ export function PhotonCollection({
         <summary>CHARACTER SKINS</summary>
         <p>
           Skins are cosmetic only. Each character has a free Default look and
-          three box-only looks.
+          five box-only looks. Equip a separate owned skin for each character.
         </p>
         {(Object.keys(PHOTON_CHARACTERS) as PhotonCharacterKey[]).map((key) => (
           <details className="photon-skin-group" key={key}>
             <summary>{PHOTON_CHARACTERS[key].name}</summary>
-            <div className="photon-skin-grid">
+            <div className="photon-skin-grid" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
               <button
                 disabled={busy || running || !characters.includes(key)}
                 className={characters.includes(key) && !skinChoices[key] ? "selected" : ""}
                 onClick={() => onSkin(`default:${key}`)}
               >
-                DEFAULT · {characters.includes(key) ? "OWNED" : "CHARACTER LOCKED"}
+                <b>DEFAULT</b><span className="photon-skin-preview"><PhotonAvatar character={key} /></span>
+                <em>{!characters.includes(key) ? "CHARACTER LOCKED" : !skinChoices[key] ? "EQUIPPED" : "EQUIP"}</em>
               </button>
               {PHOTON_SKINS.filter((s) => s.character === key).map((s) => (
                 <button
@@ -163,7 +163,7 @@ export function PhotonCollection({
                   <span className="photon-skin-preview"><PhotonAvatar character={key} skin={s.key} /></span>
                   <small>{s.description}</small>
                   <small>{s.tier.toUpperCase()}</small>
-                  <em>{skins.includes(s.key) ? "OWNED" : "LOCKED"}</em>
+                  <em>{!skins.includes(s.key) ? "LOCKED" : skinChoices[key] === s.key ? "EQUIPPED" : "EQUIP"}</em>
                 </button>
               ))}
             </div>
@@ -173,7 +173,7 @@ export function PhotonCollection({
       <details className="photon-category">
         <summary>LASERDROME THEMES</summary>
         <p>Cosmetic environments only; no gameplay bonuses.</p>
-        <div className="photon-theme-grid">
+        <div className="photon-theme-grid" style={{ gridTemplateColumns: "repeat(5, minmax(0, 1fr))" }}>
           {[DEFAULT_PHOTON_THEME, ...PHOTON_THEMES].map((t) => (
             <button
               key={t.key}
@@ -202,7 +202,7 @@ export function PhotonCollection({
         </div>
       </details>
       <details className="photon-category">
-        <summary>WEAPONS · UNLOCK PURCHASES AT LEVEL 35</summary>
+        <summary>WEAPONS · UNLOCK PURCHASES AT LEVEL 40</summary>
         <p>
           Replace the Lightsaber for this mode only. Character abilities stay
           available; weapon abilities use F. Blaster, Magnetite Sword and
@@ -238,13 +238,13 @@ export function PhotonCollection({
                     disabled={
                       busy ||
                       running ||
-                      level < 35 ||
+                      level < 40 ||
                       photons < w.photons ||
                       gems < w.gems
                     }
                     onClick={() => onBuyWeapon(key)}
                   >
-                    {level < 35 ? "LEVEL 35 REQUIRED" : "UNLOCK WEAPON"}
+                    {level < 40 ? "LEVEL 40 REQUIRED" : "UNLOCK WEAPON"}
                   </button>
                 )}
               </article>

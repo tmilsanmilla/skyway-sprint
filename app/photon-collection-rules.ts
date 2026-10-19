@@ -10,11 +10,11 @@ export const PHOTON_BOX_ODDS = {
   rush: [41, 33, 26],
   strategic: [57, 32, 11],
   wild: [26, 18, 11, 45],
-  skins: [55, 40, 5],
-  partC: [65, 15, 20],
+  skins: [53, 35, 8, 3, 1],
+  partC: [72, 24, 4],
   themes: [4000, 3000, 1510, 1140, 330, 20],
 } as const;
-export const PHOTON_SKIN_TIERS = ["intermediate", "pro", "divine"] as const;
+export const PHOTON_SKIN_TIERS = ["intermediate", "pro", "ascendant", "divine", "immortal"] as const;
 export type PhotonSkinTier = (typeof PHOTON_SKIN_TIERS)[number];
 export type PhotonThemeRarity =
   "common" | "uncommon" | "rare" | "epic" | "legendary" | "mythic";
@@ -38,11 +38,11 @@ const SKIN_SIGNATURES: Record<PhotonCharacterKey, readonly [string, string, stri
 };
 export const PHOTON_SKINS = Object.entries(PHOTON_CHARACTERS).flatMap(
   ([key, c]) =>
-    PHOTON_SKIN_TIERS.map((tier, tierIndex) => ({
+    PHOTON_SKIN_TIERS.map((tier) => ({
       key: `${key}_${tier}`,
       character: key as PhotonCharacterKey,
       tier,
-      name: SKIN_SIGNATURES[key as PhotonCharacterKey][tierIndex],
+      name: tier === "ascendant" ? `${c.name} Starforged` : tier === "immortal" ? `${c.name} Eternity` : SKIN_SIGNATURES[key as PhotonCharacterKey][tier === "intermediate" ? 0 : tier === "pro" ? 1 : 2],
       color: SKIN_SIGNATURES[key as PhotonCharacterKey][3],
       emblem: SKIN_SIGNATURES[key as PhotonCharacterKey][4],
       description:
@@ -50,7 +50,11 @@ export const PHOTON_SKINS = Object.entries(PHOTON_CHARACTERS).flatMap(
           ? `${c.name}'s ion-plated suit and signature crest. Cosmetic only.`
           : tier === "pro"
             ? `${c.name}'s holographic armor, illuminated circuitry and orbiting emitter. Cosmetic only.`
-            : `${c.name}'s prismatic astral armor, luminous crown and starfield trail. Cosmetic only.`,
+            : tier === "ascendant"
+              ? `${c.name}'s starforged suit channels bright comet trails through radiant crystal pauldrons and a floating constellation crest. Cosmetic only.`
+              : tier === "immortal"
+                ? `${c.name}'s eternal regalia surrounds an eclipse-dark core with a luminous halo, sweeping aurora ribbons and an orbit of tiny stars. Cosmetic only.`
+                : `${c.name}'s prismatic astral armor, luminous crown and starfield trail. Cosmetic only.`,
     })),
 );
 export const PHOTON_THEMES = [
@@ -190,6 +194,13 @@ export const PHOTON_THEMES = [
     glow: "#ffe6a0",
     accent: "#5c92d9",
   },
+  { key: "photon_theme_arcade", name: "Arcade Atrium", rarity: "common", floor: "#122420", glow: "#65f5bd", accent: "#40756b" },
+  { key: "photon_theme_tidal", name: "Tidal Generator", rarity: "uncommon", floor: "#081d35", glow: "#5ce2ff", accent: "#276c8a" },
+  { key: "photon_theme_blossom", name: "Ion Blossom", rarity: "rare", floor: "#32102e", glow: "#ffb4e9", accent: "#9c477e" },
+  { key: "photon_theme_eclipse", name: "Eclipse Observatory", rarity: "epic", floor: "#100c22", glow: "#ffb24c", accent: "#684c9c" },
+  { key: "photon_theme_aurora", name: "Aurora Palace", rarity: "legendary", floor: "#07242d", glow: "#cdffd9", accent: "#9575ec" },
+  { key: "photon_theme_infinity", name: "Infinity Spire", rarity: "mythic", floor: "#090722", glow: "#f4dfff", accent: "#d96bff" },
+  { key: "photon_theme_elysium", name: "Elysium Gate", rarity: "mythic", floor: "#211d06", glow: "#fff7a2", accent: "#b6a9ef" },
 ] as const;
 export const DEFAULT_PHOTON_THEME = {
   key: "default",
@@ -200,7 +211,7 @@ export const DEFAULT_PHOTON_THEME = {
   accent: "#7b46ed",
 } as const;
 export type PhotonBoxItem = {
-  kind: "character" | "skin" | "theme" | "gems";
+  kind: "character" | "skin" | "theme" | "gems" | "stardust";
   key: string;
   amount?: number;
   part: "A" | "B" | "C";
@@ -302,24 +313,28 @@ export const rollPhotonMysteryBox = (
         ),
       });
     }
-  else if (c < (PHOTON_BOX_ODDS.partC[0] + PHOTON_BOX_ODDS.partC[1]) / 100) results.push({ kind: "gems", key: "gems", amount: 20, part: "C" });
-  else results.push(skin(random, true, "C"));
+  else if (c < (PHOTON_BOX_ODDS.partC[0] + PHOTON_BOX_ODDS.partC[1]) / 100) results.push(skin(random, true, "C"));
+  else results.push({ kind: "stardust", key: "stardust_75", amount: 75, part: "C" });
   return results;
 };
-/** Part B skins refund 10; the final Part C rule refunds 5 for its skins/themes. */
-export const photonDuplicateGems = (kind: PhotonBoxItem["kind"], part: PhotonBoxItem["part"] = "B") =>
-  kind === "skin" ? (part === "C" ? 5 : 10) : kind === "character" || kind === "theme" ? 5 : 0;
+/** All owned character/skin/theme duplicates return the same 10 Gems. */
+export const photonDuplicateGems = (kind: PhotonBoxItem["kind"], part: PhotonBoxItem["part"] = "B") => {
+  void part; // Kept for receipt compatibility; refunds no longer depend on part.
+  return ["skin", "character", "theme"].includes(kind) ? 10 : 0;
+};
 
 /** Mirrors the atomic SQL receipt, including duplicates within this same box. */
 export const settlePhotonMysteryBox = (items: readonly PhotonBoxItem[], existingKeys: readonly string[]) => {
   const owned = new Set(existingKeys);
-  let gems = 0;
+  let gems = 0, stardust = 0;
   const results = items.map((item) => {
-    const isNew = item.kind === "gems" || !owned.has(item.key);
-    const duplicateGems = item.kind === "gems" || isNew ? 0 : photonDuplicateGems(item.kind, item.part);
-    if (isNew && item.kind !== "gems") owned.add(item.key);
+    const currency = item.kind === "gems" || item.kind === "stardust";
+    const isNew = currency || !owned.has(item.key);
+    const duplicateGems = currency || isNew ? 0 : photonDuplicateGems(item.kind, item.part);
+    if (isNew && !currency) owned.add(item.key);
     gems += item.kind === "gems" ? item.amount ?? 0 : duplicateGems;
+    if (item.kind === "stardust") stardust += item.amount ?? 0;
     return { ...item, is_new: isNew, duplicate_gems: duplicateGems };
   });
-  return { results, gems, ownedKeys: [...owned] };
+  return { results, gems, stardust, ownedKeys: [...owned] };
 };

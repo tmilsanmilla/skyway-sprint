@@ -9,6 +9,9 @@ import {
   useState,
 } from "react";
 import type { SkywayRpcClient } from "./skyway-client";
+import { BASE_ADMIN_COMMANDS, PROTECTED_STARTER_CHARACTERS, ADMIN_SKIN_TIERS, parseAdminCommand, isV23AdminCommand } from "./admin-command-rules";
+import { PHOTON_CHARACTERS } from "./photon-fury-rules";
+import { PHOTON_THEMES } from "./photon-collection-rules";
 
 type PlayerSummary = {
   user_id: string;
@@ -57,17 +60,6 @@ type PlayerDetail = {
   };
 };
 
-type ParsedCommand = {
-  action: "grant" | "revoke" | "set" | "bann" | "unban";
-  targetText?: string;
-  itemKind?: string;
-  itemName?: string;
-  statKey?: string;
-  value?: number;
-  banScopes?: string[];
-  durationSeconds?: number;
-  permanent?: boolean;
-};
 type CommandContext = {
   action?: "grant" | "revoke";
   kind?: string;
@@ -79,23 +71,8 @@ type CommandFeedback = {
   message: string;
 };
 
-const BASE_COMMANDS = [
-  "/grant cosmetic [",
-  "/grant character [",
-  "/revoke cosmetic [",
-  "/revoke character [",
-  "/set gems 100",
-  "/set high score 25000",
-  "/bann [account + device + score] for INFINITE",
-  "/unban username/email",
-];
+const BASE_COMMANDS = BASE_ADMIN_COMMANDS;
 const PLAYER_LOOKUP_IDLE_MS = 5 * 60 * 1000;
-const PROTECTED_STARTER_CHARACTERS = new Set([
-  "runner_ace",
-  "medic_patch",
-  "tank_bulwark",
-  "trickster_rogue",
-]);
 const PLAYER_INVENTORY_GROUPS = [
   {
     key: "obstacle",
@@ -318,153 +295,12 @@ const getCommandContext = (raw: string): CommandContext => {
 };
 
 const getPlayerSuggestionFragment = (raw: string) => {
-  const unbanTarget = raw.match(/^\/unban(?:\s+(.*))?$/i);
-  if (unbanTarget) return unbanTarget[1]?.trim() ?? "";
-
-  const setTarget = raw.match(
-    /^\/set\s+(?:high[_ ]score|gems)\s+\d+\s+(.+)$/i,
-  );
-  if (setTarget)
-    return setTarget[1].replace(/^(?:from|to)\s+/i, "").trim();
-
-  const openBan = raw.match(/^\/bann?\s+\[([^\]]*)$/i);
-  if (!openBan) return null;
-  const inside = openBan[1].trim();
-  const firstScope = Array.from(
-    inside.matchAll(
-      /(?:^|[+\s])\s*(account|device|score|leaderboard)(?=\s*(?:\+|$))/gi,
-    ),
-  )[0];
-  return (firstScope ? inside.slice(0, firstScope.index) : inside)
-    .replace(/\s*\+\s*$/, "")
-    .trim();
+  const target = raw.match(/^\/(?:unban|rpta|rptb)(?:\s+(.*))?$/i)
+    ?? raw.match(/^\/check\s+(?:gems|photons|stardust)(?:\s+(.*))?$/i)
+    ?? raw.match(/^\/set\s+(?:high[_ ]score|gems|photons|stardust)\s+\d+(?:\s+(.*))?$/i);
+  return target ? target[1]?.replace(/^(?:from|to)\s+/i, "").replace(/^\[|\]$/g, "").trim() ?? "" : null;
 };
 
-const parseDuration = (raw: string) => {
-  if (
-    ["permanently", "permanent", "infinite", "infinity", "infnite"].includes(
-      normalize(raw),
-    )
-  )
-    return { permanent: true, seconds: undefined };
-  const units: Record<string, { order: number; seconds: number }> = {
-    year: { order: 0, seconds: 31_536_000 },
-    years: { order: 0, seconds: 31_536_000 },
-    day: { order: 1, seconds: 86_400 },
-    days: { order: 1, seconds: 86_400 },
-    hour: { order: 2, seconds: 3_600 },
-    hours: { order: 2, seconds: 3_600 },
-    minute: { order: 3, seconds: 60 },
-    minutes: { order: 3, seconds: 60 },
-  };
-  const pieces = raw.split(/\s*\+\s*/).map((piece) => piece.trim());
-  if (!pieces.length) throw new Error("Add a duration after FOR.");
-  let lastOrder = -1;
-  let total = 0;
-  const used = new Set<number>();
-  for (const piece of pieces) {
-    const match = piece.match(/^(\d+)\s+(years?|days?|hours?|minutes?)$/i);
-    if (!match) throw new Error(`Invalid duration part: ${piece}`);
-    const amount = Number(match[1]);
-    const unit = units[match[2].toLowerCase()];
-    if (!amount || amount > 1000)
-      throw new Error("Duration values must be between 1 and 1000.");
-    if (unit.order <= lastOrder || used.has(unit.order))
-      throw new Error("Write durations from largest to smallest: years, days, hours, minutes.");
-    lastOrder = unit.order;
-    used.add(unit.order);
-    total += amount * unit.seconds;
-  }
-  if (total > 3_155_760_000)
-    throw new Error("Timed bans cannot be longer than 100 years.");
-  return { permanent: false, seconds: total };
-};
-
-const parseCommand = (raw: string): ParsedCommand => {
-  const command = raw.trim();
-  let match = command.match(
-    /^\/(grant|revoke)\s+(\w+)\s+\[([^\]]+)\](?:\s+(.+))?$/i,
-  );
-  if (match)
-    return {
-      action: match[1].toLowerCase() as "grant" | "revoke",
-      itemKind: match[2].toLowerCase(),
-      itemName: match[3].trim(),
-      targetText: match[4]?.trim(),
-    };
-
-  if (
-    /^\/set\s+(?:(?:attack|obstacle|track|match)[_ ]*)?coins?\b/i.test(
-      command,
-    ) ||
-    /^\/set\s+(?:obstacle[_ ]*points?|versus[_ ]*points?|melons?(?:[_ ]*collected)?)\b/i.test(
-      command,
-    )
-  )
-    throw new Error(
-      "Coin balances are gameplay-only and cannot be changed by admin commands.",
-    );
-
-  match = command.match(
-    /^\/set\s+(high[_ ]score|gems)\s+(\d+)(?:\s+(.+))?$/i,
-  );
-  if (match)
-    return {
-      action: "set",
-      statKey: normalize(match[1]).replace(" ", "_"),
-      value: Number(match[2]),
-      targetText: match[3]?.trim(),
-    };
-
-  match = command.match(/^\/bann?\s+\[([^\]]+)\]\s+for\s+(.+)$/i);
-  if (match) {
-    const inside = match[1].trim();
-    const scopeMatches = Array.from(
-      inside.matchAll(
-        /(?:^|[+\s])\s*(account|device|score|leaderboard)(?=\s*(?:\+|$))/gi,
-      ),
-    );
-    const scopes = scopeMatches.map((scopeMatch) =>
-      scopeMatch[1].toLowerCase() === "score"
-        ? "leaderboard"
-        : scopeMatch[1].toLowerCase(),
-    );
-    if (!scopes.length)
-      throw new Error("Choose account, device, score, or a combination with +.");
-    const firstScope = scopeMatches[0].index ?? 0;
-    const targetText =
-      firstScope <= 0
-        ? ""
-        : inside.slice(0, firstScope).replace(/\s*\+\s*$/, "").trim();
-    const duration = parseDuration(match[2]);
-    return {
-      action: "bann",
-      targetText: targetText || undefined,
-      banScopes: Array.from(new Set(scopes)),
-      durationSeconds: duration.seconds,
-      permanent: duration.permanent,
-    };
-  }
-
-  match = command.match(/^\/unban\s+(.+)$/i);
-  if (match) {
-    const targetText = match[1].trim();
-    if (/^\[\d+\]$/.test(targetText))
-      throw new Error(
-        "Ban IDs are not needed. Use /unban followed by the player's username or email.",
-      );
-    return {
-      action: "unban",
-      targetText,
-    };
-  }
-  if (/^\/unban\s*$/i.test(command))
-    throw new Error("Enter /unban followed by the player's username or email.");
-
-  throw new Error(
-    "Unknown command. Pick one of the suggestions above the command box.",
-  );
-};
 
 const formatActor = (
   row: Record<string, unknown>,
@@ -695,6 +531,27 @@ export function AdminPlayerEditor({
 
   const suggestionLines = useMemo(() => {
     const input = command.toLowerCase();
+    const photonOp = input.match(/^\/(upfch|lpfch|upfski|lpfski|upfth|lpfth)\b/)?.[1];
+    if (photonOp) {
+      const typedAccount = !selected ? command.match(/^\/\w+\s+(\[[^\]]+\]|\S+)(?:\s+|$)/)?.[1] : undefined;
+      const account = selected ? "" : ` ${typedAccount || "[username/email]"}`;
+      const prefix = `/${photonOp}${account}`;
+      const choices = photonOp.endsWith("th")
+        ? PHOTON_THEMES.map((theme) => `${prefix} [${theme.name}]`)
+        : Object.entries(PHOTON_CHARACTERS)
+            .filter(([key]) => photonOp.endsWith("ski") || !["photon_magician", "photon_wizard", "photon_bluff", "photon_bell"].includes(key))
+            .flatMap(([, character]) => photonOp.endsWith("ski")
+              ? ADMIN_SKIN_TIERS.map((tier) => `${prefix} [${character.name}] ${tier}`)
+              : [`${prefix} [${character.name}]`]);
+      let remainder = input.slice(photonOp.length + 1).trim();
+      if (typedAccount) remainder = remainder.slice(typedAccount.length).trim();
+      const fragments = remainder.replace(/\[|\]/g, "").trim().split(/\s+/).filter(Boolean);
+      return choices.filter((choice) => fragments.every((fragment) => choice.toLowerCase().includes(fragment))).slice(0, 8);
+    }
+    if (input.startsWith("/check"))
+      return ["gems", "photons", "stardust"].map((stat) => `/check ${stat}${selected ? "" : " username/email"}`);
+    if (input.startsWith("/rpt"))
+      return [`/rpta${selected ? "" : " username/email"}`, `/rptb${selected ? "" : " username/email"}`, "/rptc"].filter((line) => line.startsWith(input.split(" ")[0]));
     if (!input)
       return selected
         ? [
@@ -708,7 +565,11 @@ export function AdminPlayerEditor({
             "/revoke character [",
             "/set gems 100 username/email",
             "/set high score 25000 username/email",
-            "/bann [username/email account + device + score] for INFINITE",
+            "/set photons 100 username/email",
+            "/set stardust 100 username/email",
+            "/check gems username/email",
+            "/rptb username/email",
+            "/ban username/email 1440",
             "/unban username/email",
           ];
     if (input.startsWith("/grant") || input.startsWith("/revoke")) {
@@ -732,9 +593,8 @@ export function AdminPlayerEditor({
       return (catalog.items ?? [])
         .filter(
           (item) =>
-            action === "grant" ||
-            (!PROTECTED_STARTER_CHARACTERS.has(item.item_key) &&
-              (!selected || ownedKeys.has(item.item_key))),
+            !PROTECTED_STARTER_CHARACTERS.has(item.item_key) &&
+              (action === "grant" || !selected || ownedKeys.has(item.item_key)),
         )
         .slice(0, 8)
         .map(
@@ -746,7 +606,7 @@ export function AdminPlayerEditor({
     }
     if (input.startsWith("/set")) {
       const targetMatch = command.match(
-        /^(\/set\s+(?:high[_ ]score|gems)\s+\d+\s+)(.+)$/i,
+        /^(\/set\s+(?:high[_ ]score|gems|photons|stardust)\s+\d+\s+)(.+)$/i,
       );
       if (targetMatch && (catalog.players?.length ?? 0) > 0)
         return catalog.players!.slice(0, 8).map(
@@ -754,6 +614,8 @@ export function AdminPlayerEditor({
         );
       return [
         `/set gems 100${selected ? "" : " username/email"}`,
+        `/set photons 100${selected ? "" : " username/email"}`,
+        `/set stardust 100${selected ? "" : " username/email"}`,
         `/set high score 25000${selected ? "" : " username/email"}`,
       ];
     }
@@ -763,15 +625,13 @@ export function AdminPlayerEditor({
         return catalog.players!.slice(0, 4).flatMap((player) => {
           const target = player.username || player.email;
           return [
-            `/bann [${target} account] for 24 hours`,
-            `/bann [${target} account + device + score] for 7 days`,
+            `/ban [${target}] 1440`,
+            `/ban [${target}] 0`,
           ];
         });
       return [
-        `/bann [${selected ? "" : "username/email "}account] for 24 hours`,
-        `/bann [${selected ? "" : "username/email "}device + score] for 7 days`,
-        `/bann [${selected ? "" : "username/email "}account + device + score] for INFINITE`,
-        `/bann [${selected ? "" : "username/email "}account + score] for 1 year + 10 days + 10 minutes`,
+        `/ban [${selected?.username || selected?.email || "username/email"}] 1440`,
+        `/ban [${selected?.username || selected?.email || "username/email"}] 0`,
       ];
     }
     if (input.startsWith("/unban")) {
@@ -783,12 +643,10 @@ export function AdminPlayerEditor({
         `/unban ${selected?.username || selected?.email || "username/email"}`,
       ];
     }
-    return (catalog.commands ?? BASE_COMMANDS)
+    return BASE_COMMANDS
       .filter(
         (suggestion) =>
-          !/^\/(?:set|grant|revoke)\b.*\b(?:coins?|obstacle[_ ]*points?|versus[_ ]*points?|melons?)\b/i.test(
-            suggestion,
-          ),
+          suggestion.toLowerCase().startsWith(input),
       )
       .map((suggestion) =>
         suggestion.toLowerCase().startsWith("/unban")
@@ -834,7 +692,19 @@ export function AdminPlayerEditor({
     setCommandFeedback(null);
     setStatus("");
     try {
-      const parsed = parseCommand(command);
+      const parsed = parseAdminCommand(command, Boolean(selected));
+      if (parsed.action === "rptc") {
+        const { data, error } = await supabase.rpc("admin_player_command_v23", {
+          p_action: "rptc", p_target_user_id: null, p_command_text: command,
+        });
+        if (lookupGeneration !== lookupGenerationRef.current) return;
+        if (error) throw new Error(error.message);
+        const result = data as { ok?: boolean; cleared_count?: number; error?: string } | null;
+        if (!result?.ok) throw new Error(result?.error || "Command was rejected.");
+        setCommand("");
+        setCommandFeedback({ tone: "success", message: `Cleared ${result.cleared_count ?? 0} active reports.` });
+        return;
+      }
       if (!selected && !parsed.targetText?.trim())
         throw new Error(
           "Enter an exact username or email in the command when no player is selected.",
@@ -860,7 +730,7 @@ export function AdminPlayerEditor({
           throw new Error("Choose one linked device before running this ban.");
       }
       let item: CatalogItem | undefined;
-      if (parsed.itemName) {
+      if (parsed.itemName && !isV23AdminCommand(parsed)) {
         const { data, error } = await supabase.rpc("admin_command_suggestions", {
           p_fragment: parsed.itemName,
           p_kind: parsed.itemKind ?? null,
@@ -876,9 +746,21 @@ export function AdminPlayerEditor({
             normalize(candidate.item_key) === normalize(parsed.itemName!),
         );
         if (!item) throw new Error("Choose an exact item from the suggestions.");
+        if (PROTECTED_STARTER_CHARACTERS.has(item.item_key))
+          throw new Error("The four starter characters cannot be granted or revoked.");
       }
       const commandResult =
-        parsed.action === "unban"
+        isV23AdminCommand(parsed)
+          ? await supabase.rpc("admin_player_command_v23", {
+              p_action: parsed.action,
+              p_target_user_id: target.user_id,
+              p_item_kind: parsed.itemKind ?? null,
+              p_item_key: parsed.itemName ?? null,
+              p_stat_key: parsed.characterName ?? parsed.statKey ?? null,
+              p_value: parsed.value ?? null,
+              p_command_text: command,
+            })
+          : parsed.action === "unban"
           ? await supabase.rpc("admin_unban_player", {
               p_target_user_id: target.user_id,
               p_reason: "Issued from Admin Player Editor",
@@ -897,7 +779,7 @@ export function AdminPlayerEditor({
               p_permanent: parsed.permanent ?? false,
               p_ban_id: null,
               p_reason:
-                parsed.action === "bann" && banNote.trim()
+                parsed.action === "ban" && banNote.trim()
                   ? banNote.trim()
                   : "Issued from Admin Player Editor",
               p_command_text: command,
@@ -909,10 +791,17 @@ export function AdminPlayerEditor({
         ok?: boolean;
         error?: string;
         revoked_count?: number;
+        value?: number | null;
+        noop?: boolean;
+        message?: string;
       } | null;
       if (!result?.ok) throw new Error(result?.error || "Command was rejected.");
       const completedMessage =
-        parsed.action === "unban"
+        parsed.action === "check"
+          ? `${parsed.statKey?.toUpperCase()}: ${result.value === null ? "NULL (Photon Fury is locked)" : result.value ?? 0} · ${target.username || target.email}`
+          : result.noop
+            ? result.message || "No changes were needed."
+          : parsed.action === "unban"
           ? `UNBAN completed for ${target.username || target.email}. ${result.revoked_count ?? 0} active ban${result.revoked_count === 1 ? "" : "s"} removed.`
           : `${parsed.action.toUpperCase()} completed for ${target.username || target.email}.`;
       setCommand("");
@@ -1033,29 +922,6 @@ export function AdminPlayerEditor({
                 : "NO DEFAULT · TYPE AN EXACT USERNAME OR EMAIL"}
             </span>
           </header>
-          {(detail?.devices?.length ?? 0) > 0 && (
-            <label className="command-device">
-              DEVICE TARGET
-              <select
-                value={selectedDeviceId}
-                onChange={(event) => setSelectedDeviceId(event.target.value)}
-              >
-                {detail!.devices!.length > 1 && (
-                  <option value="">CHOOSE A LINKED DEVICE</option>
-                )}
-                {detail!.devices!.map((device) => (
-                  <option
-                    key={String(device.device_id)}
-                    value={String(device.device_id)}
-                  >
-                    {String(device.label ?? "Web browser")} · {String(
-                      device.token_hint ?? device.device_id,
-                    )}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
           <div className="command-suggestions" aria-label="Command suggestions">
             {suggestionLines.map((suggestion) => (
               <button
@@ -1096,7 +962,7 @@ export function AdminPlayerEditor({
               {commandBusy ? "RUNNING…" : "RUN"}
             </button>
           </form>
-          {/^\/bann?\b/i.test(command.trim()) && (
+          {/^\/ban\b/i.test(command.trim()) && (
             <label className="command-ban-note">
               BAN NOTE <span>OPTIONAL · SHOWN TO THE PLAYER</span>
               <textarea
@@ -1119,11 +985,17 @@ export function AdminPlayerEditor({
           )}
           <p id="admin-player-command-help">
             Use brackets around exact item names. Without a selected player,
-            include an exact username or email. Ban durations must go from largest
-            to smallest; use INFINITE for a permanent ban. Use /unban username/email
+            include an exact username or email. Set examples: /set photons 100 username,
+            /set stardust 100 username. Use /check gems username to read a balance.
+            Ban example: /ban username 1440 (one day), or /ban username 0 (permanent).
+            Use /unban username/email
             to remove all of that player&apos;s active bans. Commands are validated
             actions, never SQL. Coin and attack-coin balances are gameplay-only
             and cannot be changed by admin commands.
+            Photon example: /upfski [username] [Burner] immortal. /upfch and /lpfch
+            grant or revoke a Photon character; /upfth and /lpfth change a theme.
+            /rpta allows reports; /rptb blocks reports; /rptc clears all active reports.
+            Locked Photon accounts are never changed. Starter characters are protected.
           </p>
         </section>
       )}

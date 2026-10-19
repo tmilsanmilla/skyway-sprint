@@ -1,0 +1,18 @@
+// Generate, do not execute, the separately approved narrow profile repair.
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {readFileSync,writeFileSync} from 'node:fs';
+import {resolve} from 'node:path';
+const source=readFileSync(new URL('../neon/update-2-3-profile-access.sql',import.meta.url),'utf8');
+assert.ok(source.trim().endsWith('end $profile_access_23$;'));
+const encoded=Buffer.from(source).toString('base64');
+const transport=`-- Narrow approved own-profile repair, SINGLE atomic statement.\ndo $profile_access_transport_23$\nbegin\n execute convert_from(decode('${encoded}','base64'),'UTF8');\nend $profile_access_transport_23$;\n`;
+const body=source.match(/body:=\$native_username_body\$([\s\S]*?)\$native_username_body\$;/)?.[1];assert.ok(body);
+const md5=createHash('md5').update(body).digest('hex');
+const readback=`-- Read-only profile permissions/body proof; no personal rows.\nselect jsonb_build_object(\n 'setter_body_expected',md5(p.prosrc)='${md5}',\n 'setter_security_definer',p.prosecdef,\n 'setter_empty_search_path','search_path=""'=any(p.proconfig),\n 'setter_authenticated',has_function_privilege('authenticated',p.oid,'EXECUTE'),\n 'setter_anon_denied',not has_function_privilege('anon',p.oid,'EXECUTE') and not has_function_privilege('anonymous',p.oid,'EXECUTE'),\n 'legacy_backup_expected',md5(replace(pg_get_functiondef('app_private.set_player_username_before_23(text)'::regprocedure),'FUNCTION app_private.set_player_username_before_23(','FUNCTION public.set_player_username('))='6d1e6603947afb2fa7f601d3e95d8bdb',\n 'legacy_backup_private',not has_function_privilege('authenticated','app_private.set_player_username_before_23(text)','EXECUTE') and not has_function_privilege('anon','app_private.set_player_username_before_23(text)','EXECUTE') and not has_function_privilege('anonymous','app_private.set_player_username_before_23(text)','EXECUTE'),\n 'profile_rls_enabled',(select relrowsecurity from pg_class where oid='public.player_profiles'::regclass),\n 'exact_single_own_select_policy',(select count(*)=1 and bool_and(polname='Players read their profile' and polcmd='r' and polpermissive and polroles=array[(select oid from pg_roles where rolname='authenticated')] and pg_get_expr(polqual,polrelid)='(( SELECT auth.uid() AS uid) = user_id)') from pg_policy where polrelid='public.player_profiles'::regclass and polcmd in('r','*')),\n 'own_read_three_columns',has_column_privilege('authenticated','public.player_profiles','user_id','SELECT') and has_column_privilege('authenticated','public.player_profiles','username','SELECT') and has_column_privilege('authenticated','public.player_profiles','username_changed_at','SELECT'),\n 'no_whole_table_select',not has_table_privilege('authenticated','public.player_profiles','SELECT'),\n 'created_at_not_exposed',not has_column_privilege('authenticated','public.player_profiles','created_at','SELECT'),\n 'no_direct_write',not has_table_privilege('authenticated','public.player_profiles','INSERT,UPDATE,DELETE,TRUNCATE') and not has_any_column_privilege('authenticated','public.player_profiles','INSERT,UPDATE')\n) as profile_access_proof from pg_proc p where p.oid='public.set_player_username(text)'::regprocedure;\n`;
+const outputs=resolve(import.meta.dirname,'../../../outputs');const result={};
+for(const [name,text] of Object.entries({source,transport,readback})){
+ const path=resolve(outputs,`update-2-3-profile-${name}-20261019.sql`);writeFileSync(path,text,{mode:0o600});
+ result[name]={path,sha256:createHash('sha256').update(text).digest('hex'),bytes:Buffer.byteLength(text)};
+}
+console.log(JSON.stringify(result,null,2));

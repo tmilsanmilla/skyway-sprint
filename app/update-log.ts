@@ -5,7 +5,7 @@ export interface UpdateLogEntry {
   readonly changes: readonly string[];
 }
 
-export const LATEST_UPDATE_VERSION = "2.2";
+export const LATEST_UPDATE_VERSION = "2.3";
 export const VISIBLE_UPDATE_LIMIT = 10;
 
 /**
@@ -15,6 +15,21 @@ export const VISIBLE_UPDATE_LIMIT = 10;
  * what players will notice rather than database, deployment, or code details.
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
+  {
+    id: "2026-10-19-masteries-and-duels",
+    publishedAt: "2026-10-19T22:44:07Z",
+    title: "MASTERIES + STEADIER DUELS",
+    changes: [
+      "Eight characters now have optional mastery quests, separate trials, new abilities and switchable flair upgrades. Smoke can use a basic charged throw before mastery.",
+      "Owned character flairs can be equipped across characters. Character-only flair effects still require the matching character.",
+      "Fixed background account updates rewinding live 1v1 scores, refreshed expiring sign-ins without restarting runs, and restored guarded duel abilities.",
+      "New players can choose a username again. Username saves keep the 30-day rename limit and stay limited to your own profile.",
+      "Gem streaks continue across waves without a cap. Physical Endless Gems give 10 XP each, with a new score-based XP curve and level requirements.",
+      "Levels restart at 0 while accounts, Gems, inventory, scores and existing mode unlocks are kept. New unlocks require level 15 for daily modes, 25 for Photon Fury, 35 for Ranked and 45 plus the collection requirements for Unlimited.",
+      "Daily modes now include Mundane and Sunday Quicksand. Ordinary duels exclude Mythics; Unlimited keeps its separate collection requirements.",
+      "Refreshed extraction odds, Photon rewards, skins and themes, plus clearer admin currency and report controls.",
+    ],
+  },
   {
     id: "2026-10-15-map-refresh",
     publishedAt: "2026-10-15T23:02:29Z",

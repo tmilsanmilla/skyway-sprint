@@ -34,7 +34,8 @@ test('actual Casual hub requires level5 free while already-purchased Ranked rema
 test('actual extraction quantity controls cap at99 and show new category odds',()=>{
  const html=render(ExtractionBoxCards,{level:40,gems:100000,busy:false,quantities:{normal:100,rare:100,legendary:100},extracting:null,setQuantities:noop,onOpen:noop});
  assert.equal((html.match(/max="99"/g)||[]).length,3);assert.equal((html.match(/value="99"/g)||[]).length,3);
- for(const n of [7,13,18,20])assert.ok(html.includes(`${n}% CHARACTER`));
+ for(const n of [9,14,17,18])assert.ok(html.includes(`${n}% CHARACTER`));
+ assert.doesNotMatch(html,/ODDS NEED CONFIRMATION|ODDS UNAVAILABLE|pull odds are unavailable/,'confirmed odds reopen all level-eligible boxes');
 });
 test('an occupied lane can delay a Pumpkin without forcing an unreachable miss',()=>{
  assert.equal(ruinsWaveProgress(2300,1,false),2249);assert.equal(ruinsWaveProgress(3000,1,false),2249);
@@ -94,7 +95,7 @@ test('queued map actions are bound to the original account, auth generation and 
 });
 test('actual wave healing and practice opponent use shared map-health and paid-armory rules',()=>{
  const page=readFileSync(new URL('./page.tsx',import.meta.url),'utf8');
- assert.match(page,/state.current.hearts \+ getAllowedHealing\(activeMapId, healAmount\)/);
+ assert.match(page,/state.current.hearts \+ getAllowedHealing\(activeMapId, healAmount\+flairEffects.waveHealExtra\)/);
  assert.match(page,/planBotAttackPurchases\(activeMapId, botBudgetBefore, attackLimit\)/);
  assert.doesNotMatch(page,/attack.cost <= botBudget|botBudget -= chosen.cost/);
 });

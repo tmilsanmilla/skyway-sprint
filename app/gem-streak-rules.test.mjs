@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  GEM_STREAK_SATURATION_PICKUPS,
   INITIAL_GEM_STREAK_STATE,
   advanceGemStreak,
   getGemStreakMultiplier,
@@ -31,12 +30,12 @@ test("gem rewards climb to x5, hold for five pickups, then reach x6 and x7", () 
   assert.equal(results[11].notice, "GEM STREAK ×7 · +7 GEMS");
 });
 
-test("gem rewards and chain state stay capped at x7", () => {
+test("gem rewards continue past x7 without a cap", () => {
   const { state, results } = collect(INITIAL_GEM_STREAK_STATE, 30);
-  assert.equal(state.consecutivePickups, GEM_STREAK_SATURATION_PICKUPS);
+  assert.equal(state.consecutivePickups, 30);
   assert.deepEqual(
     results.slice(11).map(({ multiplier }) => multiplier),
-    Array(19).fill(7),
+    Array.from({length:19}, (_, index) => index + 7),
   );
 });
 
@@ -57,5 +56,5 @@ test("streak multiplier safely normalizes persisted or invalid counts", () => {
   assert.equal(getGemStreakMultiplier(-50), 0);
   assert.equal(getGemStreakMultiplier(Number.NaN), 0);
   assert.equal(getGemStreakMultiplier(4.9), 4);
-  assert.equal(getGemStreakMultiplier(500), 7);
+  assert.equal(getGemStreakMultiplier(500), 495);
 });
