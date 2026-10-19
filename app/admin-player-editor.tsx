@@ -9,9 +9,10 @@ import {
   useState,
 } from "react";
 import type { SkywayRpcClient } from "./skyway-client";
-import { BASE_ADMIN_COMMANDS, PROTECTED_STARTER_CHARACTERS, ADMIN_SKIN_TIERS, parseAdminCommand, isV23AdminCommand } from "./admin-command-rules";
+import { BASE_ADMIN_COMMANDS, PROTECTED_STARTER_CHARACTERS, ADMIN_SKIN_TIERS, parseAdminCommand, isV23AdminCommand, resolveAdminMastery, adminMasterySuggestions } from "./admin-command-rules";
 import { PHOTON_CHARACTERS } from "./photon-fury-rules";
 import { PHOTON_THEMES } from "./photon-collection-rules";
+import { MASTERIES } from "./mastery-rules";
 
 type PlayerSummary = {
   user_id: string;
@@ -50,6 +51,7 @@ type PlayerDetail = {
   stats?: Record<string, unknown> | null;
   loadout?: Record<string, unknown> | null;
   unlocks?: Array<Record<string, unknown>>;
+  masteries?: Array<Record<string, unknown>>;
   devices?: Array<Record<string, unknown>>;
   bans?: Array<Record<string, unknown>>;
   reports?: Array<Record<string, unknown>>;
@@ -241,12 +243,53 @@ const normalizePlayerDetail = (value: unknown): PlayerDetail => {
     stats: asRecord(raw.stats),
     loadout: asRecord(raw.loadout),
     unlocks,
+    masteries: asRecordArray(raw.masteries) ?? [],
     devices,
     bans: asRecordArray(raw.bans) ?? [],
     reports: asRecordArray(raw.reports) ?? [],
     multiplayer: asRecord(raw.multiplayer),
   };
 };
+
+/** Admin lookup is read-only here; action buttons only prepare an audited command. */
+export function AdminMasteryInventory({
+  masteries, ownedCharacters, isMainAdmin, busy, onCommand,
+}: {
+  masteries: Array<Record<string, unknown>>;
+  ownedCharacters: string[];
+  isMainAdmin: boolean;
+  busy: boolean;
+  onCommand: (command: string) => void;
+}) {
+  const owned = new Set(ownedCharacters);
+  const unlocked = masteries.filter((row) => row.mastered === true).length;
+  return <details className="player-inventory-group group-masteries">
+    <summary>
+      <span>M</span>
+      <span><strong>MASTERIES</strong><small>Quest progress and unlocked character masteries.</small></span>
+      <em>{unlocked}/{MASTERIES.length}</em>
+    </summary>
+    <div className="player-inventory-list">
+      {MASTERIES.map((definition) => {
+        const row = masteries.find((entry) => entry.character_key === definition.key);
+        const hasCharacter = owned.has(definition.key);
+        const quest = Math.min(3, Math.max(0, Number(row?.quest) || 0));
+        const progress = Array.isArray(row?.progress) ? row.progress : [];
+        const mastered = row?.mastered === true;
+        return <article key={definition.key}>
+          <header><strong>{definition.name}</strong><span>{mastered ? "MASTERED" : row?.complete === true ? "TRIAL READY" : row ? `QUEST ${quest + 1}/3` : "NOT STARTED"}</span></header>
+          {row && !row.complete && quest < 3 && <p>{definition.quests[quest]} · {definition.targets[quest].map((target, index) => `${Math.min(target, Math.max(0, Number(progress[index]) || 0))}/${target}`).join(" · ")}</p>}
+          {mastered && <p>Mastery {row?.masteryEnabled === true ? "ON" : "OFF"} · Flair rewrite {row?.flairRewriteEnabled === true ? "ON" : "OFF"}</p>}
+          {!hasCharacter && <p>Unlock this character before granting its mastery.</p>}
+          {isMainAdmin && <div>
+            <button type="button" aria-label={`Prepare grant ${definition.name} mastery command`} disabled={busy || !hasCharacter || mastered} onClick={() => onCommand(`/grant mastery [${definition.name}]`)}>GRANT MASTERY</button>
+            <button type="button" aria-label={`Prepare revoke ${definition.name} mastery command`} disabled={busy || !mastered} onClick={() => onCommand(`/revoke mastery [${definition.name}]`)}>REVOKE MASTERY</button>
+          </div>}
+        </article>;
+      })}
+    </div>
+  </details>;
+}
 
 const normalizePlayerRecord = (
   value: unknown,
@@ -341,6 +384,7 @@ export function AdminPlayerEditor({
   const [status, setStatus] = useState("");
   const [catalog, setCatalog] = useState<CommandSuggestions>({});
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
+  const commandInputRef = useRef<HTMLInputElement | null>(null);
   const detailRequestRef = useRef(0);
   const searchRequestRef = useRef(0);
   const lookupGenerationRef = useRef(0);
@@ -420,6 +464,8 @@ export function AdminPlayerEditor({
 
   const runSearch = async (event?: FormEvent) => {
     event?.preventDefault();
+    // Keep an in-flight command bound to the selected target shown at submit.
+    if (commandBusy) return;
     const requestId = ++searchRequestRef.current;
     ++detailRequestRef.current;
     setSearching(true);
@@ -561,8 +607,10 @@ export function AdminPlayerEditor({
         : [
             "/grant cosmetic [",
             "/grant character [",
+            "/grant mastery [",
             "/revoke cosmetic [",
             "/revoke character [",
+            "/revoke mastery [",
             "/set gems 100 username/email",
             "/set high score 25000 username/email",
             "/set photons 100 username/email",
@@ -582,10 +630,13 @@ export function AdminPlayerEditor({
           return `${base}${action === "revoke" ? " from " : " "}${target}`;
         });
       }
+      if (context.kind === "mastery")
+        return adminMasterySuggestions(action, context.fragment, Boolean(selected));
       if (context.kind !== "character" && context.kind !== "cosmetic")
         return [
           `/${action} cosmetic [`,
           `/${action} character [`,
+          `/${action} mastery [`,
         ];
       const ownedKeys = new Set(
         (detail?.unlocks ?? []).map((item) => String(item.item_key)),
@@ -730,6 +781,7 @@ export function AdminPlayerEditor({
           throw new Error("Choose one linked device before running this ban.");
       }
       let item: CatalogItem | undefined;
+      const mastery = parsed.itemKind === "mastery" && parsed.itemName ? resolveAdminMastery(parsed.itemName) : undefined;
       if (parsed.itemName && !isV23AdminCommand(parsed)) {
         const { data, error } = await supabase.rpc("admin_command_suggestions", {
           p_fragment: parsed.itemName,
@@ -755,7 +807,7 @@ export function AdminPlayerEditor({
               p_action: parsed.action,
               p_target_user_id: target.user_id,
               p_item_kind: parsed.itemKind ?? null,
-              p_item_key: parsed.itemName ?? null,
+              p_item_key: mastery?.key ?? parsed.itemName ?? null,
               p_stat_key: parsed.characterName ?? parsed.statKey ?? null,
               p_value: parsed.value ?? null,
               p_command_text: command,
@@ -880,11 +932,12 @@ export function AdminPlayerEditor({
         <div>
           <input
             id="admin-player-search"
+            disabled={commandBusy}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Username or email"
           />
-          <button disabled={searching}>{searching ? "SEARCHING…" : "SEARCH"}</button>
+          <button disabled={searching || commandBusy}>{searching ? "SEARCHING…" : "SEARCH"}</button>
         </div>
       </form>
 
@@ -893,6 +946,7 @@ export function AdminPlayerEditor({
           {players.map((player) => (
             <button
               key={player.user_id}
+              disabled={commandBusy}
               className={selected?.user_id === player.user_id ? "selected" : ""}
               onClick={() => void choosePlayer(player)}
             >
@@ -939,6 +993,7 @@ export function AdminPlayerEditor({
           <form onSubmit={executeCommand}>
             <span aria-hidden="true">&gt;</span>
             <input
+              ref={commandInputRef}
               aria-describedby={
                 commandFeedback
                   ? "admin-player-command-help admin-player-command-feedback"
@@ -996,6 +1051,10 @@ export function AdminPlayerEditor({
             grant or revoke a Photon character; /upfth and /lpfth change a theme.
             /rpta allows reports; /rptb blocks reports; /rptc clears all active reports.
             Locked Photon accounts are never changed. Starter characters are protected.
+            Mastery example: /grant mastery [Dash] username. The player must own
+            the character first. /revoke mastery [Dash] username removes its mastery
+            benefits but keeps quest progress. Inventory buttons prepare a command;
+            press RUN to apply it.
           </p>
         </section>
       )}
@@ -1077,6 +1136,18 @@ export function AdminPlayerEditor({
                   <h3>INVENTORY <em>{inventory.length}</em></h3>
                 </div>
               </header>
+              <AdminMasteryInventory
+                masteries={detail.masteries ?? []}
+                ownedCharacters={inventory.filter((item) => item.item_type === "character").map((item) => String(item.item_key))}
+                isMainAdmin={isMainAdmin}
+                busy={commandBusy}
+                onCommand={(preparedCommand) => {
+                  setCommand(preparedCommand);
+                  setCommandFeedback(null);
+                  commandInputRef.current?.focus();
+                  commandInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                }}
+              />
               {inventory.length === 0 ? (
                 <div className="player-editor-empty">Inventory is empty.</div>
               ) : (

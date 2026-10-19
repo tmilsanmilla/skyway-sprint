@@ -3,23 +3,24 @@ import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
+import * as masteryRules from './mastery-rules.ts';
 
 /** Deterministic hook fixture, not a browser or production authentication test. */
 function fixture(rpc){
- const cells=[];let index=0,layouts=[],effects=[];
+ const cells=[];let index=0,layouts=[],effects=[],writes=0;
  const same=(a,b)=>a&&b&&a.length===b.length&&a.every((v,i)=>Object.is(v,b[i]));
  const effect=(fn,deps,layout)=>{const i=index++,old=cells[i];if(old&&same(old.deps,deps))return;cells[i]={deps};(layout?layouts:effects).push(()=>{old?.cleanup?.();cells[i].cleanup=fn();});};
  const react={
   useRef(value){const i=index++;return cells[i]??=( {current:value});},
-  useState(initial){const i=index++;if(!(i in cells))cells[i]=typeof initial==='function'?initial():initial;return[cells[i],value=>{cells[i]=typeof value==='function'?value(cells[i]):value;}];},
+  useState(initial){const i=index++;if(!(i in cells))cells[i]=typeof initial==='function'?initial():initial;return[cells[i],value=>{writes++;cells[i]=typeof value==='function'?value(cells[i]):value;}];},
   useCallback(fn,deps){const i=index++,old=cells[i];if(old&&same(old.deps,deps))return old.fn;cells[i]={fn,deps};return fn;},
   useLayoutEffect(fn,deps){effect(fn,deps,true);},useEffect(fn,deps){effect(fn,deps,false);},
  };
  const compiled=ts.transpileModule(readFileSync(new URL('./use-masteries.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
  const exports={};const intervals=new Set();
- const require=name=>name==='react'?react:name==='./skyway-client'?{supabase:{rpc}}:name==='./mastery-rules'?{emptyMasteryAccount:()=>({active:null,quests:{}})}:(()=>{throw new Error(name);})();
+ const require=name=>name==='react'?react:name==='./skyway-client'?{supabase:{rpc}}:name==='./mastery-rules'?masteryRules:(()=>{throw new Error(name);})();
  vm.runInNewContext(compiled,{exports,require,Promise,Error,Number,Math,window:{setInterval(fn){intervals.add(fn);return fn;},clearInterval(fn){intervals.delete(fn);}}});
- return{render(uid,{commit=true}={}){index=0;layouts=[];effects=[];const result=exports.useMasteries(uid);if(commit){for(const fn of layouts)fn();for(const fn of effects)fn();}return result;},intervals};
+ return{render(uid,{commit=true}={}){index=0;layouts=[];effects=[];const result=exports.useMasteries(uid);if(commit){for(const fn of layouts)fn();for(const fn of effects)fn();}return result;},intervals,get writes(){return writes;},pulse(){for(const fn of intervals)fn();}};
 }
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const profile=n=>({data:{active:null,quests:{},photons:n},error:null});
@@ -151,4 +152,97 @@ test('invalid resumed sequence or clock is rejected before installing a queue',a
   const hook=f.render('A');await tick();assert.equal(await hook.begin('run','1v1','runner_dash'),null);
   hook.record({type:'dash'});await hook.flush();assert.equal(batches.length,0);
  }
+});
+const dashAccount=n=>({active:'runner_dash',quests:{runner_dash:{quest:0,progress:[n],complete:false,mastered:false,masteryEnabled:false,flairRewriteEnabled:false}}});
+const withAccount=account=>({data:{...account,photons:10},error:null});
+test('actual hook previews events on its250ms pulse, not every frame, then acknowledges only the saved batch and retains its newer tail',async()=>{
+ const first=deferred(),second=deferred();let credits=0;
+ const f=fixture(async name=>{
+  if(name==='get_mastery_profile')return withAccount(dashAccount(5));
+  if(name==='begin_mastery_session')return{data:{session_id:'run',profile:dashAccount(5)},error:null};
+  if(name==='credit_mastery_events')return++credits===1?first.promise:second.promise;
+  throw new Error(name);
+ });
+ let hook=f.render('A');await tick();hook=f.render('A');await hook.begin('run','endless','runner_dash');hook=f.render('A');
+ const before=f.writes;for(let i=0;i<100;i++)hook.record({type:'frame',seconds:.01,hp:3});
+ for(let i=0;i<3;i++)hook.record({type:'dash'});assert.equal(f.writes,before,'Recording never directly schedules React state');
+ f.pulse();hook=f.render('A');assert.equal(hook.account.quests.runner_dash.progress[0],5);assert.equal(hook.liveAccount.quests.runner_dash.progress[0],8);assert.equal(hook.syncStatus,'pending');
+ // Remove the frame-only prefix in the first two server batches; these carry
+ // the same saved quest baseline, not any double-applied dash progress.
+ first.resolve(withAccount(dashAccount(5)));second.resolve(withAccount(dashAccount(8)));await hook.flush();hook=f.render('A');
+ assert.equal(hook.liveAccount.quests.runner_dash.progress[0],8);assert.equal(hook.pendingEvents,0);assert.equal(hook.syncStatus,'saved');
+});
+test('a saved batch never double counts the in-flight local preview or newer queued event',async()=>{
+ const first=deferred(),second=deferred();let credits=0;
+ const f=fixture(async name=>{
+  if(name==='get_mastery_profile')return withAccount(dashAccount(5));
+  if(name==='begin_mastery_session')return{data:{session_id:'run',profile:dashAccount(5)},error:null};
+  if(name==='credit_mastery_events')return++credits===1?first.promise:second.promise;
+  throw new Error(name);
+ });
+ let hook=f.render('A');await tick();hook=f.render('A');await hook.begin('run','endless','runner_dash');
+ for(let i=0;i<3;i++)hook.record({type:'dash'});const flight=hook.flush();hook.record({type:'dash'});f.pulse();hook=f.render('A');
+ assert.equal(hook.liveAccount.quests.runner_dash.progress[0],9);assert.equal(hook.syncStatus,'syncing');
+ first.resolve(withAccount(dashAccount(8)));await tick();hook=f.render('A');assert.equal(hook.account.quests.runner_dash.progress[0],8);assert.equal(hook.liveAccount.quests.runner_dash.progress[0],9);
+ second.resolve(withAccount(dashAccount(9)));assert.equal(await flight,true);hook=f.render('A');assert.equal(hook.liveAccount.quests.runner_dash.progress[0],9);assert.equal(hook.syncStatus,'saved');
+});
+test('failed save keeps its live preview marked retrying until an actual acknowledgment, and account changes mask it',async()=>{
+ let fail=true;
+ const f=fixture(async name=>{
+  if(name==='get_mastery_profile')return withAccount(dashAccount(5));
+  if(name==='begin_mastery_session')return{data:{session_id:'run',profile:dashAccount(5)},error:null};
+  if(name==='credit_mastery_events')return fail?{data:null,error:{message:'offline'}}:withAccount(dashAccount(6));
+  throw new Error(name);
+ });
+ let hook=f.render('A');await tick();hook=f.render('A');await hook.begin('run','endless','runner_dash');hook.record({type:'dash'});await hook.flush();hook=f.render('A');
+ assert.equal(hook.syncStatus,'retrying');assert.equal(hook.account.quests.runner_dash.progress[0],5);assert.equal(hook.liveAccount.quests.runner_dash.progress[0],6);
+ fail=false;await hook.flush();hook=f.render('A');assert.equal(hook.syncStatus,'saved');assert.equal(hook.error,'');assert.equal(hook.account.quests.runner_dash.progress[0],6);
+ hook.record({type:'dash'});f.pulse();hook=f.render('A');assert.equal(hook.liveAccount.quests.runner_dash.progress[0],7);
+ hook=f.render('B');assert.equal(hook.syncStatus,'idle');assert.equal(hook.liveAccount.active,null);assert.equal(hook.pendingEvents,0);
+});
+test('server-identified replay finishes without changing disabled mastery/flair switches or projecting trial events into quests',async()=>{
+ const account={active:null,quests:{runner_dash:{quest:3,progress:[75],complete:true,mastered:true,masteryEnabled:false,flairRewriteEnabled:false}}};let finishes=0;
+ const f=fixture(async name=>{
+  if(name==='get_mastery_profile')return withAccount(account);
+  if(name==='begin_mastery_session')return{data:{session_id:'replay',profile:account,trial_replay:true},error:null};
+  if(name==='credit_mastery_events')return withAccount(account);
+  if(name==='finish_mastery_trial'){finishes++;return{data:{...account,trial_replay:true},error:null};}
+  throw new Error(name);
+ });
+ let hook=f.render('A');await tick();hook=f.render('A');await hook.begin('run','endless','runner_dash','runner_dash');hook=f.render('A');assert.equal(hook.trialReplay,true);
+ hook.record({type:'dash'});hook.record({type:'frame',seconds:.5,hp:3});f.pulse();hook=f.render('A');assert.equal(hook.liveAccount.quests.runner_dash.masteryEnabled,false);
+ assert.equal(await hook.finish(),true);hook=f.render('A');assert.equal(finishes,1);assert.equal(hook.account.quests.runner_dash.mastered,true);assert.equal(hook.account.quests.runner_dash.masteryEnabled,false);assert.equal(hook.account.quests.runner_dash.flairRewriteEnabled,false);assert.equal(hook.trialReplay,true);
+});
+test('already-mastered trial cannot start against an old backend without its explicit replay receipt',async()=>{
+ const account={active:null,quests:{runner_dash:{quest:3,progress:[75],complete:true,mastered:true,masteryEnabled:false,flairRewriteEnabled:false}}};let finishes=0;
+ const f=fixture(async name=>{
+  if(name==='get_mastery_profile')return withAccount(account);
+  if(name==='begin_mastery_session')return{data:{session_id:'old-trial',profile:account},error:null};
+  if(name==='finish_mastery_trial'){finishes++;return withAccount(account);}
+  throw new Error(name);
+ });
+ let hook=f.render('A');await tick();hook=f.render('A');assert.equal(await hook.begin('run','endless','runner_dash','runner_dash'),null);
+ hook=f.render('A');assert.match(hook.error,/Trial replay is not ready/);assert.equal(await hook.finish(),false);assert.equal(finishes,0);
+});
+test('late initial profile cannot overwrite a newer saved receipt acknowledgment',async()=>{
+ const initial=deferred();
+ const f=fixture(async name=>{
+  if(name==='get_mastery_profile')return initial.promise;
+  if(name==='begin_mastery_session')return{data:{session_id:'run',profile:dashAccount(5)},error:null};
+  if(name==='credit_mastery_events')return withAccount(dashAccount(6));
+  throw new Error(name);
+ });
+ let hook=f.render('A');await hook.begin('run','endless','runner_dash');hook.record({type:'dash'});await hook.flush();
+ initial.resolve(withAccount(dashAccount(0)));await tick();hook=f.render('A');
+ assert.equal(hook.account.quests.runner_dash.progress[0],6);assert.equal(hook.liveAccount.quests.runner_dash.progress[0],6);
+});
+test('only the newest outstanding refresh applies, while a fresh authoritative reset is allowed to decrease progress',async()=>{
+ const older=deferred(),newer=deferred();let reads=0;
+ const f=fixture(async name=>{
+  assert.equal(name,'get_mastery_profile');reads++;
+  return reads===1?withAccount(dashAccount(5)):reads===2?older.promise:reads===3?newer.promise:withAccount(dashAccount(0));
+ });
+ let hook=f.render('A');await tick();hook=f.render('A');const first=hook.refresh(),second=hook.refresh();
+ newer.resolve(withAccount(dashAccount(7)));await second;older.resolve(withAccount(dashAccount(1)));await first;hook=f.render('A');assert.equal(hook.account.quests.runner_dash.progress[0],7);
+ await hook.refresh();hook=f.render('A');assert.equal(hook.account.quests.runner_dash.progress[0],0,'Do not latch maximum counts: authoritative hit/reset/revocation may reduce them');
 });

@@ -107,6 +107,7 @@ export function reduceMasteryQuest(state: MasteryAccountState, character: string
 }
 export function completeMasteryTrial(state: MasteryAccountState, key: MasteryKey): MasteryAccountState {
   const quest = state.quests[key];
+  if (quest?.mastered) return state;
   return quest?.complete ? { ...state, quests: { ...state.quests, [key]: { ...quest, mastered: true, masteryEnabled: true, flairRewriteEnabled: true } } } : state;
 }
 export function toggleMastery(state: MasteryAccountState, key: MasteryKey, which: "mastery" | "flair", enabled: boolean): MasteryAccountState {

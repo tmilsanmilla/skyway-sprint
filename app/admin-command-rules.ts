@@ -1,4 +1,5 @@
 /** Typed command grammar only. SQL endpoints independently enforce every rule. */
+import { MASTERIES } from "./mastery-rules.ts";
 export const ADMIN_BALANCE_LIMIT = 1_000_000_000;
 export const ADMIN_SCORE_LIMIT = 1_000_000_000_000;
 export const ADMIN_BAN_MINUTES_LIMIT = 52_596_000; // Existing 100-year safety ceiling.
@@ -23,7 +24,7 @@ export type AdminCommand = {
 };
 
 export const BASE_ADMIN_COMMANDS = [
-  "/grant cosmetic [", "/grant character [", "/revoke cosmetic [", "/revoke character [",
+  "/grant cosmetic [", "/grant character [", "/grant mastery [", "/revoke cosmetic [", "/revoke character [", "/revoke mastery [",
   "/set gems 100", "/set photons 100", "/set stardust 100", "/set high score 25000",
   "/check gems", "/check photons", "/check stardust", "/rpta", "/rptb", "/rptc",
   "/upfch", "/lpfch", "/upfski", "/lpfski", "/upfth", "/lpfth", "/ban username/email 1440", "/unban username/email",
@@ -57,7 +58,7 @@ export function parseAdminCommand(raw: string, hasSelectedPlayer = false): Admin
   if (/^\/bann\b/i.test(command)) throw new Error("Use /ban username/email minutes. Use 0 minutes for a permanent ban.");
   if (/^\/(?:set|check|grant|revoke)\b.*\b(?:coins?|obstacle[_ ]*points?|versus[_ ]*points?|melons?)\b/i.test(command))
     throw new Error("Coin balances are gameplay-only and cannot be changed by admin commands.");
-  let match = command.match(/^\/(grant|revoke)\s+(character|cosmetic)\s+\[([^\[\]]+)\](?:\s+(.+))?$/i);
+  let match = command.match(/^\/(grant|revoke)\s+(character|cosmetic|mastery)\s+\[([^\[\]]+)\](?:\s+(.+))?$/i);
   if (match) return { action: match[1].toLowerCase() as "grant" | "revoke", itemKind: match[2].toLowerCase(), itemName: match[3].trim(), targetText: target(match[4]) };
   match = command.match(/^\/set\s+(high[_ ]score|gems|photons|stardust)\s+(\S+)(?:\s+(.+))?$/i);
   if (match) {
@@ -99,5 +100,20 @@ export function parseAdminCommand(raw: string, hasSelectedPlayer = false): Admin
 
 export function isV23AdminCommand(command: AdminCommand) {
   return ["check", "rpta", "rptb", "rptc", "photon_grant", "photon_revoke"].includes(command.action) ||
+    (["grant", "revoke"].includes(command.action) && command.itemKind === "mastery") ||
     (command.action === "set" && ["photons", "stardust"].includes(command.statKey ?? ""));
+}
+
+/** Resolve only an exact supported mastery, never a partial character match. */
+export function resolveAdminMastery(raw: string) {
+  const name = raw.trim().toLowerCase();
+  const definition = MASTERIES.find((entry) => entry.name.toLowerCase() === name || entry.key === name);
+  if (!definition) throw new Error("Choose an exact mastery from the suggestions.");
+  return definition;
+}
+
+export function adminMasterySuggestions(action: "grant" | "revoke", fragment: string, selectedPlayer: boolean) {
+  const query = fragment.trim().toLowerCase();
+  return MASTERIES.filter((entry) => entry.name.toLowerCase().includes(query) || entry.key.includes(query))
+    .map((entry) => `/${action} mastery [${entry.name}]${selectedPlayer ? "" : action === "revoke" ? " from " : " "}`);
 }

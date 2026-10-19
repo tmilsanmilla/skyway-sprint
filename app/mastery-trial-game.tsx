@@ -12,11 +12,17 @@ const initialTrialState=(character:MasteryKey)=>({trial:reduceMasteryTrial(creat
 export const isTrialTextInput = (target: EventTarget | null) => target instanceof HTMLElement && !!target.closest("input,textarea,select,[contenteditable=true]");
 /** Isolated non-rewarding runner. Uses the same lane, obstacle and shield
  * language as Endless; the server owns quest completion and the trophy grant. */
-export function MasteryTrialGame({character,onEvent,onFinish,onExit,serverFailed=false}:{character:MasteryKey;onEvent:(event:MasteryQuestEvent)=>void;onFinish:()=>Promise<boolean>;onExit:()=>void;serverFailed?:boolean}){
+export function MasteryTrialGame({character,onEvent,onFinish,onExit,serverFailed=false,replay=false}:{character:MasteryKey;onEvent:(event:MasteryQuestEvent)=>void;onFinish:()=>Promise<boolean>;onExit:()=>void;serverFailed?:boolean;replay?:boolean}){
  const [initial]=useState(()=>initialTrialState(character));
  const ref=useRef(initial);
  const [view,setView]=useState(()=>({...initial}));
  const [status,setStatus]=useState("");
+ const [finishFailed,setFinishFailed]=useState(false);
+ const confirmFinish=useCallback(async()=>{
+  setFinishFailed(false);setStatus(replay?"Confirming replay…":"Saving mastery…");
+  let ok=false;try{ok=await onFinish();}catch{/* Keep the same trial available for a safe retry. */}
+  setFinishFailed(!ok);setStatus(ok?replay?"Replay complete. No rewards or mastery settings changed.":"Mastery unlocked!":replay?"Replay could not be confirmed. Keep this screen open and retry.":"Mastery could not be confirmed. Keep this screen open and retry.");
+ },[onFinish,replay]);
  useEffect(()=>{if(serverFailed){ref.current.trial={...ref.current.trial,phase:"failed",failure:"The trial failed its server check. Try again."};}},[serverFailed]);
  const emit=useCallback((event:MasteryTrialEvent)=>{
   const s=ref.current,r=reduceMasteryTrial(s.trial,event);s.trial=r.state;
@@ -29,8 +35,8 @@ export function MasteryTrialGame({character,onEvent,onFinish,onExit,serverFailed
   if(event.type==="snowflake")onEvent({type:"snowflake"});
   if(s.hp<=0&&s.trial.phase==="playing"){s.trial=reduceMasteryTrial(s.trial,{type:"died"}).state;onEvent({type:"trial-died"});}
   if(r.spawnSnowflake){const free=Array.from({length:5},(_,i)=>i).filter(l=>!s.pieces.some(p=>p.lane===l&&p.y<105));if(free.length){s.pieces.push({id:++s.id,lane:free[Math.floor(Math.random()*free.length)],y:-4,kind:"snowflake",special:false});s.trial=reduceMasteryTrial(s.trial,{type:"snowflake-spawn"}).state;}}
-  if(r.unlock&&!s.finished){s.finished=true;setStatus("Saving mastery…");void onFinish().then(ok=>setStatus(ok?"Mastery unlocked!":"Mastery could not be confirmed. Keep this screen open and retry."));}
- },[onEvent,onFinish]);
+  if(r.unlock&&!s.finished){s.finished=true;void confirmFinish();}
+ },[onEvent,confirmFinish]);
  const act=useCallback(()=>{
   const s=ref.current;if(s.trial.phase!=="playing")return;
   const t=s.clock;
@@ -119,7 +125,7 @@ export function MasteryTrialGame({character,onEvent,onFinish,onExit,serverFailed
  const playing=view.trial.phase==="playing";
  const abilityLabel=character==="runner_dash"?"DASH":character==="runner_vault"?"TIME VAULT":character==="trickster_smoke"?"DISSIPATE":null;
  return <section className="mastery-trial-game" aria-label="Mastery trial">
-  <header><strong>{view.hp.toFixed(2).replace(/0+$/,"").replace(/\.$/,"")} HP</strong><button type="button" onClick={onExit}>Return to inventory</button></header>
+  <header><strong>{view.hp.toFixed(2).replace(/0+$/,"").replace(/\.$/,"")} HP</strong>{replay?<span>Practice replay · no rewards</span>:null}<button type="button" onClick={onExit}>Return to inventory</button></header>
   <div className={`mastery-trial-track mastery-track-${character} mastery-trial-phase-${view.trial.phase}`} onPointerDown={e=>{
    if(e.pointerType!=="touch")return;
    const box=e.currentTarget.getBoundingClientRect(),target=Math.max(0,Math.min(4,Math.floor((e.clientX-box.left)/box.width*5)));
@@ -129,11 +135,11 @@ export function MasteryTrialGame({character,onEvent,onFinish,onExit,serverFailed
    {view.pieces.map(p=><div key={p.id} className={`mastery-trial-piece${p.special?character==="runner_dash"?" mastery-green":character==="runner_stride"?" mastery-red":" mastery-blue":""}`} style={{left:`${p.lane*20+10}%`,top:`${p.y}%`}}>{p.kind==="gem"?<span>◆</span>:<Obstacle kind={p.kind}/>}</div>)}
    <div className={`runner character-${character}${view.shield>view.clock?" invincible":""}`} style={{left:`${view.lane*20+10}%`,top:"86%"}}><div className="head"/><div className="body"/><div className="a1"/><div className="a2"/><div className="g1"/><div className="g2"/></div>
    {character==="runner_vault"?<span className={`mastery-vault-pole${view.trial.poleDamaged?" broken":""}`} style={{left:`${view.lane*20+12}%`}} aria-label={view.trial.poleDamaged?"Compromised vaulting pole":"Vaulting pole"}/>:null}
-   <MasteryTrialOverlay state={view.trial}/>
+   <MasteryTrialOverlay state={view.trial} replay={replay}/>
   </div>
   <div className="mastery-trial-controls"><button type="button" disabled={!playing} onClick={()=>move(-1)} aria-label="Move left">◀</button>{abilityLabel?<button type="button" disabled={!playing||character==="runner_dash"&&view.clock<view.dashReady||character==="trickster_smoke"&&(view.trial.dissipators===0||view.trial.seconds<view.trial.smokeClearUntil)} onClick={act}>E · {abilityLabel}{character==="runner_dash"&&view.clock<view.dashReady?` · ${(view.dashReady-view.clock).toFixed(1)}s`:""}</button>:null}<button type="button" disabled={!playing} onClick={()=>move(1)} aria-label="Move right">▶</button></div>
   {status&&<p role="status">{status}</p>}
-  {view.trial.phase==="complete"&&status.startsWith("Mastery could")&&<button type="button" onClick={()=>void onFinish().then(ok=>setStatus(ok?"Mastery unlocked!":status))}>Retry save</button>}
+  {view.trial.phase==="complete"&&finishFailed&&<button type="button" onClick={()=>void confirmFinish()}>{replay?"Retry confirmation":"Retry save"}</button>}
   <p>A / D or arrows to move{abilityLabel?` · E to ${abilityLabel.toLowerCase()}`:""}. No score, currency or XP is awarded.</p>
  </section>;
 }

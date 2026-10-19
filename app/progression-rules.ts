@@ -47,3 +47,29 @@ export const isOlderProgression = (
   incoming: { progression_version: number; lifetime_xp: number },
 ) => incoming.progression_version < current.progression_version ||
   (incoming.progression_version === current.progression_version && incoming.lifetime_xp < current.lifetime_xp);
+
+export type ModeOwnership = {
+  ranked_unlocked: boolean;
+  ranked_purchased: boolean;
+  casual_unlocked: boolean;
+  rotating_unlocked: boolean;
+  unlimited_unlocked: boolean;
+  photon_unlocked: boolean;
+};
+/** Reward replies may omit mode fields. Omission is not a revocation. Only
+ * reuse this snapshot for the same account; an explicit false still applies. */
+export const mergeModeOwnership = (
+  previous: Partial<ModeOwnership> | null,
+  incoming: Partial<ModeOwnership>,
+): ModeOwnership => {
+  const read = (key: keyof ModeOwnership) => typeof incoming[key] === "boolean"
+    ? incoming[key] === true : previous?.[key] === true;
+  return {
+    ranked_unlocked: read("ranked_unlocked"),
+    ranked_purchased: read("ranked_purchased"),
+    casual_unlocked: read("casual_unlocked"),
+    rotating_unlocked: read("rotating_unlocked"),
+    unlimited_unlocked: read("unlimited_unlocked"),
+    photon_unlocked: read("photon_unlocked"),
+  };
+};

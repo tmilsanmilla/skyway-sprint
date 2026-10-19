@@ -51,6 +51,7 @@ type Props = {
   soundtrack: Soundtrack;
   onGems: (gems: number) => void;
   onStardust?: (stardust: number) => void;
+  onUnlocked?: (ownerId: string) => void;
 };
 const CHARACTER_KEYS = Object.keys(PHOTON_CHARACTERS) as PhotonCharacterKey[];
 const MISSING_CHARACTER_SETUP =
@@ -66,6 +67,7 @@ export function PhotonFury({
   soundtrack,
   onGems,
   onStardust,
+  onUnlocked,
 }: Props) {
   const [unlocked, setUnlocked] = useState(false);
   const [balance, setBalance] = useState(0);
@@ -426,6 +428,7 @@ export function PhotonFury({
       setUnlocked(true);
       setOwned((keys) => getOwnedPhotonCharacters(true, keys));
       onGems(Number(data?.total_gems) || 0);
+      onUnlocked?.(userId);
       setStatus("PHOTON FURY UNLOCKED");
       const { data: profile } = await supabase.rpc("get_photon_fury_profile");
       if (mounted.current && profile) applyProfile(profile);

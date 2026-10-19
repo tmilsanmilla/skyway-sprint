@@ -5,7 +5,7 @@ export interface UpdateLogEntry {
   readonly changes: readonly string[];
 }
 
-export const LATEST_UPDATE_VERSION = "2.3";
+export const LATEST_UPDATE_VERSION = "2.4";
 export const VISIBLE_UPDATE_LIMIT = 10;
 
 /**
@@ -15,6 +15,18 @@ export const VISIBLE_UPDATE_LIMIT = 10;
  * what players will notice rather than database, deployment, or code details.
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
+  {
+    id: "2026-10-19-mastery-progress-and-replays",
+    publishedAt: "2026-10-19T23:16:03Z",
+    title: "LIVE QUESTS + TRIAL REPLAYS",
+    changes: [
+      "Track your active mastery quest while playing, with a collapsible progress panel and clear save status.",
+      "Replay a completed mastery trial for practice without earning extra rewards or changing your mastery settings.",
+      "Main admins can grant or revoke masteries through the player editor, with commands saved in the player's record.",
+      "Unlimited checks whether you currently own Ranked and Photon Fury, including earlier unlocks. XP saves no longer hide an owned mode.",
+      "Corrected the daily-mode tab to show its level 15 requirement.",
+    ],
+  },
   {
     id: "2026-10-19-masteries-and-duels",
     publishedAt: "2026-10-19T22:44:07Z",

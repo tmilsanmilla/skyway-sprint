@@ -38,9 +38,18 @@ test("Quicksand and Mundane legality never leaks mythics into regular duels",()=
 });
 test("Unlimited counts distinct ownership and hides excess progress",()=>{
   const catalog=[...Array.from({length:80},(_,i)=>({key:`low${i}`,rarity:"rare",classKey:"runner"})),...Array.from({length:20},(_,i)=>({key:`leg${i}`,rarity:"legendary",classKey:"tank"})),...Array.from({length:10},(_,i)=>({key:`myth${i}`,rarity:"mythic",classKey:"medic"}))];
-  assert.deepEqual(unlimitedRequirements(catalog,[],0,false,false).map(r=>r.progress),["0/80","0/18","0/3","In progress","In progress"]);
+  assert.deepEqual(unlimitedRequirements(catalog,[],0,false,false).map(r=>r.progress),["0/80","0/18","0/3","Both modes needed","In progress"]);
   const owned=catalog.map(c=>c.key);
   assert.ok(unlimitedRequirements(catalog,owned.concat(owned),45,true,true).every(r=>r.complete&&r.progress==="Completed"));
+});
+test("Unlimited uses current owned modes regardless of current level or unlock date",()=>{
+  for(const level of [0,15,25,35,45]) {
+    const requirement=unlimitedRequirements([],[],level,true,true).find(r=>r.key==='modes');
+    assert.equal(requirement.complete,true);assert.equal(requirement.progress,'Completed');
+  }
+  assert.equal(unlimitedRequirements([],[],45,true,false).find(r=>r.key==='modes').progress,'Photon Fury needed');
+  assert.equal(unlimitedRequirements([],[],45,false,true).find(r=>r.key==='modes').progress,'Ranked needed');
+  assert.equal(unlimitedRequirements([],[],45,false,false).find(r=>r.key==='modes').complete,false);
 });
 test("RNG odds are exact, exclude starters/mythics, and never assign the same class",()=>{
   for(const weights of [RNG_MAP_WEIGHTS,RNG_RARITY_WEIGHTS]) {

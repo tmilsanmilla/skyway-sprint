@@ -1,5 +1,29 @@
 # Skyway Sprint on Neon
 
+## Mastery follow-up (Update 2.4)
+
+After the installed Update 2.3 release, apply only
+`update-2-3-mastery-management.sql` for this follow-up. Do not replay the full
+bundle or any XP reset. It adds a private replay flag and updates five existing
+functions; current account data and endpoint permissions remain unchanged.
+
+Main admins can prepare `/grant mastery [Dash] username` or
+`/revoke mastery [Dash] username` in the player editor. The player must own the
+character first. The existing role check, in-game command protection and audit
+record still apply. A revoke keeps purchased quests and their progress.
+
+Completed trials may be replayed for practice. The server marks replay sessions
+nonrewarding, and repeat completion cannot change mastery/flair switches or
+award XP, currency or scores. The quest tracker shows a throttled local preview
+and the last saved progress separately, while the saved profile alone controls
+unlock and gameplay permissions.
+
+Unlimited's mode criterion uses current Ranked and Photon Fury ownership,
+including earlier purchases; level and collection requirements are unchanged.
+Partial XP responses include the current ownership flags, and omitted flags no
+longer remove an unlock from the same player's screen. No new purchases or
+backfill/reset of real player data is needed.
+
 ## Update 2.3 coordinated release
 
 Apply these sources together, in order, after auditing the current installed

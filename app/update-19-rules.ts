@@ -43,7 +43,7 @@ export const unlimitedRequirements = (catalog: readonly { key: string; rarity: s
     { key: "legendary", label: "Own at least 18 Legendary characters", count: count(["legendary"]), target: 18 },
     { key: "mythic", label: "Own at least 3 Mythic characters", count: count(["mythic"]), target: 3 },
   ].map(r => ({ key: r.key, label: r.label, complete: r.count >= r.target, progress: r.count >= r.target ? "Completed" : `${r.count}/${r.target}` })).concat([
-    { key: "modes", label: "Unlock Ranked and Photon Fury", complete: ranked && photon, progress: ranked && photon ? "Completed" : "In progress" },
+    { key: "modes", label: "Own Ranked and Photon Fury", complete: ranked && photon, progress: ranked && photon ? "Completed" : ranked ? "Photon Fury needed" : photon ? "Ranked needed" : "Both modes needed" },
     { key: "level", label: "Reach level 45", complete: level >= 45, progress: level >= 45 ? "Completed" : "In progress" },
   ]);
 };

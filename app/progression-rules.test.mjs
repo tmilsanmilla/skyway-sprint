@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { cumulativeXpForLevel, xpRequiredForLevel, levelForLifetimeXp, endlessScoreXp, endlessGemXp, endlessRunXp, endlessCharacter, MODE_UNLOCKS, isOlderProgression, PROGRESSION_VERSION } from "./progression-rules.ts";
+import { cumulativeXpForLevel, xpRequiredForLevel, levelForLifetimeXp, endlessScoreXp, endlessGemXp, endlessRunXp, endlessCharacter, MODE_UNLOCKS, isOlderProgression, PROGRESSION_VERSION, mergeModeOwnership } from "./progression-rules.ts";
 test("level costs floor 400 + 60*l^1.1 and sum exact per-level requirements", () => {
   let total = 0;
   for (let level = 0; level < 10000; level++) {
@@ -22,6 +22,18 @@ test("Endless XP uses 1200/2.1 and only physical pickups add 10 each", () => {
 });
 test("new mode thresholds and fees are independent", () => {
   assert.deepEqual(MODE_UNLOCKS, { casual: { level: 5, gems: 0 }, rotating: { level: 15, gems: 0 }, photon: { level: 25, gems: 225 }, ranked: { level: 35, gems: 235 }, unlimited: { level: 45, gems: 0 } });
+});
+test("partial XP replies preserve currently owned modes, not a purchase-time latch", () => {
+  const owned = {ranked_unlocked:true,ranked_purchased:true,photon_unlocked:true,casual_unlocked:true,rotating_unlocked:true,unlimited_unlocked:false};
+  assert.deepEqual(mergeModeOwnership(owned,{ranked_unlocked:true,ranked_purchased:true}),owned);
+  assert.equal(mergeModeOwnership(owned,{photon_unlocked:false}).photon_unlocked,false);
+  assert.equal(mergeModeOwnership(null,{}).photon_unlocked,false);
+  assert.equal(mergeModeOwnership(null,{photon_unlocked:true}).photon_unlocked,true);
+  const source=readFileSync(new URL("./page.tsx",import.meta.url),"utf8");
+  assert.match(source,/mergeModeOwnership\(belongsToCurrentAccount \? current : null, payload\)/);
+  assert.match(source,/onUnlocked=\{\(ownerId\) => void refreshProgression\(ownerId\)\}/);
+  const photon=readFileSync(new URL("./photon-fury.tsx",import.meta.url),"utf8");
+  assert.match(photon,/onUnlocked\?\.\(userId\)/);
 });
 test("Hardcore forces Ace without disturbing Normal", () => {
   assert.equal(endlessCharacter("hardcore", "medic_seraph"), "runner_ace"); assert.equal(endlessCharacter("normal", "medic_seraph"), "medic_seraph");

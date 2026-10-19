@@ -5,7 +5,8 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 const root = realpathSync(resolve(import.meta.dirname, '..'));
-const snapshot = resolve(process.argv[2] ?? join(root, '../../outputs/update-2-3-live-audit-20261019.json'));
+const extra=process.argv.includes('--mastery-management')?'--mastery-management':null;
+const snapshot = resolve(process.argv.slice(2).find(s=>!s.startsWith('--')) ?? join(root, '../../outputs/update-2-3-live-audit-20261019.json'));
 const bin = process.env.MASTERY_TEST_PG_BIN ?? '/opt/homebrew/opt/postgresql@17/bin';
 const env = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith('PG') || key.includes('DATABASE_URL')) delete env[key];
@@ -36,7 +37,7 @@ for (const fixture of [
     started = true;
     run(join(bin, 'createdb'), ['-h', socket, '-p', String(fixture.port), fixture.database]);
     for (const script of fixture.scripts) {
-      const args = /economy-sql|profile-sql/.test(script) ? [script, socket, String(fixture.port), snapshot] : [script];
+      const args = /economy-sql|profile-sql/.test(script) ? [script, socket, String(fixture.port), snapshot,...(extra&&script.includes('economy-sql')?[extra]:[])] : [script];
       run(process.execPath, args, { ADMIN_TEST_PG_SOCKET: socket, ADMIN_TEST_PG_DATABASE: fixture.database, ADMIN_TEST_INSTALLED_SNAPSHOT: snapshot });
     }
   } finally {

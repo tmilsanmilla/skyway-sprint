@@ -6,7 +6,7 @@ import pg from 'pg';
 import { readUpdateSnapshot } from './update-2-3-snapshot.mjs';
 import { makeUpdate23Transport } from './update-2-3-release-transport.mjs';
 import { buildLiveFixture23 } from './build-update-2-3-live-fixture.mjs';
-const [socket,port,snapshotPath]=process.argv.slice(2);
+const [socket,port,snapshotPath,extra]=process.argv.slice(2);
 assert.match(socket??'',/^\/private\/tmp\/skyway-map-sql\.[A-Za-z0-9]+$/);
 assert.match(port??'',/^\d{4,5}$/);
 const snapshot=readUpdateSnapshot(snapshotPath);
@@ -259,7 +259,7 @@ try {
  check(await scalar("select to_regprocedure('app_private.has_active_ban(uuid,text,text)')"),null,'No permissive fixture-only text-device ban overload exists');
  check(await scalar("select md5(pg_get_functiondef('app_private.has_active_ban(uuid,text,uuid)'::regprocedure))"),'c60dec7971e58e19600a20379eb8d757','Actual unchanged UUID-device ban helper is installed');
  await query('savepoint actual_ban_helper');
- await query("insert into public.player_bans(scope,target_user_id,starts_at,expires_at,reason,created_by) values('account',$1,clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 hour','Owned local ban regression',$1)",[a]);
+ await query("insert into public.player_bans(scope,target_user_id,starts_at,expires_at,reason,created_by) values('account',$1,now()-interval '1 hour',now()+interval '1 hour','Owned local ban regression',$1)",[a]);
  await actor(a);await fail('select public.get_mastery_profile()',[],/Account banned/);
  await query('rollback to savepoint actual_ban_helper');await query('release savepoint actual_ban_helper');
  // The exact live-fixture templates are executed ONLY against this disposable
@@ -306,6 +306,10 @@ try {
  check(Number(await scalar('select count(*) from neon_auth."user" where id=any($1::text[])',[fixtureManifest.fixtures.map(f=>f.id)])),0,'Only two exact synthetic native accounts removed');
  check(Number(await scalar('select count(*) from public.multiplayer_players where match_id=$1',[liveFixture.matchId])),0,'Imported match rows without FK are also removed by exact match UUID');
  await query('rollback to savepoint live_template_fixture');await query('release savepoint live_template_fixture');
+ if(extra==='--mastery-management'){
+  const result=await (await import('./test-mastery-management-sql.mjs')).testMasteryManagement({query,scalar,check,fail,actor,source});
+  await query('rollback');console.log(JSON.stringify({passed:true,assertions,...result}));
+ }else{
  // Function hashes and grant booleans only: no fixture/account rows or secrets.
  const currentFunctions=(await query(`select n.nspname||'.'||p.proname||'('||pg_catalog.oidvectortypes(p.proargtypes)||')' signature,
   pg_get_functiondef(p.oid) definition,md5(pg_get_functiondef(p.oid)) md5,
@@ -329,4 +333,5 @@ try {
  await query('rollback');
  check(Number(await scalar("select count(*) from pg_tables where schemaname='public'")),0,'Everything rolled back');
  console.log(JSON.stringify({passed:true,assertions,productionConnected:false,realAccountsUsed:false,rolledBack:true}));
+ }
 }finally{await query('rollback').catch(()=>{});await db.end();}

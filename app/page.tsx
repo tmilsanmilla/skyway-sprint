@@ -15,7 +15,7 @@ import { isMigrationMaintenanceMode } from "./migration-maintenance";
 import { getRecentUpdates } from "./update-log";
 import { PhotonFury } from "./photon-fury";
 import { useMasteries } from "./use-masteries";
-import { CharacterMastery, FlairPicker, MasteryShop } from "./mastery-menu";
+import { ActiveMasteryQuest, CharacterMastery, FlairPicker, MasteryShop } from "./mastery-menu";
 import { inventoryFlairs, getFlairEffects } from "./flair-rules";
 import { roundedHealthForConditions, strideShieldSeconds, salveWaveHeal, salveLowHealthMultipliers, guardBlueDamage, type MasteryKey } from "./mastery-rules";
 import { createMasteryRuntime, startMasteryWave, decorateMasteryItem, pruneMasteryRuntime, resolveBloomCollection, resolveMasteryMiss, consumeBloomAbility, guardBlueGemPickup, vaultAvailable, resolveMasteryVault, resolveGuardContact, smokeNearMissSeconds, spendLocalSmoke, smokeOverlayBands, type SmokeStrength } from "./mastery-engine";
@@ -27,6 +27,7 @@ import {
   HARDCORE_SCORE_MULTIPLIER,
   endlessCharacter,
   isOlderProgression,
+  mergeModeOwnership,
   MODE_UNLOCKS,
   type EndlessMode,
 } from "./progression-rules";
@@ -2735,7 +2736,10 @@ function SkywayGame() {
         )
           return current;
         progressionOwnerUserIdRef.current = requestUserId;
-        return nextProgression;
+        return {
+          ...nextProgression,
+          ...mergeModeOwnership(belongsToCurrentAccount ? current : null, payload),
+        };
       });
     },
     [],
@@ -13038,6 +13042,7 @@ function SkywayGame() {
           .select("total_gems,stardust")
           .eq("user_id", sessionUserId)
           .maybeSingle(),
+        refreshMasteries(),
       ]);
     if (userIdRef.current !== sessionUserId) return;
     const collectionError =
@@ -14581,7 +14586,7 @@ function SkywayGame() {
             <span>⚄</span>
             <span>
               <b>GAME MODES</b>
-              <small>LEVEL 5 · DAILY ROTATION</small>
+              <small>LEVEL 15 · DAILY ROTATION</small>
             </span>
           </button>
         </section>
@@ -14678,7 +14683,7 @@ function SkywayGame() {
             )}
           </nav>
         )}
-        {activeTrial ? <MasteryTrialGame character={activeTrial} onEvent={recordMastery} onFinish={masteries.finish} serverFailed={masteries.trialFailed} onExit={()=>void endMasterySession().then(ok=>{if(ok){setActiveTrial(null);setInventoryOpen(true);}})} /> : mainView === "photon" ? (
+        {activeTrial ? <MasteryTrialGame character={activeTrial} replay={masteries.trialReplay} onEvent={recordMastery} onFinish={masteries.finish} serverFailed={masteries.trialFailed} onExit={()=>void endMasterySession().then(ok=>{if(ok){setActiveTrial(null);setInventoryOpen(true);}})} /> : mainView === "photon" ? (
           <PhotonFury
             key={userIdRef.current ?? "guest"}
             userId={guest ? null : userIdRef.current}
@@ -14687,6 +14692,7 @@ function SkywayGame() {
             testMode={adminTestModeActive}
             soundtrack={soundtrack}
             onStardust={setStardust}
+            onUnlocked={(ownerId) => void refreshProgression(ownerId)}
             onGems={(value) => {
               gemsRef.current = value;
               setGems(value);
@@ -14852,6 +14858,7 @@ function SkywayGame() {
                     )}
                   </div>
                 </header>
+                {!guest && running && playScope !== "practice" ? <ActiveMasteryQuest state={masteries.account} liveState={masteries.liveAccount} character={activeCharacter} syncStatus={masteries.syncStatus} onRetry={()=>void masteries.flush()} /> : null}
                 <div
                   className={`playfield map-${activeMapId}${environmentCosmetic ? ` environment-${environmentCosmetic}` : ""}${phantomNightActive ? " phantom-night" : ""}${phantomBloodmoonActive ? " phantom-bloodmoon" : ""}${phantomLordsdownActive ? " phantom-lordsdown" : ""}${phantomLord ? " phantom-lord" : ""}`}
                 >
@@ -17402,7 +17409,7 @@ function SkywayGame() {
               <p className="box-duplicate-note">
                 Duplicates give Stardust. Spend it on the exact Skyway item you want.
               </p>
-              <MasteryShop state={masteries.account} photons={masteries.photons} ownedCharacters={ownedCharacterKeys} busy={masteries.busy} onPurchase={key=>void masteries.purchase(key)} onActivate={key=>void masteries.activate(key)} />
+              <MasteryShop state={masteries.account} liveState={masteries.liveAccount} syncStatus={masteries.syncStatus} photons={masteries.photons} ownedCharacters={ownedCharacterKeys} busy={masteries.busy} onPurchase={key=>void masteries.purchase(key)} onActivate={key=>void masteries.activate(key)} />
               {masteries.error&&<p role="status">{masteries.error}</p>}
               <div ref={extractFeedbackRef} className="extract-feedback">
                 {extractAnimation !== "idle" && extractingOption ? (
@@ -17970,7 +17977,7 @@ function SkywayGame() {
                               </div>
                             </details>
                             <FlairPicker character={focusedCharacter.key} flairs={ownedFlairs} selected={masteries.flair} state={masteries.account} busy={masteries.busy||running} onEquip={key=>void masteries.equip(key)} />
-                            <CharacterMastery character={focusedCharacter.key} state={masteries.account} busy={masteries.busy||running} onToggle={(key,which,on)=>void masteries.toggle(key,which,on)} onTrial={key=>setTrialRequest(key)} />
+                            <CharacterMastery character={focusedCharacter.key} state={masteries.account} busy={masteries.busy||running||!!activeTrial||isVersusRun} onToggle={(key,which,on)=>void masteries.toggle(key,which,on)} onTrial={key=>setTrialRequest(key)} />
                           </div>
                         )}
                       </details>
@@ -18320,6 +18327,7 @@ function SkywayGame() {
               ) : null}
               <div hidden={adminTab !== "players"}>
                 <AdminPlayerEditor
+                  key={userIdRef.current ?? "signed-out"}
                   supabase={supabase}
                   isMainAdmin={adminRole === "main"}
                   isActive={adminOpen && adminTab === "players"}
@@ -18328,9 +18336,9 @@ function SkywayGame() {
             </section>
           </div>
         )}
-        {trialRequest&&<MasteryTrialDisclaimer character={trialRequest} busy={trialBusy} onCancel={()=>{trialStartIntentRef.current++;setTrialRequest(null);}} onAccept={()=>void(async()=>{
+        {trialRequest&&<MasteryTrialDisclaimer character={trialRequest} replay={masteries.account.quests[trialRequest]?.mastered===true} busy={trialBusy} onCancel={()=>{trialStartIntentRef.current++;setTrialRequest(null);}} onAccept={()=>void(async()=>{
           if(trialBusy||!userIdRef.current)return;
-          if(running||isVersusRun){setInventoryStatus("Finish or leave your current run before starting a mastery trial.");return;}
+          if(running||isVersusRun||activeTrial){setInventoryStatus("Finish or leave your current run before starting a mastery trial.");return;}
           setTrialBusy(true);
           const uid=userIdRef.current,key=trialRequest,generation=authSessionGenerationRef.current,intent=++trialStartIntentRef.current;
           const current=()=>userIdRef.current===uid&&authSessionGenerationRef.current===generation&&trialStartIntentRef.current===intent;

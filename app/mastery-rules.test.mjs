@@ -26,6 +26,11 @@ test('Dash quests do not spill events and hitless streak resets on damage/run bo
  assert.equal(m.completeMasteryTrial(bought('runner_dash'),'runner_dash').quests.runner_dash.mastered,false);
  s=m.completeMasteryTrial(s,'runner_dash');s=m.toggleMastery(s,'runner_dash','mastery',false);assert.equal(s.quests.runner_dash.flairRewriteEnabled,true);
 });
+test('replaying an already-mastered trial is a no-op even when both benefit switches are off',()=>{
+ const s={active:null,quests:{runner_dash:{quest:3,progress:[75],complete:true,mastered:true,masteryEnabled:false,flairRewriteEnabled:false}}};
+ assert.equal(m.completeMasteryTrial(s,'runner_dash'),s);
+ assert.equal(s.quests.runner_dash.masteryEnabled,false);assert.equal(s.quests.runner_dash.flairRewriteEnabled,false);
+});
 test('Stride requires both hitless counters and third immunity only on quest two',()=>{
  let s=repeat(bought('runner_stride'),'runner_stride','lane-change',300);s=repeat(s,'runner_stride','block',100,{source:'stride'});assert.equal(s.quests.runner_stride.quest,1);
  s=repeat(s,'runner_stride','block',100,{source:'stride-third'});s=repeat(s,'runner_stride','lane-change',100);s=repeat(s,'runner_stride','block',24,{source:'stride-third'});assert.equal(s.quests.runner_stride.complete,false);

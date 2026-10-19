@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseAdminCommand, isV23AdminCommand, BASE_ADMIN_COMMANDS, ADMIN_BALANCE_LIMIT, ADMIN_BAN_MINUTES_LIMIT } from "./admin-command-rules.ts";
+import { parseAdminCommand, isV23AdminCommand, BASE_ADMIN_COMMANDS, ADMIN_BALANCE_LIMIT, ADMIN_BAN_MINUTES_LIMIT, resolveAdminMastery, adminMasterySuggestions } from "./admin-command-rules.ts";
 
 test("set/check currencies retain existing value-before-account grammar", () => {
   for (const stat of ["gems", "photons", "stardust"]) {
@@ -51,4 +51,30 @@ test("legacy item syntax survives and no command grants match coins", () => {
   assert.equal(isV23AdminCommand(parseAdminCommand("/check photons name")), true);
   assert.equal(isV23AdminCommand(parseAdminCommand("/set gems 1 name")), false);
   assert.equal(isV23AdminCommand(parseAdminCommand("/set photons 1 name")), true);
+});
+
+test("mastery grants/revokes retain exact account grammar and use the guarded new dispatcher", () => {
+  assert.deepEqual(parseAdminCommand("/grant mastery [Dash] [Player Name]"), { action: "grant", itemKind: "mastery", itemName: "Dash", targetText: "Player Name" });
+  assert.deepEqual(parseAdminCommand("/revoke mastery [Smoke] from Player"), { action: "revoke", itemKind: "mastery", itemName: "Smoke", targetText: "Player" });
+  for (const action of ["grant", "revoke"]) {
+    const parsed = parseAdminCommand(`/${action} mastery [Guard]`, true);
+    assert.equal(parsed.targetText, undefined);
+    assert.equal(isV23AdminCommand(parsed), true);
+    assert.equal(resolveAdminMastery(parsed.itemName).key, "tank_guard");
+    assert.ok(BASE_ADMIN_COMMANDS.includes(`/${action} mastery [`));
+  }
+  assert.equal(resolveAdminMastery("  RUNNER_DASH  ").name, "Dash");
+  assert.equal(resolveAdminMastery("remedy").key, "medic_remedy");
+  for (const unknown of ["Da", "Ace", "Photon Magician", "Dash] username", "all"])
+    assert.throws(() => resolveAdminMastery(unknown), /exact mastery/);
+  assert.throws(() => parseAdminCommand("/grant mastery Dash username"));
+  assert.equal(isV23AdminCommand(parseAdminCommand("/grant character [Dash] name")), false);
+});
+
+test("mastery suggestions show only eight implemented masteries and preserve explicit-target requirements", () => {
+  assert.equal(adminMasterySuggestions("grant", "", true).length, 8);
+  assert.deepEqual(adminMasterySuggestions("grant", "DAS", true), ["/grant mastery [Dash]"]);
+  assert.deepEqual(adminMasterySuggestions("revoke", "runner_dash", false), ["/revoke mastery [Dash] from "]);
+  assert.deepEqual(adminMasterySuggestions("grant", "Smoke", false), ["/grant mastery [Smoke] "]);
+  assert.deepEqual(adminMasterySuggestions("grant", "ace", true), []);
 });
