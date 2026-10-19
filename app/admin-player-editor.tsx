@@ -4,6 +4,7 @@ import {
   FormEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -390,6 +391,19 @@ export function AdminPlayerEditor({
   const lookupGenerationRef = useRef(0);
   const inactiveSinceRef = useRef<number | null>(null);
   const inactivityTimerRef = useRef<number | null>(null);
+
+  useLayoutEffect(() => () => {
+    // The parent keys this editor by the signed-in user's immutable ID. Retire
+    // pending work synchronously when that account's editor leaves the tree,
+    // before an old lookup can dispatch a command through a newer session.
+    ++lookupGenerationRef.current;
+    ++searchRequestRef.current;
+    ++detailRequestRef.current;
+    if (inactivityTimerRef.current !== null)
+      window.clearTimeout(inactivityTimerRef.current);
+    inactivityTimerRef.current = null;
+    inactiveSinceRef.current = null;
+  }, []);
 
   const clearLookup = useCallback(() => {
     ++searchRequestRef.current;

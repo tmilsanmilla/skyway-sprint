@@ -17,7 +17,7 @@ export const VISIBLE_UPDATE_LIMIT = 10;
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
     id: "2026-10-19-mastery-progress-and-replays",
-    publishedAt: "2026-10-19T23:16:03Z",
+    publishedAt: "2026-10-19T23:34:14Z",
     title: "LIVE QUESTS + TRIAL REPLAYS",
     changes: [
       "Track your active mastery quest while playing, with a collapsible progress panel and clear save status.",
