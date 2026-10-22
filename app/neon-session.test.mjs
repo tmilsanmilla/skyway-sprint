@@ -13,6 +13,7 @@ test("cached Better Auth sessions cannot replace the /token response", async () 
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     requests.push({ url, headers: new Headers(init?.headers) });
+    if (url.endsWith("/pixel-pulse/session")) return Response.json({session:null});
     if (url.endsWith("/get-session")) return Response.json({
       session: { id: "test-session", userId: USER_ID, token: "opaque-cookie-session", expiresAt: new Date(Date.now() + 3600000).toISOString() },
       user: { id: USER_ID, email: "test@example.test", emailVerified: true, name: "Test" },

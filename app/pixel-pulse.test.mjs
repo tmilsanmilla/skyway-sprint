@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFileSync} from 'node:fs';
-import {pixelProfile,validatePixelMetadata,PIXEL_ISSUER} from '../lib/pixel-pulse-rules.ts';
+import {pixelProfile,validatePixelMetadata,PIXEL_ISSUER,PIXEL_CLIENT_ID} from '../lib/pixel-pulse-rules.ts';
 const sub='11111111-1111-4111-8111-111111111111';
-const profile={sub,preferred_username:'pixel_runner',email:'player@example.invalid',email_verified:false};
+const profile={iss:PIXEL_ISSUER,aud:PIXEL_CLIENT_ID,sub,preferred_username:'pixel_runner',email:'player@example.invalid',email_verified:false,profile_version:1,credential_version:2};
+test('Pixel is the single primary sign-in action while native recovery and guest play remain available',()=>{
+ const source=readFileSync(new URL('./page.tsx',import.meta.url),'utf8');
+ assert.equal(source.match(/CONTINUE WITH PIXEL PULSE/g)?.length,1);
+ assert.ok(source.indexOf('CONTINUE WITH PIXEL PULSE')<source.indexOf('className={`native-auth-options'));
+ assert.match(source,/open=\{isPixelPulseAvailable \? undefined : true\}/);
+ assert.match(source,/EXISTING SKYWAY SIGN-IN &amp; RECOVERY/);
+ assert.match(source,/Already linked\? Your Pixel Pulse sign-in is remembered/);
+ assert.match(source,/first connection asks for your current Pixel Pulse password/);
+ assert.match(source,/PLAY AS GUEST/);
+});
 test('Pixel identity uses a stable subject and exact canonical profile; verification is never invented',()=>{
- assert.deepEqual(pixelProfile(profile,profile),{subject:sub,username:'pixel_runner',email:'player@example.invalid',emailVerified:false});
+ assert.deepEqual(pixelProfile(profile,profile),{subject:sub,username:'pixel_runner',email:'player@example.invalid',emailVerified:false,profileVersion:1,credentialVersion:2});
  for(const invalid of [{...profile,sub:'another'},{...profile,preferred_username:'another_runner'},{...profile,email:'another@example.invalid'},{...profile,email_verified:true}]) assert.throws(()=>pixelProfile(profile,invalid));
 });
 test('provider metadata rejects alternate issuers, endpoints, algorithms and missing issuer response protection',()=>{
@@ -13,11 +23,12 @@ test('provider metadata rejects alternate issuers, endpoints, algorithms and mis
  assert.equal(validatePixelMetadata(metadata),'EdDSA');
  for(const invalid of [{...metadata,issuer:'https://evil.invalid'},{...metadata,jwks_uri:'https://evil.invalid/keys'},{...metadata,authorization_response_iss_parameter_supported:false},{...metadata,id_token_signing_alg_values_supported:['none']}]) assert.throws(()=>validatePixelMetadata(invalid));
 });
-test('shared sign-in binds state, nonce and PKCE; never forces a new provider password or imports admin roles',()=>{
+test('shared sign-in binds state, nonce and PKCE; fresh-password linking is separate and no admin roles are imported',()=>{
  const source=readFileSync(new URL('./api/pixel-pulse/[action]/route.ts',import.meta.url),'utf8');
  assert.match(source,/code_challenge_method: "S256"/);
  assert.match(source,/expectedState: state/);assert.match(source,/expectedNonce: attempt.nonce/);assert.match(source,/pkceCodeVerifier: attempt.verifier/);
- assert.doesNotMatch(source,/prompt:\s*["']login/);assert.match(source,/neonAuth.getSession\(\)/);
+ assert.doesNotMatch(source,/prompt:\s*["']login/);assert.match(source,/disableCookieCache: "true"/);
+ assert.match(source,/pixel_intent: "link"/);assert.match(source,/redeemPixelLink/);
  assert.doesNotMatch(source,/claims\.role|claims\.admin|userInfo\.role/);
  const sql=readFileSync(new URL('../neon/pixel-pulse-02-link.sql',import.meta.url),'utf8');
  assert.match(sql,/Email, even verified email, is not game-account ownership proof/);

@@ -10,6 +10,7 @@ test('long runs refresh an expiring native JWT once without crossing sign-out/ac
   const fresh=jwt(uid,Date.now()/1000+3600);
   let tokens=0, hold=null, answer=fresh;
   globalThis.fetch=async(input,init)=>{
+    if(String(input).endsWith('/pixel-pulse/session'))return Response.json({session:null});
     if(String(input).endsWith('/get-session')) {
       const date=new Date().toISOString();
       return Response.json({session:{id:'synthetic-session',token:jwt(uid,1),userId:uid,expiresAt:new Date(Date.now()+3600000).toISOString(),createdAt:date,updatedAt:date},user:{id:uid,name:'Fixture',email:'fixture@example.invalid',emailVerified:true,createdAt:date,updatedAt:date}});

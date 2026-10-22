@@ -14324,6 +14324,39 @@ function SkywayGame() {
             </form>
           ) : (
             <>
+              {isPixelPulseAvailable && (
+                <>
+                  <button
+                    className="pixel-auth-button"
+                    type="button"
+                    disabled={authBusy}
+                    onClick={() => {
+                      setAuthBusy(true);
+                      setAuthMessage("Opening Pixel Pulse…");
+                      void continueWithPixelPulse().catch((error) => {
+                        setAuthBusy(false);
+                        setAuthMessage(error.message);
+                      });
+                    }}
+                  >
+                    CONTINUE WITH PIXEL PULSE
+                  </button>
+                  <a className="pixel-link-note" href="/connect/pixel-pulse?mode=link">
+                    Already have both accounts? Link account (highly recommended)
+                  </a>
+                  <small className="pixel-link-note">
+                    Already linked? Your Pixel Pulse sign-in is remembered. Your
+                    first connection asks for your current Pixel Pulse password
+                    on Pixel Pulse.
+                  </small>
+                  {authMessage && <div className="auth-message" role="status">{authMessage}</div>}
+                </>
+              )}
+              <details
+                className={`native-auth-options${isPixelPulseAvailable ? " native-auth-options-optional" : ""}`}
+                open={isPixelPulseAvailable ? undefined : true}
+              >
+                <summary>EXISTING SKYWAY SIGN-IN &amp; RECOVERY</summary>
               <form onSubmit={submitAuth} autoComplete="on">
                 <label>
                   Email
@@ -14372,7 +14405,7 @@ function SkywayGame() {
                     />
                   </label>
                 )}
-                {authMessage && (
+                {authMessage && !isPixelPulseAvailable && (
                   <div className="auth-message" role="status">
                     {authMessage}
                   </div>
@@ -14435,39 +14468,7 @@ function SkywayGame() {
                   ? "New runner? Create an account"
                   : "Already registered? Sign in"}
               </button>
-              {isPixelPulseAvailable && (
-                <>
-                  <button
-                    className="pixel-auth-button"
-                    type="button"
-                    disabled={authBusy}
-                    onClick={() => {
-                      setAuthBusy(true);
-                      setAuthMessage("Opening Pixel Pulse…");
-                      void continueWithPixelPulse(
-                        authMode === "signup" ? "create" : "sign-in",
-                      ).catch((error) => {
-                        setAuthBusy(false);
-                        setAuthMessage(error.message);
-                      });
-                    }}
-                  >
-                    CONTINUE WITH PIXEL PULSE
-                  </button>
-                  <a
-                    className="pixel-link-note"
-                    href="/connect/pixel-pulse?mode=link"
-                  >
-                    Already have both accounts? Link account (highly
-                    recommended)
-                  </a>
-                  <small className="pixel-link-note">
-                    Signed into Pixel Pulse already? Continue without entering
-                    your password again. Use one username across connected
-                    websites.
-                  </small>
-                </>
-              )}
+              </details>
             </>
           )}
           {!recoveryToken && (

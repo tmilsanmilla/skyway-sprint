@@ -5,18 +5,30 @@ export const PIXEL_CALLBACK_PATH = "/api/pixel-pulse/callback";
 export const PIXEL_SESSION_SECONDS = 7 * 24 * 60 * 60;
 export const PIXEL_COOKIE = "__Host-skyway_pixel_session";
 export const PIXEL_ATTEMPT_COOKIE = "__Host-skyway_pixel_attempt";
+export const PIXEL_DISCOVERY_COOKIE = "__Host-skyway_pixel_discovery";
 
 export type PixelProfile = {
   subject: string;
   username: string;
   email: string;
   emailVerified: boolean;
+  profileVersion: number;
+  credentialVersion: number;
 };
+export function pixelIdentityEpoch(claims: Record<string, unknown>) {
+  if (claims.iss !== PIXEL_ISSUER || claims.aud !== PIXEL_CLIENT_ID ||
+      typeof claims.sub !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.sub) ||
+      !Number.isSafeInteger(claims.credential_version) || Number(claims.credential_version) < 0)
+    throw new Error("Pixel Pulse returned an invalid identity version.");
+  return { subject: claims.sub, credentialVersion: claims.credential_version as number };
+}
 export function pixelProfile(
   claims: Record<string, unknown>,
   info: Record<string, unknown>,
 ): PixelProfile {
+  pixelIdentityEpoch(claims);
   if (
+    claims.iss !== PIXEL_ISSUER || claims.aud !== PIXEL_CLIENT_ID ||
     typeof claims.sub !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
       claims.sub,
@@ -44,11 +56,17 @@ export function pixelProfile(
     info.email_verified !== claims.email_verified
   )
     throw new Error("Pixel Pulse returned an invalid email.");
+  for (const field of ["profile_version", "credential_version"] as const) {
+    if (!Number.isSafeInteger(claims[field]) || Number(claims[field]) < 0 || claims[field] !== info[field])
+      throw new Error("Pixel Pulse returned an invalid account version.");
+  }
   return {
     subject: claims.sub,
     username,
     email,
     emailVerified: info.email_verified,
+    profileVersion: claims.profile_version as number,
+    credentialVersion: claims.credential_version as number,
   };
 }
 

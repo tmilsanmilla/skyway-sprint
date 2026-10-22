@@ -86,10 +86,31 @@ spawn naturally. Terminal retains no attack coins and no obstacle shop.
 
 ## Pixel Pulse shared sign-in
 
-`pixel-pulse-01-sessions.sql` and `pixel-pulse-02-link.sql` add a separate,
-private Pixel Pulse sign-in bridge without replacing managed Neon passwords or
-sessions. Existing accounts must prove ownership with a native Skyway session
-before linking, even when their emails match. The mapped game UUID, inventory,
+### Production checkpoint — 2026-10-22
+
+`pixel-pulse-03-link-security.sql` and the source-pinned
+`pixel-pulse-04-runtime-security.sql` are installed on the existing production
+branch. One atomic transaction verified all 76 pre-existing protected tables
+and 9,730 rows unchanged. The 92 original player endpoints retain their ACLs
+and definer/invoker boundary; managed Auth helpers were not replaced.
+The central credential baseline was installed with its existing account rows
+unchanged. New first links and the public Pixel button remain OFF pending the
+required real live password-confirmation proof. The user declined an interactive
+account test; local fixture results must not be presented as that proof.
+No account, XP, inventory or score reset and no Saved SQL Editor copy was made.
+
+`pixel-pulse-01-sessions.sql` and `pixel-pulse-02-link.sql` are the installed
+baseline, not sufficient activation instructions. The installed
+`pixel-pulse-03-link-security.sql` adds sealed, one-use first-link attempts and
+short runtime leases without replacing managed Neon passwords. Every first
+Link/Create confirms the current Pixel password on Pixel Pulse. Existing game
+accounts also require a fresh native Skyway password sign-in, even when their
+emails match. The server independently verifies that password with managed
+Neon email/password sign-in in an isolated cookie context, then revokes only
+its temporary check session. Recent Google/OAuth cookies are not password
+proof, and this check cannot switch the browser account. A private one-use
+database mark requires the sealed UUID and unchanged credential/session stamps
+before a first link may continue. Already-bound Pixel sign-in remains automatic. The mapped game UUID, inventory,
 scores, balances, bans and administrator roles are preserved. New Pixel users
 receive the normal four starter characters, not the full catalog. Central
 administrator roles are never imported. Linked usernames are canonical and
@@ -98,13 +119,20 @@ cannot be changed independently on Skyway.
 The client uses public authorization-code OIDC with state, nonce and S256 PKCE.
 Passwords stay on Pixel Pulse (or Skyway for one-time existing-account proof).
 Private local cookies contain random tokens; only hashes are stored in Neon,
-with a seven-day maximum and explicit sign-out revocation. The game issues
-120-second, fixed `authenticated` database tokens for the mapped game UUID.
+with a seven-day maximum and explicit sign-out revocation. A cookie alone is
+not current database authority. A signed central credential-status response
+limits each database token and stored lease to at most 30 seconds for the
+mapped game UUID and fixed `authenticated` role. A changed credential version
+retires old sessions before optional profile synchronization. An invalid Pixel
+cookie never falls back to a native session.
 Register Skyway's dedicated public verification key for this Neon branch only,
 using the Skyway audience and the existing managed Data API configuration.
-Pixel tokens include both the native Neon audience and Skyway audience; native
-tokens, role claims and database/RLS settings remain unchanged. Test both token classes,
-cross-account isolation and denied private-schema access before enabling it.
+Pixel tokens include both the native Neon audience and Skyway audience.
+The installed application-owned RPC/RLS guard rejects native runtime access for
+linked accounts while preserving native credentials for ownership proof.
+It never overwrites managed `auth.uid()` or `auth.jwt()`. New realtime tickets
+also require current admission; already-established signaling/WebRTC transport
+does not promise immediate disconnection on a central password change.
 
 Required deployment settings: `PIXEL_PULSE_GAME_SIGNING_KEY` (private RSA JWK,
 server secret), `PIXEL_PULSE_ENABLED=true`, and
@@ -114,6 +142,30 @@ pass. Production callback is
 `https://skyway-sprint.vercel.app/api/pixel-pulse/callback`, client
 `skyway-sprint`. Central Link/Create entry is `/connect/pixel-pulse`.
 No Saved SQL Editor copies or account resets are needed.
+
+Activation is blocked until the actual database and live protocol checks pass:
+
+1. Export `runtime-guard-preflight.sql` from the exact current Skyway branch.
+   Review its callable-function hashes, privileges and actual native issuer;
+   generate the pinned runtime migration with `scripts/runtime-guard-generator.mjs`.
+   Never substitute a stale local fixture export or replay historical resets.
+2. Verify Pixel Pulse's actual managed schema, application-role permissions and
+   native session timestamps with its narrow credential preflight. Apply only
+   its additive private baseline and fresh-link migrations.
+3. Apply SQL03 and the reviewed runtime guard, read them back, refresh the Data
+   API schema, and verify protected account/game data is unchanged.
+4. Test real signed Native/Pixel tokens against Data API, first Link/Create,
+   wrong password/cancel/replay, returning-cookie sign-in, credential changes,
+   cross-account isolation, sign-out and same-ID progress/admin preservation.
+5. Publish only the tested source and deliberately enable Skyway's central
+   runtime/link gates and both game flags. Other consumers/shared-edit gates
+   remain unchanged. Verify the exact Ready commit and actual public flows.
+
+Local-only checks: `node --test app/*.test.mjs`,
+`node scripts/test-pixel-link-security.mjs`, and
+`node scripts/test-pixel-runtime-guard.mjs`. The SQL suites create and clean
+only unique owned fixture resources on local PostgreSQL; they are not proof
+of production Managed Auth or Data API behavior.
 
 `scripts/test-pixel-db.mjs` is rollback-only. It accepts a
 `SKYWAY_TEST_DATABASE_URL` or uses the existing Neon CLI login; set

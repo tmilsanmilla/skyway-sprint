@@ -14429,3 +14429,19 @@ footer p small {
 .photon-skin-immortal .head { box-shadow: -7px -6px #f8c36e,7px -6px #f8c36e,0 -9px #f8c36e; }
 .photon-skin-preview.skin-ascendant { background: linear-gradient(135deg,#144c58,#5debc5); }
 .photon-skin-preview.skin-immortal { background: linear-gradient(135deg,#544080,#ffe192); }
+.native-auth-options:not(.native-auth-options-optional) > summary {
+  display: none;
+}
+
+.native-auth-options-optional {
+  margin-top: 1rem;
+  border-top: 1px solid #64748b;
+  padding-top: 1rem;
+}
+
+.native-auth-options-optional > summary {
+  cursor: pointer;
+  padding: 0.5rem 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+}

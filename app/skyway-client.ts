@@ -27,7 +27,6 @@ export const isPixelPulseAvailable =
   process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED === "true";
 
 const readPixelSession = async (): Promise<Session | null> => {
-  if (!isPixelPulseAvailable) return null;
   const response = await fetch("/api/pixel-pulse/session", {
     cache: "no-store",
     credentials: "same-origin",
@@ -36,13 +35,11 @@ const readPixelSession = async (): Promise<Session | null> => {
     throw new Error("Pixel Pulse session check is temporarily unavailable.");
   return ((await response.json()) as { session: Session | null }).session;
 };
-export const continueWithPixelPulse = async (
-  intent: "sign-in" | "link" | "create" = "sign-in",
-) => {
-  const response = await fetch("/api/pixel-pulse/start", {
+const openPixelAuthorization = async (action: "start" | "confirm-start", intent: "sign-in" | "link" | "create", nativePassword?: string) => {
+  const response = await fetch(`/api/pixel-pulse/${action}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ intent }),
+    body: JSON.stringify({ intent, ...(nativePassword === undefined ? {} : { nativePassword }) }),
     cache: "no-store",
   });
   const result = (await response.json()) as { url?: string; error?: string };
@@ -56,8 +53,15 @@ export const continueWithPixelPulse = async (
     throw new Error("Pixel Pulse returned an invalid sign-in destination.");
   window.location.assign(target.href);
 };
+export const continueWithPixelPulse = async (intent: "sign-in" | "link" | "create" = "sign-in") =>
+  openPixelAuthorization("start", intent);
+export const confirmWithPixelPulse = async (intent: "link" | "create", nativePassword?: string) =>
+  openPixelAuthorization("confirm-start", intent, nativePassword);
+// This normal managed Skyway password sign-in keeps the discovered Pixel actor
+// while proving the game UUID. It never reads or accepts a Pixel password.
+export const signInForPixelLink = (credentials: { email: string; password: string }) =>
+  managedAuthClient.signInWithPassword(credentials);
 const clearPixelSession = async () => {
-  if (!isPixelPulseAvailable) return;
   const response = await fetch("/api/pixel-pulse/signout", {
     method: "POST",
     cache: "no-store",
@@ -92,17 +96,25 @@ const authOverrides = {
     ...args: Parameters<typeof managedAuthClient.onAuthStateChange>
   ) => {
     let subscribed = true;
+    let eventSequence = 0;
+    let deliveredPixelUserId: string | null = null;
     const callback = args[0];
     const result = managedAuthClient.onAuthStateChange(
       async (event, session) => {
-        if (!isPixelPulseAvailable) {
-          if (subscribed) callback(event, session);
-          return;
-        }
+        const sequence = ++eventSequence;
         try {
           const pixel = await readPixelSession();
-          if (subscribed)
-            callback(pixel ? "SIGNED_IN" : event, pixel || session);
+          if (subscribed && sequence === eventSequence) {
+            // Native refreshes/duplicate notifications must not tear down an
+            // active run owned by the same verified Pixel identity.
+            const nextEvent = pixel
+              ? event === "INITIAL_SESSION"
+                ? "INITIAL_SESSION"
+                : deliveredPixelUserId === pixel.user.id ? "TOKEN_REFRESHED" : "SIGNED_IN"
+              : event;
+            deliveredPixelUserId = pixel?.user.id ?? null;
+            callback(nextEvent, pixel || session);
+          }
         } catch {
           /* Keep the previous verified account during a transient network failure. */
         }
@@ -181,7 +193,7 @@ const dataToken = async () => {
   } catch {
     /* Fetch a new, server-verified token. */
   }
-  if (expires > Date.now() / 1000 + 30) return current.accessToken;
+  if (expires > Date.now() / 1000 + 5) return current.accessToken;
   if (!pixelTokenRefresh)
     pixelTokenRefresh = (async () => {
       const response = await fetch("/api/pixel-pulse/token", {
