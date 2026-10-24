@@ -134,7 +134,32 @@ It never overwrites managed `auth.uid()` or `auth.jwt()`. New realtime tickets
 also require current admission; already-established signaling/WebRTC transport
 does not promise immediate disconnection on a central password change.
 
-Required deployment settings: `PIXEL_PULSE_GAME_SIGNING_KEY` (private RSA JWK,
+### Existing-bound return repair (24 October 2026)
+
+Public returning sign-in is independent of first connection. With the existing
+runtime enabled and `NEXT_PUBLIC_PIXEL_PULSE_ENABLED=false`, the main button
+uses same-origin POST `return-start`. Its server-sealed ordinary OIDC attempt
+can admit only an already-stored immutable Pixel subject/game UUID binding.
+An unknown subject receives a generic refusal: no email lookup, discovery,
+Link/Create chooser, binder or new account. Native Skyway sign-in/recovery stay
+available. No canary/native admission cookie is needed for this returning path.
+New first links remain OFF; this release is not live first-link verification.
+
+Apply only `pixel-pulse-05-bound-return.sql` on the existing branch after its
+source/permission preflight. It replaces two owned wrapper bodies, retains
+their OIDs/owners/ACLs, and atomically compares restricted canary targets with
+the locked immutable binding before session creation. It does not reset data,
+replay old migrations or broaden execution grants. The local-only regression
+is `node scripts/test-pixel-bound-return.mjs`; route/client regressions are
+`node --test app/pixel-pulse*.test.mjs`. Local fixtures do not establish an
+authenticated production receiving positive. No real-account/mail/canary test
+or new first-link activation is implied by publishing this repair.
+
+The following settings/order apply to a future **first-link activation**, not
+to returning sign-in. Do not repeat completed setup or change flags merely
+because this historical activation checklist is present.
+
+Required first-link deployment settings: `PIXEL_PULSE_GAME_SIGNING_KEY` (private RSA JWK,
 server secret), `PIXEL_PULSE_ENABLED=true`, and
 `NEXT_PUBLIC_PIXEL_PULSE_ENABLED=true`. Do not enable the flags until the
 registered callback, actual database migrations and both API token classes

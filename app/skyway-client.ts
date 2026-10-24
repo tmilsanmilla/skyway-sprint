@@ -25,6 +25,9 @@ const neonAuth = createInternalNeonAuth<SupabaseAuthAdapterInstance>(
 const managedAuthClient = neonAuth.adapter;
 export const isPixelPulseAvailable =
   process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED === "true";
+// Public returning sign-in is separate from the still-gated first connection.
+// The server accepts only an existing immutable binding on this entry point.
+export const isPixelPulseReturnAvailable = true;
 
 const readPixelSession = async (): Promise<Session | null> => {
   const response = await fetch("/api/pixel-pulse/session", {
@@ -35,7 +38,7 @@ const readPixelSession = async (): Promise<Session | null> => {
     throw new Error("Pixel Pulse session check is temporarily unavailable.");
   return ((await response.json()) as { session: Session | null }).session;
 };
-const openPixelAuthorization = async (action: "start" | "confirm-start", intent: "sign-in" | "link" | "create", nativePassword?: string) => {
+const openPixelAuthorization = async (action: "start" | "return-start" | "confirm-start", intent: "sign-in" | "link" | "create", nativePassword?: string) => {
   const response = await fetch(`/api/pixel-pulse/${action}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -54,7 +57,7 @@ const openPixelAuthorization = async (action: "start" | "confirm-start", intent:
   window.location.assign(target.href);
 };
 export const continueWithPixelPulse = async (intent: "sign-in" | "link" | "create" = "sign-in") =>
-  openPixelAuthorization("start", intent);
+  openPixelAuthorization(isPixelPulseAvailable ? "start" : "return-start", intent);
 export const confirmWithPixelPulse = async (intent: "link" | "create", nativePassword?: string) =>
   openPixelAuthorization("confirm-start", intent, nativePassword);
 // This normal managed Skyway password sign-in keeps the discovered Pixel actor

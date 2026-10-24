@@ -5,7 +5,7 @@ export interface UpdateLogEntry {
   readonly changes: readonly string[];
 }
 
-export const LATEST_UPDATE_VERSION = "2.4";
+export const LATEST_UPDATE_VERSION = "2.5";
 export const VISIBLE_UPDATE_LIMIT = 10;
 
 /**
@@ -15,6 +15,15 @@ export const VISIBLE_UPDATE_LIMIT = 10;
  * what players will notice rather than database, deployment, or code details.
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
+  {
+    id: "2026-10-24-pixel-return-sign-in",
+    publishedAt: "2026-10-24T13:09:00Z",
+    title: "PIXEL PULSE RETURN SIGN-IN",
+    changes: [
+      "Already-linked accounts can use Continue with Pixel Pulse again after signing out or changing browsers.",
+      "New Pixel Pulse connections remain unavailable. Skyway sign-in and account recovery stay available, and existing accounts and progress are kept.",
+    ],
+  },
   {
     id: "2026-10-19-mastery-progress-and-replays",
     publishedAt: "2026-10-19T23:34:14Z",

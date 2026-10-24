@@ -152,7 +152,7 @@ test('restricted canary issuance is same-origin fresh native allowlist only and 
   const h=harness({canaryIssueAllowed:true});assert.equal((await h.invoke('canary')).status,200);
   assert.deepEqual(h.writtenCookies,[['skyway_pixel_canary','owned-canary-cookie',{maxAge:900,httpOnly:true}]]);
   assert.deepEqual(named(h,'nativeSession')[0].args,{query:{disableCookieCache:'true'}});
-  const status=await h.invoke('status',{},'GET');assert.deepEqual(await status.json(),{enabled:false});
+  const status=await h.invoke('status',{},'GET');assert.deepEqual(await status.json(),{enabled:false,returningEnabled:true});
   for(const opts of [{native:null,canaryIssueAllowed:true},{canaryIssueAllowed:false},{requestOrigin:'https://evil.invalid',canaryIssueAllowed:true}]){
    const denied=harness(opts);assert.equal((await denied.invoke('canary')).status,403);assert.equal(denied.writtenCookies.length,0);
   }
@@ -203,6 +203,58 @@ test('new start seals new context before retiring its source discovery and insta
 });
 test('ordinary callback passes owned attempt hashes to atomic signin/discovery wrappers',async()=>{
  const h=harness();await callback(h);for(const name of ['pixel_signin_bound','pixel_discovery_save']){const call=named(h,name)[0];assert.equal(call.values.length,4);assert.deepEqual(call.values.slice(2),[hash(state),hash(browser)]);}
+});
+test('public-off bound-return start needs no native or canary admission and seals a server-only mode',async()=>{
+ process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED='false';try{
+  const h=harness({native:null,cookies:[]});const response=await h.invoke('return-start',{intent:'sign-in'});
+  assert.equal(response.status,200);const url=new URL((await response.json()).url);
+  assert.equal(url.searchParams.has('pixel_intent'),false);assert.equal(url.searchParams.get('code_challenge_method'),'S256');
+  assert.deepEqual(JSON.parse(named(h,'pixel_attempt_begin_v2')[0].values[4]),{phase:'discovery',entry_mode:'bound-return'});
+  assert.equal(named(h,'nativeSession').length,0);assert.equal(named(h,'issueCanary').length,0);
+  assert.ok(h.writtenCookies.some(c=>c[0]===rules.PIXEL_DISCOVERY_COOKIE.replace('__Host-','')&&c[2].maxAge===0));
+ }finally{process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED='true';}
+});
+test('return-only mode cannot be selected by browser target/proof fields or Link/Create intent',async()=>{
+ for(const body of [{entry_mode:'bound-return'},{target_mode:'create'},{native_user_id:userId},{confirmed:true},{intent:'link'},{intent:'create'},{nativePassword:'not-sent'}]){
+  const h=harness();assert.equal((await h.invoke('return-start',body)).status,400);
+  assert.equal(named(h,'pixel_attempt_begin_v2').length,0);assert.equal(named(h,'nativePassword').length,0);
+ }
+ const h=harness({requestOrigin:'https://evil.invalid'});assert.equal((await h.invoke('return-start')).status,403);
+ assert.equal(named(h,'pixel_attempt_begin_v2').length,0);
+});
+test('known bound return survives public gateOFF, removed canary admission and absent native cookies',async()=>{
+ process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED='false';try{
+  const h=harness({bound:true,native:null,context:{phase:'discovery',entry_mode:'bound-return'},cookies:[[rules.PIXEL_ATTEMPT_COOKIE.replace('__Host-',''),browser]]});
+  const response=await callback(h);assert.equal(response.headers.get('Location'),origin+'/?pixel_connected=1');
+  assert.equal(named(h,'nativeSession').length,0);assert.equal(named(h,'redeemLink').length,0);
+  assert.equal(named(h,'pixel_discovery_save').length,0);assert.equal(named(h,'pixel_bind_account_v2').length,0);
+  assert.ok(h.writtenCookies.some(c=>c[0]===rules.PIXEL_COOKIE.replace('__Host-','')&&c[2].maxAge>0));
+ }finally{process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED='true';}
+});
+test('unknown bound return refuses without discovery, email adoption, native lookup or first binding',async()=>{
+ for(const gate of ['false','true']){
+  process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED=gate;
+  const h=harness({native:null,context:{phase:'discovery',entry_mode:'bound-return'}});const response=await callback(h);
+  assert.match(response.headers.get('Location'),/pixel_error/);assert.equal(named(h,'pixel_signin_bound').length,1);
+  for(const name of ['pixel_discovery_save','pixel_discovery_get','pixel_bind_account_v2','nativeSession','nativePassword','redeemLink'])assert.equal(named(h,name).length,0,name);
+  assert.equal(h.writtenCookies.filter(c=>c[0]===rules.PIXEL_COOKIE.replace('__Host-','')&&c[2].maxAge>0).length,0);
+ }
+ process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED='true';
+});
+test('unrecognized or mixed server return mode fails before provider code exchange',async()=>{
+ for(const context of [{phase:'discovery',entry_mode:'other'},{...linkContext(),entry_mode:'bound-return'}]){
+  const h=harness({context});assert.match((await callback(h)).headers.get('Location'),/pixel_error/);
+  assert.equal(named(h,'codeGrant').length,0);assert.equal(named(h,'pixel_signin_bound').length,0);
+ }
+});
+test('return-only callback retains current epoch ordering and cancellation defenses',async()=>{
+ const context={phase:'discovery',entry_mode:'bound-return'};
+ for(const options of [{userinfoFailure:true},{signinFailure:true},{attemptState:{cancelled:true}}]){
+  const h=harness({...options,context});const response=await callback(h);assert.match(response.headers.get('Location'),/pixel_error/);
+  assert.equal(named(h,'pixel_discovery_save').length,0);assert.equal(named(h,'pixel_bind_account_v2').length,0);
+  assert.equal(h.writtenCookies.filter(c=>c[0]===rules.PIXEL_COOKIE.replace('__Host-','')&&c[2].maxAge>0).length,0);
+  assert.ok(h.calls.findIndex(c=>c.name==='pixel_retire_credentials')<h.calls.findIndex(c=>c.name==='userinfo'));
+ }
 });
 test('cancel during ordinary bound signin cannot mint a fresh session after oldcookie capture',async()=>{
  let release,entered;const signinWait=new Promise(resolve=>release=resolve),enteredPromise=new Promise(resolve=>entered=resolve);const attemptState={cancelled:false};const h=harness({bound:true,attemptState,signinWait,onSignin:entered});const pending=callback(h);await enteredPromise;await h.invoke('signout');release();const response=await pending;assert.match(response.headers.get('Location'),/pixel_error/);assert.equal(h.writtenCookies.filter(cookie=>cookie[0]===rules.PIXEL_COOKIE.replace('__Host-','')&&cookie[2].maxAge>0).length,0);

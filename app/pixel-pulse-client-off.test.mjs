@@ -6,6 +6,20 @@ const uid='11111111-1111-4111-8111-111111111111';
 const date=new Date().toISOString();
 const nativeResponse={session:{id:'offline-native-session',token:'opaque-native',userId:uid,expiresAt:new Date(Date.now()+3600000).toISOString(),createdAt:date,updatedAt:date},user:{id:uid,name:'Offline',email:'offline@example.invalid',emailVerified:true,createdAt:date,updatedAt:date}};
 const client=await import('./skyway-client.ts');
+test('public first-link gateOFF still offers only the fixed returning authorization entry',async()=>{
+ const originalFetch=globalThis.fetch,originalWindow=globalThis.window,calls=[],assigned=[];
+ globalThis.window={location:{assign:url=>assigned.push(url)}};
+ globalThis.fetch=async(input,init)=>{calls.push({url:String(input),init});return Response.json({url:'https://pixel-pulse-websites.vercel.app/api/sso/oauth2/authorize?client_id=skyway-sprint'});};
+ try{
+  assert.equal(client.isPixelPulseAvailable,false);assert.equal(client.isPixelPulseReturnAvailable,true);
+  await client.continueWithPixelPulse();
+  assert.equal(calls.length,1);assert.equal(calls[0].url,'/api/pixel-pulse/return-start');assert.equal(calls[0].init.method,'POST');assert.deepEqual(JSON.parse(calls[0].init.body),{intent:'sign-in'});assert.equal(assigned.length,1);
+  globalThis.fetch=async()=>Response.json({url:'https://unregistered.example.invalid/api/sso/oauth2/authorize'});
+  await assert.rejects(()=>client.continueWithPixelPulse(),/invalid sign-in destination/);assert.equal(assigned.length,1);
+  globalThis.fetch=async()=>Response.json({error:'New connections are not enabled'},{status:503});
+  await assert.rejects(()=>client.continueWithPixelPulse(),/not enabled/);assert.equal(assigned.length,1);
+ }finally{globalThis.fetch=originalFetch;if(originalWindow===undefined)delete globalThis.window;else globalThis.window=originalWindow;}
+});
 test('public gateOFF still checks HttpOnly Pixel cookie before normal native fallback',async()=>{
  const original=globalThis.fetch,calls=[];let stale=false;
  globalThis.fetch=async input=>{const url=String(input);calls.push(url);if(url.endsWith('/pixel-pulse/session'))return stale?Response.json({error:'reauthentication required'},{status:503}):Response.json({session:null});if(url.endsWith('/get-session'))return Response.json(nativeResponse);throw new Error('Unexpected request');};

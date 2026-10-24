@@ -29,6 +29,7 @@ type StoredProfile = {
 };
 type AttemptContext = {
   phase: "discovery" | "link";
+  entry_mode?: "bound-return";
   flow?: PixelLinkFlow;
   expected?: { subject: string; profile_version: number; credential_version: number };
   discovery_hash?: string;
@@ -71,10 +72,10 @@ async function route(request: Request, context: Context) {
       });
     }
     if (action === "status" && request.method === "GET")
-      return json({ enabled: pixelEnabled() && process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED === "true" });
-    if (!["start", "confirm-start", "connection", "cancel", "callback", "session", "token", "signout", "canary"].includes(action))
+      return json({ enabled: pixelEnabled() && process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED === "true", returningEnabled: pixelEnabled() });
+    if (!["start", "return-start", "confirm-start", "connection", "cancel", "callback", "session", "token", "signout", "canary"].includes(action))
       return json({ error: "Not found." }, 404);
-    const mutation = ["start", "confirm-start", "cancel", "token", "signout"].includes(action) || (action === "canary" && request.method === "POST");
+    const mutation = ["start", "return-start", "confirm-start", "cancel", "token", "signout"].includes(action) || (action === "canary" && request.method === "POST");
     if (mutation && (request.method !== "POST" || request.headers.get("origin") !== pixelOrigin()))
       return json({ error: "Continue from Skyway’s account menu." }, 403);
     if (!mutation && request.method !== "GET") return json({ error: "Method not allowed." }, 405);
@@ -152,20 +153,24 @@ async function route(request: Request, context: Context) {
       return saved ? json({ discovered: true, username: saved.username, email: saved.email, emailVerified: saved.email_verified }) : json({ discovered: false });
     }
     const configuration = await pixelConfiguration();
-    if (action === "start" || action === "confirm-start") {
-      const canary = process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED === "true" ? null : await nativeCanary();
-      if (process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED !== "true" && !canary)
+    if (action === "start" || action === "return-start" || action === "confirm-start") {
+      // This server-selected entry can only return to an EXISTING immutable
+      // binding. It cannot discover, link, create or adopt an account.
+      const boundReturn = action === "return-start";
+      const canary = boundReturn || process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED === "true" ? null : await nativeCanary();
+      if (!boundReturn && process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED !== "true" && !canary)
         return json({ error: "Pixel Pulse linking is still being verified. Existing Skyway sign-in remains available." }, 503);
       const text = await request.text();
       if (text.length > 1024) return json({ error: "Invalid request." }, 413);
       const body = JSON.parse(text || "{}") as Record<string, unknown>;
       if (Object.keys(body).some(key => key !== "intent" && key !== "nativePassword") ||
-          ("nativePassword" in body && (action !== "confirm-start" || body.intent !== "link")))
+          ("nativePassword" in body && (action !== "confirm-start" || body.intent !== "link")) ||
+          (boundReturn && body.intent !== undefined && body.intent !== "sign-in"))
         return json({ error: "Start from Skyway’s connection page." }, 400);
       const state = oidc.randomState(), nonce = oidc.randomNonce(), verifier = oidc.randomPKCECodeVerifier(), browser = pixelRandom();
       const challenge = await oidc.calculatePKCECodeChallenge(verifier);
       const canaryContext = canary ? { canary_native_user_id: canary.nativeUserId, canary_jti: canary.jti } : {};
-      let attempt: AttemptContext = { phase: "discovery", ...canaryContext };
+      let attempt: AttemptContext = { phase: "discovery", ...(boundReturn ? { entry_mode: "bound-return" as const } : {}), ...canaryContext };
       let flow: PixelLinkFlow | null = null;
       let nativePasswordTarget: { userId: string; email: string } | null = null;
       if (action === "confirm-start") {
@@ -215,6 +220,7 @@ async function route(request: Request, context: Context) {
       });
       const response = json({ url: url.href });
       response.cookies.set(pixelCookieName(PIXEL_ATTEMPT_COOKIE), browser, pixelCookieOptions(300));
+      if (boundReturn) clearDiscovery(response);
       // Ordinary discovery/return never forces a password. Only first binding
       // requests the provider's separately gated current-password confirmation.
       return response;
@@ -227,7 +233,10 @@ async function route(request: Request, context: Context) {
     const [row] = await neonServerSql`select app_private.pixel_attempt_take_v2(${pixelHash(state)}::text,${pixelHash(browser!)}::text) as attempt`;
     const attempt = row?.attempt as { verifier: string; nonce: string; context: AttemptContext } | null;
     if (!attempt || !["discovery", "link"].includes(attempt.context.phase)) throw new Error("This sign-in attempt expired. Start again.");
-    if (process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED !== "true") {
+    const boundReturn = attempt.context.phase === "discovery" && attempt.context.entry_mode === "bound-return";
+    if (attempt.context.entry_mode !== undefined && !boundReturn)
+      throw new Error("This sign-in request changed. Start again.");
+    if (!boundReturn && process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED !== "true") {
       const canary = await currentCanary();
       if (!canary || canary.nativeUserId !== attempt.context.canary_native_user_id || canary.jti !== attempt.context.canary_jti ||
           (attempt.context.target_mode === "link" && attempt.context.native_user_id !== canary.nativeUserId))
@@ -247,6 +256,8 @@ async function route(request: Request, context: Context) {
       if (ticket) throw new Error("This sign-in request has an unexpected linking confirmation. Start again.");
       const [signed] = await neonServerSql`select app_private.pixel_signin_bound(${JSON.stringify(dbProfile(profile))}::jsonb,${pixelHash(raw)}::text,${pixelHash(state)}::text,${pixelHash(browser!)}::text) as session`;
       if (signed?.session) return complete(raw);
+      if (boundReturn)
+        throw new Error("This sign-in is unavailable. Use existing Skyway sign-in; new Pixel Pulse connections are not enabled.");
       const discovery = pixelRandom();
       await neonServerSql`select app_private.pixel_discovery_save(${pixelHash(discovery)}::text,${JSON.stringify(dbProfile(profile))}::jsonb,${pixelHash(state)}::text,${pixelHash(browser!)}::text)`;
       const response = redirect(attempt.context.canary_native_user_id ? "/connect/pixel-pulse/test?discovered=1" : "/connect/pixel-pulse?discovered=1");

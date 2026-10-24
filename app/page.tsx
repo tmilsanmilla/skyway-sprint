@@ -72,6 +72,7 @@ import {
   ensureNeonCompatibleSession,
   continueWithPixelPulse,
   isPixelPulseAvailable,
+  isPixelPulseReturnAvailable,
   getDataAccessToken,
   isNeonDataEnabled,
   revokeDataSessionForSignOut,
@@ -14324,7 +14325,7 @@ function SkywayGame() {
             </form>
           ) : (
             <>
-              {isPixelPulseAvailable && (
+              {(isPixelPulseAvailable || isPixelPulseReturnAvailable) && (
                 <>
                   <button
                     className="pixel-auth-button"
@@ -14341,13 +14342,15 @@ function SkywayGame() {
                   >
                     CONTINUE WITH PIXEL PULSE
                   </button>
-                  <a className="pixel-link-note" href="/connect/pixel-pulse?mode=link">
-                    Already have both accounts? Link account (highly recommended)
-                  </a>
+                  {isPixelPulseAvailable && (
+                    <a className="pixel-link-note" href="/connect/pixel-pulse?mode=link">
+                      Already have both accounts? Link account (highly recommended)
+                    </a>
+                  )}
                   <small className="pixel-link-note">
-                    Already linked? Your Pixel Pulse sign-in is remembered. Your
-                    first connection asks for your current Pixel Pulse password
-                    on Pixel Pulse.
+                    {isPixelPulseAvailable
+                      ? "Already linked? Your Pixel Pulse sign-in is remembered. Your first connection asks for your current Pixel Pulse password on Pixel Pulse."
+                      : "For accounts already linked to Pixel Pulse. New connections are not enabled yet; use Skyway sign-in below."}
                   </small>
                   {authMessage && <div className="auth-message" role="status">{authMessage}</div>}
                 </>
@@ -14405,7 +14408,7 @@ function SkywayGame() {
                     />
                   </label>
                 )}
-                {authMessage && !isPixelPulseAvailable && (
+                {authMessage && !isPixelPulseAvailable && !isPixelPulseReturnAvailable && (
                   <div className="auth-message" role="status">
                     {authMessage}
                   </div>
