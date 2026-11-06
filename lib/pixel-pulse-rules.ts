@@ -39,7 +39,7 @@ export function pixelProfile(
   const username = info.preferred_username;
   if (
     typeof username !== "string" ||
-    !/^[a-z0-9_]{3,24}$/.test(username) ||
+    !/^[a-z0-9_ ]{3,25}$/.test(username) || username !== username.trim() || username.includes("  ") ||
     username !== claims.preferred_username
   )
     throw new Error("Choose your shared username on Pixel Pulse first.");

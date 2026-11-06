@@ -5,6 +5,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import ts from 'typescript';
 import * as rules from '../lib/pixel-pulse-rules.ts';
 import * as proofRules from '../lib/pixel-pulse-link-proof.ts';
+import {managePixelAccount} from '../lib/pixel-account-management.ts';
 
 // Execute the actual route, replacing only framework/provider/database I/O.
 // This is offline control-flow evidence, not a production OAuth or DB check.
@@ -59,6 +60,7 @@ function harness(options={}) {
    verifyPixelCanary:async(raw)=>raw==='owned-canary-cookie'?options.canary??null:null,
   },
   '@/lib/pixel-pulse-rules':rules,'@/lib/pixel-pulse-server':server,'@/lib/pixel-pulse-link-proof':proofRules,
+  '@/lib/pixel-account-management':{managePixelAccount},
  };
  const exports={};new Function('require','exports','console',compiled)(name=>{if(!(name in imports))throw new Error('Unexpected import '+name);return imports[name];},exports,{warn(){}});
  const invoke=(action,body={},method='POST',urlQuery='')=>exports.POST(new Request(origin+'/api/pixel-pulse/'+action+urlQuery,{method,headers:method==='POST'?{Origin:options.requestOrigin??origin,'Content-Type':'application/json'}:{},...(method==='POST'?{body:JSON.stringify(body)}:{})}),{params:Promise.resolve({action})});
@@ -67,6 +69,11 @@ function harness(options={}) {
 const callback=(h,ticket=false)=>h.invoke('callback',{},'GET','?'+new URLSearchParams({state,iss:rules.PIXEL_ISSUER,code:'owned-code',...(ticket?{pixel_link_ticket:'t'.repeat(43)}:{})}));
 const named=(h,name)=>h.calls.filter(call=>call.name===name);
 process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED='true';
+
+test('advertised account route accepts neither browser auth nor unsigned GET and never sets cookies',async()=>{
+ for(const method of ['GET','POST']){const h=harness(),r=await h.invoke('account',{},method);
+  assert.equal(r.status,method==='GET'?405:403);assert.equal(h.calls.length,0);assert.equal(h.writtenCookies.length,0);}
+});
 
 test('ordinary startup is read-only discovery regardless of browser Link/Create label',async()=>{
  for(const intent of ['sign-in','link','create']){const h=harness();const response=await h.invoke('start',{intent});assert.equal(response.status,200);const target=new URL((await response.json()).url);assert.equal(target.searchParams.has('pixel_intent'),false);assert.deepEqual(JSON.parse(named(h,'pixel_attempt_begin_v2')[0].values[4]),{phase:'discovery'});assert.equal(named(h,'nativeSession').length,0);assert.equal(named(h,'pixel_bind_account_v2').length,0);}

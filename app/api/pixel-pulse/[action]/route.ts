@@ -6,6 +6,7 @@ import { neonServerSql } from "@/lib/neon-server";
 import { verifyPixelNativePassword } from "@/lib/pixel-native-password-server";
 import { PIXEL_CANARY_COOKIE, PIXEL_CANARY_SECONDS, issuePixelCanary, verifyPixelCanary } from "@/lib/pixel-canary-server";
 import { consumePreAuthNetworkQuota } from "@/lib/pre-auth-rate-limit-server";
+import { managePixelAccount } from "@/lib/pixel-account-management";
 import {
   PIXEL_CLIENT_ID, PIXEL_COOKIE, PIXEL_ATTEMPT_COOKIE, PIXEL_DISCOVERY_COOKIE,
   PIXEL_SESSION_SECONDS, pixelIdentityEpoch, pixelProfile, type PixelProfile,
@@ -14,7 +15,7 @@ import {
   pixelEnabled, pixelOrigin, pixelCallback, pixelConfiguration, pixelHash,
   pixelRandom, pixelCookieName, pixelCookieOptions, pixelPublicKeys,
   pixelDatabaseKeys, getPixelSession, pixelAccessToken, pixelTokenExpiresAt,
-  redeemPixelLink, type PixelSession,
+  redeemPixelLink, pixelCentralKeys, type PixelSession,
 } from "@/lib/pixel-pulse-server";
 import {
   assertExpectedPixelActor, pixelCallbackValues, pixelNativeOwnership, type PixelLinkFlow,
@@ -66,6 +67,26 @@ const complete = (raw: string) => {
 async function route(request: Request, context: Context) {
   const { action } = await context.params;
   try {
+    if (action === "account") return managePixelAccount(request, {
+      enabled: () => pixelEnabled() && Boolean(neonServerSql),
+      quota: consumePreAuthNetworkQuota,
+      keys: pixelCentralKeys,
+      take: async (jti, exp) => {
+        const [row] = await neonServerSql!`select case when clock_timestamp()<to_timestamp(${exp}) then app_private.pixel_ticket_take(${jti}::text,to_timestamp(${exp})) else false end as taken`;
+        return row?.taken === true;
+      },
+      retire: async (p, exp) => {
+        await neonServerSql!`select case when clock_timestamp()<to_timestamp(${exp}) then app_private.pixel_retire_credentials(${p.subject}::uuid,${p.credentialVersion}::bigint) else null end`;
+      },
+      status: async (p, exp) => {
+        const [row] = await neonServerSql!`select case when clock_timestamp()<to_timestamp(${exp}) then app_private.pixel_account_status(${p.subject}::uuid,${p.email}::text,${p.emailVerified}::boolean) else null end as result`;
+        return row?.result;
+      },
+      sync: async (p, exp) => {
+        const [row] = await neonServerSql!`select case when clock_timestamp()<to_timestamp(${exp}) then app_private.pixel_sync_identity(${p.subject}::uuid,${p.username}::text,${p.email}::text,${p.emailVerified}::boolean,${p.profileVersion}::bigint,${p.credentialVersion}::bigint) else null end as result`;
+        return row?.result;
+      },
+    });
     if (request.method === "GET" && ["jwks", "database-keys"].includes(action)) {
       return NextResponse.json(action === "jwks" ? await pixelPublicKeys() : await pixelDatabaseKeys(), {
         headers: { "Cache-Control": "public, max-age=60", "X-Content-Type-Options": "nosniff" },
