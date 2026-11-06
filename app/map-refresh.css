@@ -7,6 +7,47 @@
 .runner.facing-left { rotate: -12deg; }
 .runner.facing-right { rotate: 12deg; }
 .leaderboard-state { padding: 16px; font-weight: 800; text-align: center; }
+
+/* Arena scenery: distinct palettes and edge detail, with clear travel lanes.
+   Owned environment cosmetics retain their existing appearance. */
+.playfield {
+  --map-road: #265664;
+  --map-road-alt: #2b626d;
+  --map-edge: #6ce2bd;
+  --map-lane: #f8e9b7;
+  --map-sky-top: #59c5df;
+  --map-sky-bottom: #d5f4d4;
+  --map-scenery: #3ba77d;
+}
+.map-ruins { --map-road: #3c405f; --map-road-alt: #43476b; --map-edge: #64d2c7; --map-sky-top: #7979b9; --map-sky-bottom: #c6b8dc; --map-scenery: #586697; }
+.map-desert { --map-road: #86604f; --map-road-alt: #936a50; --map-edge: #f5bd5b; --map-sky-top: #54bde0; --map-sky-bottom: #ffc995; --map-scenery: #bf794a; }
+.map-skyway { --map-road: #315e91; --map-road-alt: #386f9e; --map-edge: #85e8f2; --map-sky-top: #4d9fdf; --map-sky-bottom: #c0ecff; --map-scenery: #b2d8f4; }
+.map-pitch { --map-road: #302c57; --map-road-alt: #393361; --map-edge: #bba0ed; --map-sky-top: #29244f; --map-sky-bottom: #80609a; --map-scenery: #4b3b70; }
+.map-volcano { --map-road: #59303c; --map-road-alt: #683845; --map-edge: #f99a54; --map-sky-top: #613657; --map-sky-bottom: #f29963; --map-scenery: #7d4051; }
+.map-factory { --map-road: #334f64; --map-road-alt: #3d5c72; --map-edge: #f1ce6c; --map-sky-top: #4f8c9e; --map-sky-bottom: #bdd7c5; --map-scenery: #4e8991; }
+.map-grove { --map-road: #245e50; --map-road-alt: #2c6c59; --map-edge: #b0d878; --map-sky-top: #5cb8ba; --map-sky-bottom: #c6edb7; --map-scenery: #3a9470; }
+.map-meadow { --map-road: #426b49; --map-road-alt: #4e7a50; --map-edge: #ebd477; --map-sky-top: #65c6db; --map-sky-bottom: #e8f2b9; --map-scenery: #6ca54f; }
+.map-terminal { --map-road: #2f5267; --map-road-alt: #365f73; --map-edge: #f0c962; --map-sky-top: #477f9d; --map-sky-bottom: #b8d9d6; --map-scenery: #67b4b2; }
+.playfield:not([class*="environment-"]) > .road {
+  background:
+    linear-gradient(90deg, var(--map-edge) 0 1%, transparent 1% 99%, var(--map-edge) 99%),
+    repeating-linear-gradient(0deg, var(--map-road) 0 48px, var(--map-road-alt) 48px 96px);
+}
+.playfield:not([class*="environment-"]) > .road::before {
+  background:
+    repeating-linear-gradient(0deg, transparent 0 22px, var(--map-edge) 22px 25px, transparent 25px 52px) left / 3% 100% no-repeat,
+    repeating-linear-gradient(0deg, transparent 0 22px, var(--map-edge) 22px 25px, transparent 25px 52px) right / 3% 100% no-repeat;
+  opacity: .45;
+  pointer-events: none;
+}
+.playfield:not([class*="environment-"]) > .road .lane-divider {
+  background: repeating-linear-gradient(var(--map-lane) 0 28px, transparent 28px 58px);
+}
+.playfield:not([class*="environment-"]) > .sky {
+  background: linear-gradient(155deg, var(--map-sky-top), var(--map-sky-bottom));
+}
+.playfield:not([class*="environment-"]) > .horizon span { background: var(--map-scenery); }
+.playfield:not([class*="environment-"]) > .horizon span:nth-child(3n) { background: var(--map-edge); }
 @media(max-width:600px) {
   .terminal-facing-controls { flex-wrap: wrap; justify-content: center; }
   .terminal-facing-controls button { min-height: 44px; }
