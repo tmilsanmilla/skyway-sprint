@@ -12,6 +12,7 @@ import {
 import { audioEngine, type Soundtrack } from "./audio-engine";
 import { AdminPlayerEditor } from "./admin-player-editor";
 import { isMigrationMaintenanceMode } from "./migration-maintenance";
+import { accountNoticeTone } from "./account-presentation";
 import { getRecentUpdates } from "./update-log";
 import { PhotonFury } from "./photon-fury";
 import { useMasteries } from "./use-masteries";
@@ -2589,7 +2590,7 @@ function SkywayGame() {
     if (recoveryError) {
       setAuthMode("signin");
       setAuthMessage(
-        "That recovery link is invalid or expired. Enter your email and request a new one.",
+        "Recovery link is invalid or expired.",
       );
       window.history.replaceState({}, "", window.location.pathname);
     }
@@ -12342,7 +12343,7 @@ function SkywayGame() {
       if (!active) return;
       if (event === "PASSWORD_RECOVERY") {
         setSettingsOpen(true);
-        setPasswordStatus("Verified. Enter your new password below.");
+        setPasswordStatus("Verified.");
       }
       if (event === "TOKEN_REFRESHED") {
         const refreshedUserId = session?.user.id ?? null;
@@ -12567,10 +12568,7 @@ function SkywayGame() {
         email,
         password,
       });
-      if (error)
-        setAuthMessage(
-          `${error.message} If this account existed before the Neon move, use Forgot Password once.`,
-        );
+      if (error) setAuthMessage(error.message);
       else {
         setAuthMessage("Signed in. Loading your runner profile…");
         setAuthSessionRefresh((value) => value + 1);
@@ -12588,7 +12586,7 @@ function SkywayGame() {
       return;
     }
     setPasswordResetBusy(true);
-    setStatus("Sending recovery email…");
+    setStatus("Sending…");
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(
         normalizedEmail,
@@ -12597,11 +12595,11 @@ function SkywayGame() {
       setStatus(
         error
           ? `Could not send the recovery email: ${error.message}`
-          : "If that email belongs to a Skyway account, a recovery link is on the way. Check inbox and spam; the link expires in 1 hour.",
+          : "Check your email.",
       );
     } catch {
       setStatus(
-        "Could not contact the account service. Check your connection and try again.",
+        "Could not contact the account service.",
       );
     } finally {
       setPasswordResetBusy(false);
@@ -12892,7 +12890,7 @@ function SkywayGame() {
       setNewPassword("");
       setConfirmPassword("");
       window.history.replaceState({}, "", window.location.pathname);
-      setAuthMessage("Password reset. Sign in with your new password.");
+      setAuthMessage("Password reset.");
     }
     setAuthBusy(false);
   };
@@ -14150,7 +14148,7 @@ function SkywayGame() {
           <div className="auth-logo">?</div>
           <p>ACCESS CHECK</p>
           <h1>COULD NOT VERIFY</h1>
-          <span>
+          <span className="account-error" role="alert">
             Skyway Sprint could not verify this account or device. No run will
             start until the check succeeds.
           </span>
@@ -14315,7 +14313,7 @@ function SkywayGame() {
                 />
               </label>
               {authMessage && (
-                <div className="auth-message" role="status">
+                <div className="auth-message" data-tone={accountNoticeTone(authMessage)} role={accountNoticeTone(authMessage) === "error" ? "alert" : "status"}>
                   {authMessage}
                 </div>
               )}
@@ -14352,7 +14350,7 @@ function SkywayGame() {
                       ? "Already linked? Your Pixel Pulse sign-in is remembered. Your first connection asks for your current Pixel Pulse password on Pixel Pulse."
                       : "For accounts already linked to Pixel Pulse. New connections are not enabled yet; use Skyway sign-in below."}
                   </small>
-                  {authMessage && <div className="auth-message" role="status">{authMessage}</div>}
+                  {authMessage && <div className="auth-message" data-tone={accountNoticeTone(authMessage)} role={accountNoticeTone(authMessage) === "error" ? "alert" : "status"}>{authMessage}</div>}
                 </>
               )}
               <details
@@ -14409,7 +14407,7 @@ function SkywayGame() {
                   </label>
                 )}
                 {authMessage && !isPixelPulseAvailable && !isPixelPulseReturnAvailable && (
-                  <div className="auth-message" role="status">
+                  <div className="auth-message" data-tone={accountNoticeTone(authMessage)} role={accountNoticeTone(authMessage) === "error" ? "alert" : "status"}>
                     {authMessage}
                   </div>
                 )}
@@ -14429,8 +14427,8 @@ function SkywayGame() {
                   onClick={() => sendPasswordReset(email, setAuthMessage)}
                 >
                   {passwordResetBusy
-                    ? "SENDING RECOVERY EMAIL…"
-                    : "FORGOT PASSWORD?"}
+                    ? "Sending…"
+                    : "Forgot password?"}
                 </button>
               )}
               {authMode === "signin" && (
@@ -14446,19 +14444,7 @@ function SkywayGame() {
                   >
                     CONTINUE WITH GOOGLE
                   </button>
-                  <small className="google-recovery-note">
-                    Recovery email missing? Choose the Google account with the
-                    same email as your Skyway account. Your existing stats and
-                    inventory stay connected.
-                  </small>
                 </>
-              )}
-              {authMode === "signin" && (
-                <small className="migration-auth-note">
-                  Existing Skyway account? After the Neon move, use Forgot
-                  Password once. Your username, stats, gems, inventory, and
-                  records stay attached to the same email.
-                </small>
               )}
               <button
                 className="auth-switch"
@@ -17186,7 +17172,7 @@ function SkywayGame() {
                     />
                   </label>
                   {usernameStatus && (
-                    <div className="report-status">{usernameStatus}</div>
+                    <div className="report-status" data-tone={accountNoticeTone(usernameStatus)} role={accountNoticeTone(usernameStatus) === "error" ? "alert" : "status"}>{usernameStatus}</div>
                   )}
                   <button>SAVE USERNAME</button>
                   {!usernameRequired && (
@@ -17241,7 +17227,7 @@ function SkywayGame() {
                         />
                       </label>
                       {passwordStatus && (
-                        <div className="report-status">{passwordStatus}</div>
+                        <div className="report-status" data-tone={accountNoticeTone(passwordStatus)} role={accountNoticeTone(passwordStatus) === "error" ? "alert" : "status"}>{passwordStatus}</div>
                       )}
                       <button>SAVE NEW PASSWORD</button>
                       <button
@@ -17253,8 +17239,8 @@ function SkywayGame() {
                         }
                       >
                         {passwordResetBusy
-                          ? "SENDING RECOVERY EMAIL…"
-                          : "EMAIL ME A RECOVERY LINK"}
+                          ? "Sending…"
+                          : "Forgot password?"}
                       </button>
                       <button
                         type="button"

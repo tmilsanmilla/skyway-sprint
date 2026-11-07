@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
+import { accountNoticeTone } from "@/app/account-presentation";
 import {
   continueWithPixelPulse,
   confirmWithPixelPulse,
@@ -176,7 +177,7 @@ export default function PixelPulseConnection({ canaryTest = false }: { canaryTes
           </>
         )}
         {message && (
-          <p className="auth-message" role="alert">
+          <p className="auth-message" data-tone={accountNoticeTone(message)} role={accountNoticeTone(message) === "error" ? "alert" : "status"}>
             {message}
           </p>
         )}

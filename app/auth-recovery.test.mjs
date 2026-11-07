@@ -14,12 +14,13 @@ test("invalid recovery links and reset delivery failures are visible", () => {
   assert.match(source, /params\.get\("error"\)/);
   assert.match(source, /recovery link is invalid or expired/i);
   assert.match(source, /Could not send the recovery email/);
-  assert.match(source, /Check inbox and spam; the link expires in 1 hour/);
+  assert.match(source, /Check your email\./);
+  assert.doesNotMatch(source, /Check inbox and spam; the link expires in 1 hour/);
 });
-test("Google provides a no-email recovery path without replacing player data", () => {
+test("Google sign-in remains available without extra recovery explanations", () => {
   assert.match(source, /signInWithOAuth\(\{/);
   assert.match(source, /provider: "google"/);
   assert.match(source, /CONTINUE WITH GOOGLE/);
-  assert.match(source, /same\s+email as your Skyway account/i);
-  assert.match(source, /stats\s+and\s+inventory\s+stay connected/i);
+  assert.doesNotMatch(source, /className="google-recovery-note"/);
+  assert.doesNotMatch(source, /className="migration-auth-note"/);
 });
