@@ -16,6 +16,16 @@ export default function PixelPulseConnection({ canaryTest = false }: { canaryTes
   const [loading, setLoading] = useState(entryVisible);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const refreshAfterFailure = async () => {
+    try {
+      const response = await fetch("/api/pixel-pulse/connection", { cache: "no-store", credentials: "same-origin" });
+      if (!response.ok) return;
+      const current = await response.json() as { discovered: boolean; username: string; email: string; emailVerified: boolean };
+      if (!current.discovered) setDiscovery(null);
+    } catch {
+      // Keep the server's error visible when its read-only status is unavailable.
+    }
+  };
   useEffect(() => {
     let active = true;
     if (!entryVisible) return;
@@ -42,6 +52,7 @@ export default function PixelPulseConnection({ canaryTest = false }: { canaryTes
       else await continueWithPixelPulse();
     } catch (error) {
       setPassword("");
+      await refreshAfterFailure();
       setMessage(
         error instanceof Error
           ? error.message
@@ -65,6 +76,7 @@ export default function PixelPulseConnection({ canaryTest = false }: { canaryTes
       setPassword("");
     } catch (error) {
       setPassword("");
+      await refreshAfterFailure();
       setMessage(
         error instanceof Error
           ? error.message
@@ -87,8 +99,8 @@ export default function PixelPulseConnection({ canaryTest = false }: { canaryTes
     <main className="auth-shell">
       <section className="auth-card pixel-link-card">
         <div className="auth-logo">S</div>
-        <p>SKYWAY SPRINT + PIXEL PULSE</p>
-        <h1>ONE SHARED ACCOUNT</h1>
+        <p className="pixel-link-kicker">SKYWAY SPRINT + PIXEL PULSE</p>
+        <h1>CONNECT PIXEL PULSE</h1>
         <p>
           Your Pixel Pulse username is used across connected websites. Existing
           Skyway progress stays on the same account.
@@ -112,8 +124,9 @@ export default function PixelPulseConnection({ canaryTest = false }: { canaryTes
           </>
         ) : (
           <>
-            <p>Connecting Pixel Pulse account: {discovery.username}</p>
+            <p className="pixel-link-identity">Connecting Pixel Pulse account: <strong>{discovery.username}</strong></p>
             <p>Choose below. You will confirm your current Pixel Pulse password on Pixel Pulse before the first connection is saved.</p>
+            <button className="pixel-link-restart" disabled={busy} onClick={() => void start("sign-in")}>CONFIRM PIXEL ACCOUNT AGAIN</button>
             <section className="pixel-link-option">
               <h2>HAVE A SKYWAY ACCOUNT?</h2>
               <p>

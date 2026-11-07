@@ -14404,12 +14404,21 @@ footer p small {
 .pixel-linked-settings { padding: 20px; background: #181b35; border: 1px solid #6166c1; border-radius: 12px; color: #e2e5ff; }
 .pixel-linked-settings p { font-size: 15px; line-height: 1.6; }
 .pixel-linked-settings a { color: #95cafa; }
-.pixel-link-card { max-width: 600px; }
-.pixel-link-card > p { color: #c4c9e5; line-height: 1.6; font-size: 15px; }
-.pixel-link-card h2 { font-size: 19px; margin-bottom: 8px; }
-.pixel-link-option { margin: 20px 0; padding: 20px; border: 1px solid #393c6b; border-radius: 12px; background: #14162d; }
-.pixel-link-option p { color: #c4c9e5; font-size: 15px; line-height: 1.6; }
-.pixel-link-card a { color: #95cafa; }
+.pixel-link-card { width: min(600px, 100%); padding: clamp(20px, 4vw, 36px); color: #111; text-align: left; }
+.pixel-link-card .auth-logo { margin-bottom: 12px; }
+.pixel-link-card > p { margin: 12px 0; color: #111; line-height: 1.55; font-size: 16px; font-weight: 500; letter-spacing: normal; }
+.pixel-link-card .pixel-link-kicker { font-size: 12px; font-weight: 800; }
+.pixel-link-card h1 { margin: 8px 0 16px; font-size: clamp(26px, 6vw, 34px); letter-spacing: -1px; }
+.pixel-link-card h2 { color: #111; font-size: 19px; margin: 0 0 8px; }
+.pixel-link-option { margin: 20px 0; padding: 20px; border: 2px solid #111; border-radius: 12px; background: #fff; }
+.pixel-link-option p { color: #111; font-size: 15px; line-height: 1.55; }
+.pixel-link-card label { color: #111; font-size: 14px; letter-spacing: normal; }
+.pixel-link-card button { min-height: 44px; padding: 12px 16px; border: 2px solid #111; border-radius: 7px; background: #ff5b24; color: #111; font-weight: 800; cursor: pointer; }
+.pixel-link-card form button { color: #111; }
+.pixel-link-card button:disabled { opacity: .6; cursor: wait; }
+.pixel-link-card .pixel-link-restart { background: #fff; }
+.pixel-link-card a { display: inline-block; margin-top: 16px; color: #111; font-weight: 700; text-decoration: underline; }
+.pixel-link-card > .auth-message { color: #b91c1c; border-color: #b91c1c; background: #fff1f2; font-weight: 700; }
 
 .mastery-trial-game { width: min(100%, 940px); margin: 20px auto; padding: 16px; border: 2px solid #7188a4; background: #101d31; border-radius: 16px; }
 .mastery-trial-game header,.mastery-trial-controls { display: flex; gap: 12px; justify-content: space-between; align-items: center; margin: 10px 0; }
