@@ -1,0 +1,16 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import {createRequire} from 'node:module';
+import {fileURLToPath} from 'node:url';
+import path from 'node:path';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const require=createRequire(root+'/package.json');const esbuild=require('esbuild');
+const code=esbuild.buildSync({absWorkingDir:root,stdin:{contents:"import React from 'react';import{renderToStaticMarkup}from'react-dom/server';import{AccountAvatar}from'./app/account-avatar';import{AccountPreferencesPanel}from'./app/account-preferences-panel';import{DEFAULT_ACCOUNT_PREFERENCES}from'./app/account-preferences';export function avatar(p){return renderToStaticMarkup(React.createElement(AccountAvatar,p));}export function panel(s){return renderToStaticMarkup(React.createElement(AccountPreferencesPanel,{name:'tedmils',state:{value:{...DEFAULT_ACCOUNT_PREFERENCES},loaded:true,status:'saved',error:'',...s},onChange(){},onRetry(){},onRecover(){},hasRecovery:false}));}",loader:'tsx',resolveDir:root},bundle:true,platform:'node',format:'cjs',packages:'external',jsx:'automatic',write:false}).outputFiles[0].text;
+const module={exports:{}};vm.runInNewContext(code,{module,exports:module.exports,require});const {avatar,panel}=module.exports;
+test('default avatar is a gray circle with a bitmap initial',()=>{const html=avatar({name:'tedmils',color:'#6b7280',font:'pixel'});assert.match(html,/background-color:#6b7280/);assert.match(html,/avatar-font-pixel/);assert.match(html,/shape-rendering="crispEdges"/);assert((html.match(/<rect/g)||[]).length>10);});
+test('numeric username initials also use actual pixel glyphs',()=>{const html=avatar({name:'9runner',color:'#6b7280',font:'pixel'});assert.match(html,/<svg/);assert((html.match(/<rect/g)||[]).length>10);});
+test('chosen font keeps the same first letter and accessible parent semantics',()=>{const html=avatar({name:'tedmils',color:'#2563eb',font:'mono'});assert.match(html,/avatar-font-mono/);assert.match(html,/>T</);assert.match(html,/aria-hidden="true"/);assert.doesNotMatch(html,/<svg/);});
+test('default row is not falsely described as a confirmed saved write',()=>{const html=panel();assert.match(html,/Using account defaults/);assert.doesNotMatch(html,/settings saved to your account/);});
+test('unknown save result visibly remains an error with an explicit retry',()=>{const html=panel({status:'error',error:'Not confirmed saved.'});assert.match(html,/role="alert"/);assert.match(html,/data-tone="error"/);assert.match(html,/RETRY ACCOUNT SETTINGS/);assert.doesNotMatch(html,/settings saved to your account/);});
+test('loading account data disables editing instead of overwriting it with defaults',()=>{const html=panel({status:'loading',loaded:false});assert.equal((html.match(/disabled=""/g)||[]).length,2);assert.match(html,/Loading account settings/);});

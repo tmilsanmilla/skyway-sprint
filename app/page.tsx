@@ -14,6 +14,9 @@ import { AdminPlayerEditor } from "./admin-player-editor";
 import { isMigrationMaintenanceMode } from "./migration-maintenance";
 import { accountNoticeTone } from "./account-presentation";
 import { ReportProblemLink } from "./report-problem-link";
+import { AccountAvatar } from "./account-avatar";
+import { AccountPreferencesPanel } from "./account-preferences-panel";
+import { useAccountPreferences } from "./use-account-preferences";
 import { getRecentUpdates } from "./update-log";
 import { PhotonFury } from "./photon-fury";
 import { useMasteries } from "./use-masteries";
@@ -1998,6 +2001,8 @@ function SkywayGame() {
     [leaderboardOpen, setLeaderboardOpen] = useState(false),
     [updateLogOpen, setUpdateLogOpen] = useState(false),
     [leaders, setLeaders] = useState<Leader[]>([]);
+  const [guest, setGuest] = useState(false);
+  const [hasLegacyAudio, setHasLegacyAudio] = useState(false);
   const [soundtrack, setSoundtrack] = useState<Soundtrack>("energetic"),
     [musicVolume, setMusicVolume] = useState(0.45),
     [sfxVolume, setSfxVolume] = useState(0.7),
@@ -2439,6 +2444,8 @@ function SkywayGame() {
     setDeferredAttackGroups(nextGroups);
   }, []);
   useEffect(() => {
+    try { setHasLegacyAudio(Boolean(window.localStorage.getItem(AUDIO_PREFERENCES_KEY))); } catch { /* Recovery is optional. */ }
+    if (!guest) return;
     let savedTrack: Soundtrack = "energetic";
     let savedMusic = 0.45;
     let savedSfx = 0.7;
@@ -2476,10 +2483,9 @@ function SkywayGame() {
       window.clearTimeout(applyPreferences);
       audioEngine.stop();
     };
-  }, []);
+  }, [guest]);
   const [authReady, setAuthReady] = useState(false),
     [authSessionRefresh, setAuthSessionRefresh] = useState(0),
-    [guest, setGuest] = useState(false),
     [userEmail, setUserEmail] = useState<string | null>(null),
     [playerAccess, setPlayerAccess] = useState<PlayerAccess | null>(null),
     [playerAccessError, setPlayerAccessError] = useState(""),
@@ -2492,6 +2498,13 @@ function SkywayGame() {
     [authBusy, setAuthBusy] = useState(false),
     [passwordResetBusy, setPasswordResetBusy] = useState(false),
     [authMessage, setAuthMessage] = useState("");
+  const accountPreferences = useAccountPreferences(authReady && !guest ? userIdRef.current : null);
+  const { avatarColor, avatarFont, soundtrack: accountTrack, musicVolume: accountMusic, sfxVolume: accountSfx } = accountPreferences.value;
+  useEffect(() => {
+    if (guest || !authReady || !accountPreferences.loaded) return;
+    setSoundtrack(accountTrack); setMusicVolume(accountMusic); setSfxVolume(accountSfx);
+    audioEngine.setTrack(accountTrack); audioEngine.setMusicVolume(accountMusic); audioEngine.setSfxVolume(accountSfx);
+  }, [guest, authReady, accountPreferences.loaded, accountTrack, accountMusic, accountSfx]);
   const masteries = useMasteries(authReady && !guest ? userIdRef.current : null);
   const [trialRequest,setTrialRequest]=useState<MasteryKey|null>(null);
   const [activeTrial,setActiveTrial]=useState<MasteryKey|null>(null);
@@ -3591,6 +3604,10 @@ function SkywayGame() {
     nextMusic: number,
     nextSfx: number,
   ) => {
+    if (!guest && userIdRef.current) {
+      accountPreferences.update({ soundtrack: nextTrack, musicVolume: nextMusic, sfxVolume: nextSfx });
+      return;
+    }
     try {
       window.localStorage.setItem(
         AUDIO_PREFERENCES_KEY,
@@ -12227,16 +12244,7 @@ function SkywayGame() {
         }
         await refreshPlayerAccess(false, sessionUserId);
         if (authSessionGenerationRef.current !== generation) return;
-        const [
-          { data: stats, error: statsError },
-          { data: profile },
-          { data: admin },
-          { data: role },
-          { data: owned },
-          { data: loadout },
-          { data: progression },
-          { data: pixelIdentity },
-        ] = await Promise.all([
+        const accountReads = await Promise.resolve().then(() => Promise.all([
           supabase
             .from("player_stats")
             .select("total_gems,high_score,stardust")
@@ -12260,27 +12268,34 @@ function SkywayGame() {
             .maybeSingle(),
           supabase.rpc("get_player_progression"),
           isPixelPulseAvailable ? supabase.rpc("get_my_pixel_identity") : Promise.resolve({ data: null }),
-        ]);
+        ])).catch(() => null);
         if (
           userIdRef.current !== sessionUserId ||
           authSessionGenerationRef.current !== generation
         )
           return;
-        if (statsError)
-          console.error("Could not load account stats:", statsError.message);
+        if (!accountReads || accountReads.some(result => "error" in result && result.error)) {
+          setPlayerAccessError("Your saved account data could not be loaded. Nothing has been reset. Try again.");
+          setPlayerAccessChecking(false); setAuthReady(true); return;
+        }
+        const [{ data: firstStats }, { data: profile }, { data: admin }, { data: role },
+          { data: owned }, { data: loadout }, { data: progression }, { data: pixelIdentity }] = accountReads;
+        // A brand-new account's progression RPC may provision stats after the
+        // parallel SELECT. Re-read once; absence/error is never displayed as zero.
+        const stats = firstStats ?? (await Promise.resolve(supabase.from("player_stats")
+          .select("total_gems,high_score,stardust").eq("user_id", user.id).maybeSingle())
+          .catch(() => ({ data: null }))).data;
+        if (userIdRef.current !== sessionUserId || authSessionGenerationRef.current !== generation) return;
+        if (!stats || !Array.isArray(owned) || !progression || typeof progression !== "object") {
+          setPlayerAccessError("Your saved account data could not be loaded. Nothing has been reset. Try again.");
+          setPlayerAccessChecking(false); setAuthReady(true); return;
+        }
         if (stats) {
           gemsRef.current = stats.total_gems;
           highScoreRef.current = stats.high_score;
           setGems(stats.total_gems);
           setStardust(Number(stats.stardust) || 0);
           setHighScore(stats.high_score);
-        } else {
-          gemsRef.current = 0;
-          highScoreRef.current = 0;
-          setGems(0);
-          setStardust(0);
-          setHighScore(0);
-          console.error("Account stats were not provisioned for this player.");
         }
         if (profile) {
           setUsername(profile.username);
@@ -14150,8 +14165,7 @@ function SkywayGame() {
           <p>ACCESS CHECK</p>
           <h1>COULD NOT VERIFY</h1>
           <span className="account-error" role="alert">
-            Skyway Sprint could not verify this account or device. No run will
-            start until the check succeeds.
+            {playerAccessError}
           </span>
           <div className="access-error-actions">
             <button
@@ -14503,6 +14517,10 @@ function SkywayGame() {
     <main
       className={`game-shell mode-${mode} ${flash}${adminTestModeActive || runIsTestMode ? " admin-test-mode" : ""}`}
     >
+      {!guest && <button className="account-avatar-control" aria-label={`Account settings for ${username || "your account"}`}
+        disabled={isVersusRun} onClick={() => { cancelPendingProgressionStart(); setSettingsOpen(true); setPauseMenuOpen(false); setPaused(true); }}>
+        <AccountAvatar name={username || userEmail || "?"} color={avatarColor} font={avatarFont}/>
+      </button>}
       <div
         className={`game-layout view-${mainView}${showPlayerLevel ? " has-player-level" : ""}`}
       >
@@ -16982,6 +17000,10 @@ function SkywayGame() {
                             />
                           </label>
                         </div>
+                        {!guest && <p className="account-preferences-status" role={accountPreferences.status === "error" ? "alert" : "status"} data-tone={accountPreferences.status === "error" ? "error" : "status"}>
+                          {accountPreferences.status === "error" ? accountPreferences.error : accountPreferences.status === "saved" ? (accountPreferences.value.revision === 0 ? "Account audio defaults." : "Audio saved to your account.") : "Saving account audio settings…"}
+                          {accountPreferences.status === "error" && <button onClick={accountPreferences.retry}>RETRY SAVE</button>}
+                        </p>}
                         <div className="pause-actions">
                           <button onClick={resumeFromPause}>
                             KEEP RUNNING
@@ -17137,14 +17159,22 @@ function SkywayGame() {
                 </div>
               )}
 
-              {isPixelPulseAvailable && !pixelLinked && (
-                <a
-                  className="settings-action pixel-link-note"
-                  href="/connect/pixel-pulse?mode=link"
-                >
-                  LINK PIXEL PULSE (HIGHLY RECOMMENDED)
-                </a>
-              )}
+              <AccountPreferencesPanel name={username || userEmail || "?"} state={accountPreferences}
+                onChange={accountPreferences.update} onRetry={accountPreferences.retry} hasRecovery={hasLegacyAudio}
+                onRecover={() => {
+                  try {
+                    const saved = JSON.parse(window.localStorage.getItem(AUDIO_PREFERENCES_KEY) || "null");
+                    if (saved && ["energetic", "jazz", "calm"].includes(saved.soundtrack) &&
+                        Number.isFinite(saved.musicVolume) && Number.isFinite(saved.sfxVolume)) {
+                      accountPreferences.update({ soundtrack: saved.soundtrack,
+                        musicVolume: Math.max(0, Math.min(1, saved.musicVolume)), sfxVolume: Math.max(0, Math.min(1, saved.sfxVolume)) });
+                    }
+                  } catch { /* Preserve unowned recovery bytes; never replace account data automatically. */ }
+                }}/>
+              <a className="settings-action pixel-link-note" href="/connect/pixel-pulse?mode=link">
+                LINK ACCOUNT TO PIXEL PULSE <small>HIGHLY RECOMMENDED</small>
+              </a>
+              {pixelLinked && <p className="pixel-link-confirmed">Already connected. Your existing account and progress are preserved.</p>}
               {pixelLinked ? (
                 <div className="pixel-linked-settings">
                   <b>PIXEL PULSE · {username}</b>

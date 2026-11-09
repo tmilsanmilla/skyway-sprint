@@ -460,7 +460,7 @@ export const completeManagedPasswordReset = async (
 type BridgeError = { message: string };
 
 export const verifyCurrentNeonSession = async () => {
-  if (!neonDataClient) return null;
+  if (!neonDataClient) return { message: "The Neon account database is not configured." } satisfies BridgeError;
   let message = "Game database is temporarily unavailable.";
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {

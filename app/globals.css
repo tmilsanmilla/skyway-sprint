@@ -14484,3 +14484,24 @@ footer p small {
   outline: 2px solid currentColor;
   outline-offset: 3px;
 }
+/* Account-owned appearance. Authentication presentation stays black/red/blue. */
+.account-avatar-control { position:fixed;top:12px;right:16px;z-index:25;width:48px;height:48px;border-radius:50%;padding:2px;border:2px solid #fff;background:#fff;box-shadow:0 3px 15px #0003;cursor:pointer; }
+.account-avatar-control:focus-visible { outline:3px solid #2563eb;outline-offset:4px; }
+.account-avatar-control:disabled { cursor:default; }
+.account-avatar { display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:40px;height:40px;border-radius:50%;font-size:24px;font-weight:800;line-height:1;overflow:hidden; }
+.account-avatar svg { width:20px;height:28px; }
+.avatar-font-sans { font-family:Arial,sans-serif; }
+.avatar-font-serif { font-family:Georgia,serif; }
+.avatar-font-mono,.avatar-font-pixel { font-family:monospace; }
+.account-preferences-panel { border:1px solid #d1d5db;background:#fff;color:#111;border-radius:12px;padding:16px;margin:18px 0; }
+.account-preferences-panel h3 { color:#111;font-size:14px;letter-spacing:.06em;margin:0 0 14px; }
+.account-appearance-controls { display:flex;gap:14px;align-items:center;flex-wrap:wrap; }
+.account-appearance-controls label { display:grid;gap:6px;color:#111;font-size:13px; }
+.account-appearance-controls input,.account-appearance-controls select { color:#111;background:#fff;border:1px solid #6b7280;border-radius:6px;min-height:40px;max-width:100%; }
+.account-appearance-controls input[type=color] { width:60px; }
+.account-preferences-status { font-size:13px;line-height:1.5;color:inherit; }
+.account-preferences-status[data-tone=error] { color:#b91c1c; }
+.pixel-link-note { display:flex;flex-direction:column;gap:4px;text-align:center; }
+.pixel-link-note small { font-size:11px;letter-spacing:.07em; }
+.pixel-link-confirmed { font-size:13px;color:#111; }
+@media(max-width:600px) { .account-avatar-control { top:8px;right:10px; } .game-shell { padding-top:62px; } }
