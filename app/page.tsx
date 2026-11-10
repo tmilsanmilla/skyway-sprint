@@ -13,7 +13,6 @@ import { audioEngine, type Soundtrack } from "./audio-engine";
 import { AdminPlayerEditor } from "./admin-player-editor";
 import { isMigrationMaintenanceMode } from "./migration-maintenance";
 import { accountNoticeTone } from "./account-presentation";
-import { ReportProblemLink } from "./report-problem-link";
 import { AccountAvatar } from "./account-avatar";
 import { AccountPreferencesPanel } from "./account-preferences-panel";
 import { useAccountPreferences } from "./use-account-preferences";
@@ -14488,7 +14487,6 @@ function SkywayGame() {
               </small>
             </>
           )}
-          <ReportProblemLink />
         </section>
       </main>
     );
@@ -17152,7 +17150,6 @@ function SkywayGame() {
               )}
               <p>PLAYER SETTINGS</p>
               <h2>{usernameRequired ? "CHOOSE A USERNAME" : "SETTINGS"}</h2>
-              <ReportProblemLink />
               {usernameRequired && (
                 <div className="required-note">
                   A username is required before you can play.
