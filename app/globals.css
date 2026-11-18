@@ -13948,6 +13948,33 @@ footer p small {
   border-color: #ff757b;
   background: #442331;
 }
+.map-ban-grid .unknown-map-card {
+  position: relative;
+  overflow: hidden;
+  border-color: #ac91ee;
+  background: radial-gradient(ellipse at top right, #564484, #1d2847 75%);
+}
+.map-ban-grid .unknown-map-card.selected {
+  border-color: #ff757b;
+  background: #442331;
+}
+.map-ban-grid .unknown-map-mark {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  font: 900 80px/1 "Courier New", monospace;
+  color: #c1b1ef;
+  opacity: .18;
+  pointer-events: none;
+}
+.unknown-map-reveal {
+  border: 1px solid #bfa7f7;
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: #eee5ff;
+  background: #302549;
+  font-weight: 700;
+}
 .setup-announce {
   position: fixed;
   inset: 0;

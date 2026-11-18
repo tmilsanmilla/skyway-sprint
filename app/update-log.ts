@@ -5,7 +5,7 @@ export interface UpdateLogEntry {
   readonly changes: readonly string[];
 }
 
-export const LATEST_UPDATE_VERSION = "2.6";
+export const LATEST_UPDATE_VERSION = "2.7";
 export const VISIBLE_UPDATE_LIMIT = 10;
 
 /**
@@ -15,6 +15,16 @@ export const VISIBLE_UPDATE_LIMIT = 10;
  * what players will notice rather than database, deployment, or code details.
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
+  {
+    id: "2026-11-18-ranked-unknown-map",
+    publishedAt: "2026-11-18T22:38:35Z",
+    title: "RANKED UNKNOWN MAP",
+    changes: [
+      "Ranked map bans now show three named arenas and one Unknown Map card. Ban the mystery card just like any other map.",
+      "If Unknown Map is selected, both runners see the same arena during the four-second reveal before character selection. Forced-Ace arenas still skip character selection.",
+      "The revealed arena keeps its normal lanes, hazards, character restrictions and scoring. Unknown Map does not appear in Endless, Photon Fury or casual modes.",
+    ],
+  },
   {
     id: "2026-11-17-photon-balance-and-mastery-toggle",
     publishedAt: "2026-11-18T00:17:02Z",

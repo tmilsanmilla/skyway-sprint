@@ -14740,19 +14740,7 @@ function SkywayGame() {
                       : []),
                   ],
                 }}
-                arenas={[
-                  ...MAP_IDS.map((key) => ({ key, ...MAP_GUIDES[key] })),
-                  ...(versusMode === "ranked"
-                    ? [
-                        {
-                          key: "unknown",
-                          name: "Unknown",
-                          description: "Reveals one random map after bans.",
-                          rules: ["Ranked-only random map choice."],
-                        },
-                      ]
-                    : []),
-                ]}
+                arenas={MAP_IDS.map((key) => ({ key, ...MAP_GUIDES[key] }))}
                 characters={CHARACTER_ROSTER.filter(
                   (c) =>
                     isCharacterOwned(unlocks, c.key) &&
