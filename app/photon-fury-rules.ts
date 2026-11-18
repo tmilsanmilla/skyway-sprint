@@ -1,3 +1,5 @@
+import { roundedHealthForConditions } from "./mastery-rules.ts";
+
 /** Photon-only rules. All clocks use active gameplay, never menu/pause time. */
 export const PHOTON_RULES = {
   version: 20261017,
@@ -11,8 +13,8 @@ export const PHOTON_RULES = {
   inputDelaySeconds: 0.1,
   needleSeconds: 4,
   needleDamageChance: 0.45,
-  // The former 0.288 baseline is 35% faster, presented as the new 1×.
-  baseTravelSpeed: 0.288 * 1.35,
+  // The former 0.288 baseline is 40% faster, presented as the new 1×.
+  baseTravelSpeed: 0.288 * 1.4,
   speedGrowth: 1.004,
 } as const;
 export const PHOTON_CATEGORIES = [
@@ -258,16 +260,16 @@ export const resolveOwnedPhotonCharacter = (
 export const PHOTON_WEIGHTS = {
   rock: 10,
   needle: 10,
-  car: 15,
-  log: 15,
-  spike: 25,
-  barrel: 25,
+  car: 18,
+  log: 10,
+  spike: 26,
+  barrel: 26,
 } as const;
 export const MAGNET_WEIGHTS = {
   rock: 10,
-  car: 10,
+  car: 15,
   needle: 10,
-  log: 15,
+  log: 10,
   spike: 25,
   barrel: 20,
   warpstone: 10,
@@ -461,7 +463,7 @@ export const photonBonusPoints = (run: PhotonRun) => {
   const s = getPhotonCharacter(run.characterKey).bonusPointSeconds;
   return s
     ? Math.floor(Math.max(0, run.elapsed) / s) *
-        (run.weaponKey === "ninjablade" && run.hp > 0 && run.hp <= 1 ? 2 : 1)
+        (run.weaponKey === "ninjablade" && run.hp > 0 && roundedHealthForConditions(run.hp) <= 1 ? 2 : 1)
     : 0;
 };
 export const photonPoints = (run: PhotonRun) =>
@@ -482,7 +484,7 @@ const loseDurability = (run: PhotonRun, amount = 1) => {
 };
 const pointMultiplier = (run: PhotonRun) =>
   getPhotonCharacter(run.characterKey).pointMultiplier *
-  (run.weaponKey === "ninjablade" && run.hp > 0 && run.hp <= 1 ? 2 : 1);
+  (run.weaponKey === "ninjablade" && run.hp > 0 && roundedHealthForConditions(run.hp) <= 1 ? 2 : 1);
 const awardPoints = (run: PhotonRun, amount: number) => {
   run.extraPoints += amount * pointMultiplier(run);
 };

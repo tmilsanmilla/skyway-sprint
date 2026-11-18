@@ -19,7 +19,7 @@ import { useAccountPreferences } from "./use-account-preferences";
 import { getRecentUpdates } from "./update-log";
 import { PhotonFury } from "./photon-fury";
 import { useMasteries } from "./use-masteries";
-import { ActiveMasteryQuest, CharacterMastery, FlairPicker, MasteryShop } from "./mastery-menu";
+import { ActiveMasteryQuest, CharacterMastery, CharacterMasteryToggle, FlairPicker, MasteryShop } from "./mastery-menu";
 import { inventoryFlairs, getFlairEffects } from "./flair-rules";
 import { roundedHealthForConditions, strideShieldSeconds, salveWaveHeal, salveLowHealthMultipliers, guardBlueDamage, type MasteryKey } from "./mastery-rules";
 import { createMasteryRuntime, startMasteryWave, decorateMasteryItem, pruneMasteryRuntime, resolveBloomCollection, resolveMasteryMiss, consumeBloomAbility, guardBlueGemPickup, vaultAvailable, resolveMasteryVault, resolveGuardContact, smokeNearMissSeconds, spendLocalSmoke, smokeOverlayBands, type SmokeStrength } from "./mastery-engine";
@@ -17895,7 +17895,7 @@ function SkywayGame() {
                                       ? "ADMIN TEST ACCESS"
                                       : "LOCKED PREVIEW"}
                                 </small>
-                                <h4>{focusedCharacter.name}</h4>
+                                <div className="inventory-character-title"><h4>{focusedCharacter.name}</h4><CharacterMasteryToggle character={focusedCharacter.key} state={masteries.account} busy={masteries.busy||running||!!activeTrial||isVersusRun} onToggle={(key,which,on)=>void masteries.toggle(key,which,on)} /></div>
                               </div>
                               <button
                                 className="equip-character"
@@ -17997,7 +17997,7 @@ function SkywayGame() {
                               </div>
                             </details>
                             <FlairPicker character={focusedCharacter.key} flairs={ownedFlairs} selected={masteries.flair} state={masteries.account} busy={masteries.busy||running} onEquip={key=>void masteries.equip(key)} />
-                            <CharacterMastery character={focusedCharacter.key} state={masteries.account} busy={masteries.busy||running||!!activeTrial||isVersusRun} onToggle={(key,which,on)=>void masteries.toggle(key,which,on)} onTrial={key=>setTrialRequest(key)} />
+                            <CharacterMastery character={focusedCharacter.key} state={masteries.account} showMasteryToggle={false} busy={masteries.busy||running||!!activeTrial||isVersusRun} onToggle={(key,which,on)=>void masteries.toggle(key,which,on)} onTrial={key=>setTrialRequest(key)} />
                           </div>
                         )}
                       </details>

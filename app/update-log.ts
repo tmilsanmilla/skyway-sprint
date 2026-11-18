@@ -5,7 +5,7 @@ export interface UpdateLogEntry {
   readonly changes: readonly string[];
 }
 
-export const LATEST_UPDATE_VERSION = "2.5";
+export const LATEST_UPDATE_VERSION = "2.6";
 export const VISIBLE_UPDATE_LIMIT = 10;
 
 /**
@@ -15,6 +15,17 @@ export const VISIBLE_UPDATE_LIMIT = 10;
  * what players will notice rather than database, deployment, or code details.
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
+  {
+    id: "2026-11-17-photon-balance-and-mastery-toggle",
+    publishedAt: "2026-11-18T00:17:02Z",
+    title: "PHOTON BALANCE + MASTERY SWITCH",
+    changes: [
+      "Photon Fury starts at the requested 40% faster base pace while the speed display still begins at 1×.",
+      "Updated normal obstacle chances to 10% Rocks, 10% Needles, 18% Cars, 10% Logs, 26% Spikes and 26% Barrels. Magnet uses its separate revised distribution.",
+      "Earned mastery switches now sit beside the character name in the inventory. Rewritten flairs keep their separate switch.",
+      "Ninjablade's low-health bonus follows the same nearest-half-heart rules as the other character benefits, while actual HP stays exact.",
+    ],
+  },
   {
     id: "2026-10-24-pixel-return-sign-in",
     publishedAt: "2026-10-24T13:09:00Z",

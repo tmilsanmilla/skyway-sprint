@@ -51,14 +51,21 @@ export function MasteryShop({ state, liveState = state, syncStatus = "saved", ph
     })}</div>
   </section>;
 }
-interface CharacterMasteryProps { character: string; state: MasteryAccountState; busy?: boolean; onToggle: (key: MasteryKey, which: "mastery" | "flair", value: boolean) => void; onTrial: (key: MasteryKey) => void; }
-export function CharacterMastery({ character, state, busy, onToggle, onTrial }: CharacterMasteryProps) {
+type MasteryToggleProps = { character: string; state: MasteryAccountState; busy?: boolean; onToggle: (key: MasteryKey, which: "mastery" | "flair", value: boolean) => void; };
+export function CharacterMasteryToggle({ character, state, busy, onToggle }: MasteryToggleProps) {
+  const definition = masteryDefinition(character);
+  const quest = definition && state.quests[definition.key];
+  if (!definition || !quest?.mastered) return null;
+  return <label className="character-mastery-inline"><input type="checkbox" aria-label={`Use ${definition.name} mastery`} checked={quest.masteryEnabled} disabled={busy} onChange={event => onToggle(definition.key, "mastery", event.target.checked)} />Mastery</label>;
+}
+interface CharacterMasteryProps extends MasteryToggleProps { onTrial: (key: MasteryKey) => void; showMasteryToggle?: boolean; }
+export function CharacterMastery({ character, state, busy, onToggle, onTrial, showMasteryToggle = true }: CharacterMasteryProps) {
   const definition = masteryDefinition(character);
   if (!definition) return null;
   const quest = state.quests[definition.key];
   if (!quest) return null;
   return <section className="character-mastery" aria-label={`${definition.name} mastery`}>
-    {quest.mastered ? <><label><input type="checkbox" checked={quest.masteryEnabled} disabled={busy} onChange={(event) => onToggle(definition.key, "mastery", event.target.checked)} /> Mastery</label><p>{definition.ability}</p><label><input type="checkbox" checked={quest.flairRewriteEnabled} disabled={busy} onChange={(event) => onToggle(definition.key, "flair", event.target.checked)} /> Rewritten flair</label><p>Independent of mastery. Turn off to restore this flair&apos;s original score bonus.</p><button type="button" disabled={busy} onClick={() => onTrial(definition.key)}>Replay trial of {definition.name}</button><p>Practice replay only. No rewards; your mastery and flair settings stay unchanged.</p></> : quest.complete ? <button type="button" disabled={busy} onClick={() => onTrial(definition.key)}>Enter trial of {definition.name}</button> : <><strong>Quest {quest.quest + 1} of 3</strong><p>{definition.quests[quest.quest]}</p><div>{definition.targets[quest.quest].map((target, i) => <span key={i}>{Math.min(target, Math.floor((quest.progress[i] ?? 0) * 100) / 100)} / {target}{i + 1 < definition.targets[quest.quest].length ? " · " : ""}</span>)}</div></>}
+    {quest.mastered ? <>{showMasteryToggle ? <CharacterMasteryToggle character={character} state={state} busy={busy} onToggle={onToggle} /> : null}<p>{definition.ability}</p><label><input type="checkbox" checked={quest.flairRewriteEnabled} disabled={busy} onChange={(event) => onToggle(definition.key, "flair", event.target.checked)} /> Rewritten flair</label><p>Independent of mastery. Turn off to restore this flair&apos;s original score bonus.</p><button type="button" disabled={busy} onClick={() => onTrial(definition.key)}>Replay trial of {definition.name}</button><p>Practice replay only. No rewards; your mastery and flair settings stay unchanged.</p></> : quest.complete ? <button type="button" disabled={busy} onClick={() => onTrial(definition.key)}>Enter trial of {definition.name}</button> : <><strong>Quest {quest.quest + 1} of 3</strong><p>{definition.quests[quest.quest]}</p><div>{definition.targets[quest.quest].map((target, i) => <span key={i}>{Math.min(target, Math.floor((quest.progress[i] ?? 0) * 100) / 100)} / {target}{i + 1 < definition.targets[quest.quest].length ? " · " : ""}</span>)}</div></>}
   </section>;
 }
 interface FlairPickerProps { character: string; flairs: readonly InventoryFlair[]; selected: string | null; state: MasteryAccountState; busy?: boolean; onEquip: (key: string) => void; }

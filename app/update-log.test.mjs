@@ -42,12 +42,12 @@ test("players see only the latest ten updates while the source archive is kept",
   assert.equal(getRecentUpdates(UPDATE_LOG.slice(0, 3)).length, 3);
 });
 
-test("release numbers advance to 2.5 without using the archive count", () => {
-  assert.equal(LATEST_UPDATE_VERSION, "2.5");
-  assert.equal(getRecentUpdates()[0].id, "2026-10-24-pixel-return-sign-in");
-  assert.equal(getRecentUpdates()[5].id, "2026-10-10-update-2-0");
+test("release numbers advance to 2.6 without using the archive count", () => {
+  assert.equal(LATEST_UPDATE_VERSION, "2.6");
+  assert.equal(getRecentUpdates()[0].id, "2026-11-17-photon-balance-and-mastery-toggle");
+  assert.equal(getRecentUpdates()[6].id, "2026-10-10-update-2-0");
   assert.deepEqual(getRecentUpdates().map(({ version }) => version), [
-    "2.5", "2.4", "2.3", "2.2", "2.1", "2.0", "1.9", "1.8", "1.7", "1.6",
+    "2.6", "2.5", "2.4", "2.3", "2.2", "2.1", "2.0", "1.9", "1.8", "1.7",
   ]);
   assert.ok(getRecentUpdates().every(({ title }) => !/^UPDATE \d+:/.test(title)));
 });

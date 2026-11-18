@@ -50,9 +50,9 @@ test('four starters require the mode unlock; other characters require explicit a
   assert.equal(resolveOwnedPhotonCharacter('photon_tick', owned), 'photon_tick');
   assert.equal(resolveOwnedPhotonCharacter('photon_trumpet', owned), 'photon_magician');
 });
-test('bonuses multiply, turn delays add, and the 35% faster baseline is the new displayed 1×', () => {
+test('bonuses multiply, turn delays add, and the 40% faster baseline is the new displayed 1×', () => {
   close(multiplyBonuses(1.4, 1.1), 1.54); close(addTurnDelays(.25, .2), .45);
-  close(PHOTON_RULES.baseTravelSpeed, .288 * 1.35);
+  close(PHOTON_RULES.baseTravelSpeed, .288 * 1.4);
   assert.equal(photonSpeed(0), 1); assert.equal(photonSpeed(100), 1.004 ** 100);
   assert.equal(photonObstacleSpeed(createPhotonRun()), 1);
   assert.equal(PHOTON_RULES.price, 225); assert.equal(PHOTON_RULES.unlockLevel, 25);
@@ -60,9 +60,24 @@ test('bonuses multiply, turn delays add, and the 35% faster baseline is the new 
 test('base and Magnet hazard percentages cover exactly 100%', () => {
   assert.equal(Object.values(PHOTON_WEIGHTS).reduce((a, b) => a + b, 0), 100);
   assert.equal(Object.values(MAGNET_WEIGHTS).reduce((a, b) => a + b, 0), 100);
-  assert.deepEqual([.01,.11,.21,.36,.51,.76].map(r => pickPhotonHazard(r)), ['rock','needle','car','log','spike','barrel']);
-  assert.deepEqual([.01,.11,.21,.31,.46,.71,.91].map(r => pickPhotonHazard(r,'photon_magnet')), ['rock','car','needle','log','spike','barrel','warpstone']);
+  assert.deepEqual([.01,.11,.21,.39,.49,.75].map(r => pickPhotonHazard(r)), ['rock','needle','car','log','spike','barrel']);
+  assert.deepEqual([.01,.11,.26,.36,.46,.71,.91].map(r => pickPhotonHazard(r,'photon_magnet')), ['rock','car','needle','log','spike','barrel','warpstone']);
   for (let i = 0; i < 100; i++) assert.notEqual(pickPhotonHazard(i / 100, 'photon_bear'), 'warpstone');
+});
+test('actual hazard picker honors every percentage of the revised normal and Magnet distributions', () => {
+  const histogram = (character) => {
+    const counts = {};
+    for (let percentile = 0; percentile < 100; percentile++) {
+      const hazard = pickPhotonHazard((percentile + .5) / 100, character);
+      counts[hazard] = (counts[hazard] ?? 0) + 1;
+    }
+    return counts;
+  };
+  const normal = { rock:10, needle:10, car:18, log:10, spike:26, barrel:26 };
+  assert.deepEqual(histogram(), normal);
+  assert.deepEqual(histogram('photon_magnet'), { rock:10, car:15, needle:10, log:10, spike:25, barrel:20, warpstone:10 });
+  for (const character of Object.keys(PHOTON_CHARACTERS).filter(key => key !== 'photon_magnet'))
+    assert.deepEqual(histogram(character), normal, character);
 });
 test('default saber has .1 input delay, speed-scaled .4 guard, fixed cooldown and seven durability', () => {
   let run = activatePhotonSaber(quiet());
@@ -343,6 +358,16 @@ test('retained optional Photon weapons stay isolated and their restrictions are 
   const erased=erasePhotonHazard(armPhotonLaser(original),1);
   assert.equal(erased.items.length,0); assert.equal(erased.durability,6); assert.equal(erased.laserCooldownUntil,25);
   assert.equal(armPhotonLaser(erased),erased);
+});
+
+test('Ninjablade uses half-heart health bands for both reflections and Magician bonus points without changing stored HP', () => {
+  for (const [hp, multiplier] of [[.001,2],[.75,2],[1,2],[1.249999,2],[1.25,1],[1.5,1]]) {
+    const bonus = {...createPhotonRun('photon_magician','ninjablade'),hp,elapsed:90};
+    assert.equal(photonBonusPoints(bonus),2*multiplier,`bonus at ${hp}`);
+    const reflected = contact('photon_tick','barrel',{weapon:'ninjablade',hp,guard:true,random:()=>.99});
+    assert.equal(photonPoints(reflected),multiplier,`reflection at ${hp}`);
+    assert.equal(reflected.hp,hp);
+  }
 });
 
 test('SQL catalog matches all16 rule snapshots,48 special skins,17 themes and four starter ownership keys', () => {

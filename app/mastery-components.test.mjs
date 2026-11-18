@@ -9,10 +9,10 @@ import ts from 'typescript';
 // Render the actual TSX, retaining React's real SSR accessibility/markup behavior.
 const require=createRequire(import.meta.url),originalTs=require.extensions['.ts'],originalTsx=require.extensions['.tsx'];
 const compile=(module,filename)=>module._compile(ts.transpileModule(readFileSync(filename,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX},fileName:filename}).outputText,filename);
-let MasteryShop,CharacterMastery,FlairPicker,ActiveMasteryQuest,MasteryTrialDisclaimer,MasteryTrialOverlay,DuelHub;
+let MasteryShop,CharacterMastery,CharacterMasteryToggle,FlairPicker,ActiveMasteryQuest,MasteryTrialDisclaimer,MasteryTrialOverlay,DuelHub;
 try{
  require.extensions['.ts']=compile;require.extensions['.tsx']=compile;
- ({MasteryShop,CharacterMastery,FlairPicker,ActiveMasteryQuest}=require('./mastery-menu.tsx'));
+ ({MasteryShop,CharacterMastery,CharacterMasteryToggle,FlairPicker,ActiveMasteryQuest}=require('./mastery-menu.tsx'));
  ({MasteryTrialDisclaimer,MasteryTrialOverlay}=require('./mastery-trial.tsx'));
  ({DuelHub}=require('./duel-menus.tsx'));
 }finally{
@@ -21,6 +21,17 @@ try{
 }
 const noop=()=>{},render=(C,props)=>renderToStaticMarkup(React.createElement(C,props));
 const quest={quest:3,progress:[100],complete:true,mastered:true,masteryEnabled:false,flairRewriteEnabled:true};
+test('the character-name mastery switch appears only for earned masteries and does not duplicate the details control',()=>{
+ const props={character:'runner_dash',state:{active:null,quests:{runner_dash:quest}},onToggle:noop};
+ const toggle=render(CharacterMasteryToggle,{...props,busy:true});
+ assert.match(toggle,/aria-label="Use Dash mastery"/);assert.match(toggle,/disabled=""/);assert.doesNotMatch(toggle,/checked=""/);
+ assert.equal(render(CharacterMasteryToggle,{...props,state:{active:null,quests:{}}}),'');
+ assert.equal(render(CharacterMasteryToggle,{...props,state:{active:null,quests:{runner_dash:{...quest,mastered:false}}}}),'');
+ const details=render(CharacterMastery,{...props,showMasteryToggle:false,onTrial:noop});
+ assert.equal((details.match(/type="checkbox"/g)||[]).length,1);assert.match(details,/Rewritten flair/);
+ const page=readFileSync(new URL('./page.tsx',import.meta.url),'utf8');
+ assert.match(page,/<h4>\{focusedCharacter\.name\}<\/h4><CharacterMasteryToggle/);
+});
 test('a trial must be exited before starting another, so replay always mounts fresh',()=>{
  const page=readFileSync(new URL('./page.tsx',import.meta.url),'utf8');
  assert.match(page,/busy=\{masteries\.busy\|\|running\|\|!!activeTrial\|\|isVersusRun\}/);
