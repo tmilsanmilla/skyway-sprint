@@ -70,6 +70,10 @@ import {
 } from "./versus-session-rules";
 import { CloudflareVersusRealtime, realtimeMode } from "./cloudflare-realtime";
 import {
+  createVersusSnapshotRefresh,
+  type VersusSnapshotRefresh,
+} from "./versus-snapshot-refresh";
+import {
   changeManagedPassword,
   checkGuestDeviceAccess,
   completeManagedPasswordReset,
@@ -2326,6 +2330,7 @@ function SkywayGame() {
     versusTransitionBusyRef = useRef(false),
     versusStateSyncIntentRef = useRef(0),
     versusHydrationIntentRef = useRef(0),
+    versusSnapshotRefreshRef = useRef<VersusSnapshotRefresh | null>(null),
     versusRunHydratedRef = useRef(false),
     hydrateVersusStateRef = useRef<
       ((matchId: string, preserveRunState?: boolean) => Promise<boolean>) | null
@@ -2407,6 +2412,9 @@ function SkywayGame() {
       if (versusPollTimerRef.current) clearTimeout(versusPollTimerRef.current);
       if (realtimeRef.current) void supabase.removeChannel(realtimeRef.current);
       cloudflareRealtimeRef.current?.close();
+      versusSnapshotRefreshRef.current?.close();
+      versusSnapshotRefreshRef.current = null;
+      versusHydrationIntentRef.current += 1;
       setRealtimeMutationListener(null);
     },
     [],
@@ -7335,6 +7343,9 @@ function SkywayGame() {
     resetGameToMenu();
   };
   const closeVersusChannel = () => {
+    versusSnapshotRefreshRef.current?.close();
+    versusSnapshotRefreshRef.current = null;
+    versusHydrationIntentRef.current += 1;
     if (realtimeRef.current) {
       void supabase.removeChannel(realtimeRef.current);
       realtimeRef.current = null;
@@ -7371,6 +7382,16 @@ function SkywayGame() {
   const subscribeToMatch = (matchId: string) => {
     closeVersusChannel();
     if (realtimeMode !== "supabase") {
+      const actorId = userIdRef.current;
+      const snapshotRefresh = createVersusSnapshotRefresh(
+        async () => {
+          await hydrateVersusStateRef.current?.(matchId, true);
+        },
+        () =>
+          versusMatchRef.current === matchId &&
+          userIdRef.current === actorId,
+      );
+      versusSnapshotRefreshRef.current = snapshotRefresh;
       const accessToken = getDataAccessToken(userIdRef.current);
       if (accessToken) {
         const relay = new CloudflareVersusRealtime();
@@ -7395,9 +7416,8 @@ function SkywayGame() {
           matchId,
           () => getDataAccessToken(userIdRef.current),
           {
-            onInvalidate: async () => {
-              if (versusMatchRef.current === matchId)
-                await hydrateVersusStateRef.current?.(matchId, true);
+            onInvalidate: () => {
+              snapshotRefresh.request();
             },
             onOpponentLane: (laneIndex) => {
               if (versusMatchRef.current !== matchId) return;
@@ -7407,8 +7427,7 @@ function SkywayGame() {
               );
             },
             onPeerStatus: () => {
-              if (versusMatchRef.current === matchId)
-                void hydrateVersusStateRef.current?.(matchId, true);
+              snapshotRefresh.request();
             },
             onFallback: (message) => {
               if (
@@ -7730,10 +7749,14 @@ function SkywayGame() {
     freshMatch = false,
   ) => {
     const hydrationIntent = ++versusHydrationIntentRef.current;
+    const actorId = userIdRef.current;
     const { data, error } = await supabase.rpc("get_1v1_state", {
       p_match_id: matchId,
     });
-    if (versusMatchRef.current !== matchId) return false;
+    if (
+      versusMatchRef.current !== matchId ||
+      userIdRef.current !== actorId
+    ) return false;
     if (versusHydrationIntentRef.current !== hydrationIntent) return true;
     if (error || !data) {
       setVersusResult(error?.message ?? "COULD NOT RESTORE THIS MATCH");
@@ -8182,6 +8205,10 @@ function SkywayGame() {
     let pending = false;
     const sync = async () => {
       if (pending || versusMatchRef.current !== matchId) return;
+      if (versusSnapshotRefreshRef.current) {
+        versusSnapshotRefreshRef.current.request();
+        return;
+      }
       pending = true;
       try {
         await hydrateVersusStateRef.current?.(matchId, true);

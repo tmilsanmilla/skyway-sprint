@@ -295,6 +295,7 @@ test("the realtime client wires every peer boundary into the live channels", asy
   assert.match(realtimeSource, /PEER_MAX_PENDING_ICE_CANDIDATES/);
   assert.match(realtimeSource, /sanitizePeerIceCandidate\(message\.candidate\)/);
   assert.match(realtimeSource, /signalingReconnectTimer/);
-  assert.match(pageSource, /onInvalidate: async \(\) =>/);
+  assert.match(pageSource, /onInvalidate: \(\) => \{\s+snapshotRefresh\.request\(\)/);
+  assert.match(pageSource, /onPeerStatus: \(\) => \{\s+snapshotRefresh\.request\(\)/);
   assert.match(pageSource, /await hydrateVersusStateRef\.current\?\.\(matchId, true\)/);
 });
