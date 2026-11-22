@@ -283,11 +283,12 @@ test("Citadel clamps opening blocks and consumes one when damage is resolved", (
   assert.equal(hit.consumed.citadelBlock, true);
 });
 
-test("Sentinel chooses a stable highest-damage type and applies both defenses", () => {
+test("Sentinel chooses a highest-damage type with uniformly chosen ties and applies both defenses", () => {
   assert.equal(
-    selectSentinelAnalyzedSource({ rock: 3, car: 5, log: 5 }),
+    selectSentinelAnalyzedSource({ rock: 3, car: 5, log: 5 }, () => 0),
     "car",
   );
+  assert.equal(selectSentinelAnalyzedSource({ rock: 3, car: 5, log: 5 }, () => .999), "log");
   assert.equal(selectSentinelAnalyzedSource({ rock: 0 }), null);
   const first = calculateTankDamage({
     character: "tank_sentinel",
@@ -519,7 +520,7 @@ test("small Trickster and Misc helpers implement their exact thresholds", () => 
   assert.equal(getHarvesterAbilityTier(50), "upgraded");
 });
 
-test("Broker funds move independently and pay or claim without losing fractions", () => {
+test("Broker funds move independently and keep fractional funds internally and floor each payout", () => {
   const up = moveBrokerFundForWave(100, {
     directionRoll: 0.599,
     percentageRoll: 1,
@@ -557,34 +558,34 @@ test("Broker funds move independently and pay or claim without losing fractions"
   closeTo(moved.funds.melons, 300);
 
   const claimed = claimBrokerCoinFund(moved.funds, 3.25);
-  closeTo(claimed.claimed, 1.375);
-  closeTo(claimed.attackPoints, 4.625);
+  closeTo(claimed.claimed, 1);
+  closeTo(claimed.attackPoints, 4.25);
   assert.equal(claimed.funds.coins, 0);
 
   const settled = settleBrokerFundsOnDeath(
     { gems: 4.04, coins: 1.375, melons: 300 },
     { gems: 10, attackPoints: 3.25, score: 800 },
   );
-  closeTo(settled.totals.gems, 14.04);
-  closeTo(settled.totals.attackPoints, 4.625);
+  closeTo(settled.totals.gems, 14);
+  closeTo(settled.totals.attackPoints, 4.25);
   closeTo(settled.totals.score, 1100);
   assert.deepEqual(settled.funds, { gems: 0, coins: 0, melons: 0 });
 });
 
-test("Prospector emits a clamped lane warning exactly five seconds early", () => {
+test("Prospector emits a clamped lane warning exactly four seconds early", () => {
   assert.deepEqual(getProspectorGemWarningSchedule("gem-7", 3, 12_500), {
     gemId: "gem-7",
     lane: 3,
-    warningAtMs: 7_500,
+    warningAtMs: 8_500,
     spawnAtMs: 12_500,
-    warningDurationMs: 5_000,
+    warningDurationMs: 4_000,
   });
   assert.deepEqual(getProspectorGemWarningSchedule(2, 99, 3_000, 5), {
     gemId: 2,
     lane: 4,
     warningAtMs: 0,
     spawnAtMs: 3_000,
-    warningDurationMs: 5_000,
+    warningDurationMs: 4_000,
   });
 });
 

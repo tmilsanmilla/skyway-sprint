@@ -26,6 +26,7 @@ export const CHARACTER_CLASS_IDS = [
   "tank",
   "trickster",
   "misc",
+  "chaotic",
 ] as const;
 
 export type CharacterClassId = (typeof CHARACTER_CLASS_IDS)[number];
@@ -110,7 +111,8 @@ export interface MapRules {
   )[];
 }
 
-const ALL_CLASSES: readonly CharacterClassId[] = CHARACTER_CLASS_IDS;
+const ALL_CLASSES: readonly CharacterClassId[] = ["runner","medic","tank","trickster","misc"];
+const CHAOTIC_CLASSES: readonly CharacterClassId[] = CHARACTER_CLASS_IDS;
 const NON_TRICKSTER_CLASSES: readonly CharacterClassId[] = [
   "runner",
   "medic",
@@ -217,7 +219,7 @@ export const MAP_RULES: Readonly<Record<MapId, MapRules>> = {
     laneCount: 5,
     obstacleDensityMode: "classic-baseline",
     totalObstacleMultiplier: 1,
-    allowedClasses: ALL_CLASSES,
+    allowedClasses: CHAOTIC_CLASSES,
     forcedCharacterId: null,
     health: NORMAL_HEALTH,
     naturalObstacleWeights: {
@@ -309,7 +311,7 @@ export const MAP_RULES: Readonly<Record<MapId, MapRules>> = {
     laneCount: 6,
     obstacleDensityMode: "same-total",
     totalObstacleMultiplier: 1,
-    allowedClasses: ALL_CLASSES,
+    allowedClasses: CHAOTIC_CLASSES,
     forcedCharacterId: null,
     health: NORMAL_HEALTH,
     naturalObstacleWeights: {
@@ -351,7 +353,7 @@ export const MAP_RULES: Readonly<Record<MapId, MapRules>> = {
     laneCount: 4,
     obstacleDensityMode: "same-per-lane",
     totalObstacleMultiplier: 0.88,
-    allowedClasses: ALL_CLASSES,
+    allowedClasses: CHAOTIC_CLASSES,
     forcedCharacterId: null,
     health: NORMAL_HEALTH,
     naturalObstacleWeights: {
@@ -400,7 +402,7 @@ export const MAP_RULES: Readonly<Record<MapId, MapRules>> = {
     laneCount: 6,
     obstacleDensityMode: "classic-baseline",
     totalObstacleMultiplier: 1,
-    allowedClasses: ALL_CLASSES,
+    allowedClasses: CHAOTIC_CLASSES,
     forcedCharacterId: null,
     health: NORMAL_HEALTH,
     naturalObstacleWeights: {
@@ -457,6 +459,8 @@ export const isCharacterClassAllowed = (
   characterClass: CharacterClassId,
 ): boolean => {
   const map = getMapRules(mapId);
+  if (characterClass === "chaotic")
+    return ["classic", "pitch", "factory", "meadow"].includes(mapId);
   return (
     map.allowedClasses.includes(characterClass) &&
     (characterClass !== "medic" || isHealerAllowedByHealthRules(map.health))

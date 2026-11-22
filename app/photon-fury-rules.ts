@@ -112,8 +112,8 @@ export const PHOTON_CHARACTERS: Record<PhotonCharacterKey, PhotonCharacter> = {
   photon_magician: character(
     "Magician",
     "traditional",
-    "Earn 1 bonus point per complete 45 seconds of active play.",
-    { bonusPointSeconds: 45 },
+    "Earn 1 bonus point per complete 40 seconds of active play.",
+    { bonusPointSeconds: 40 },
   ),
   photon_tick: character(
     "Tick",

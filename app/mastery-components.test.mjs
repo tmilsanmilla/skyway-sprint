@@ -64,10 +64,12 @@ test('unmastered characters cannot see mastery switches and trial explanation na
  const html=render(MasteryTrialDisclaimer,{character:'runner_vault',onAccept:noop,onCancel:noop});
  assert.match(html,/role="dialog"/);assert.match(html,/0.25 seconds/);assert.match(html,/second ends the trial/);assert.match(html,/do not save scores/);
 });
-test('equipping one characters flair on another renders only its allowed general effect',()=>{
- const flairs=[{key:'runner_dash',name:'Jet Baton',characterName:'Dash',scoreBonus:.04}];
- const html=render(FlairPicker,{character:'runner_ace',flairs,selected:'runner_dash',state:{active:null,quests:{runner_dash:quest}},onEquip:noop});
- assert.match(html,/\+4% score/);assert.match(html,/do not apply to other characters/);assert.doesNotMatch(html,/green obstacles appear 1 in 90/);
+test('independent Flair picker is removed and embedded effects require the original character',async()=>{
+ assert.equal(FlairPicker,undefined);
+ const {getFlairEffects}=await import('./flair-rules.ts');
+ const flair={key:'runner_dash',name:'Jet Baton',characterName:'Dash',scoreBonus:.04};
+ assert.equal(getFlairEffects(flair,'runner_ace',true).scoreMultiplier,1);
+ assert.equal(getFlairEffects(flair,'runner_dash',true).dashCooldownReduction,.5);
 });
 test('trial overlay shows objective progress rather than an unlabeled timer',()=>{
  const state={key:'medic_bloom',phase:'playing',seconds:40,wave:2};

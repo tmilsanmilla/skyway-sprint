@@ -4,14 +4,14 @@ export const ADMIN_BALANCE_LIMIT = 1_000_000_000;
 export const ADMIN_SCORE_LIMIT = 1_000_000_000_000;
 export const ADMIN_BAN_MINUTES_LIMIT = 52_596_000; // Existing 100-year safety ceiling.
 export const PROTECTED_STARTER_CHARACTERS = new Set([
-  "runner_ace", "medic_patch", "tank_bulwark", "trickster_rogue",
+  "runner_ace", "medic_patch", "tank_bulwark", "trickster_rogue", "chaotic_particle",
 ]);
 export const PROTECTED_PHOTON_CHARACTERS = new Set([
   "photon_magician", "photon_wizard", "photon_bluff", "photon_bell",
 ]);
 export const ADMIN_SKIN_TIERS = ["intermediate", "pro", "ascendant", "divine", "immortal"] as const;
 export type AdminCommand = {
-  action: "grant" | "revoke" | "set" | "check" | "ban" | "unban" | "rpta" | "rptb" | "rptc" | "photon_grant" | "photon_revoke";
+  action: "grant" | "revoke" | "set" | "check" | "ban" | "unban" | "rpta" | "rptb" | "rptc" | "photon_grant" | "photon_revoke" | "appeal_accept_all" | "appeal_reject_all" | "appeal_count" | "ranked_owned" | "ranked_elo" | "ranked_games" | "mastery_reset";
   targetText?: string;
   itemKind?: string;
   itemName?: string;
@@ -28,6 +28,7 @@ export const BASE_ADMIN_COMMANDS = [
   "/set gems 100", "/set photons 100", "/set stardust 100", "/set high score 25000",
   "/check gems", "/check photons", "/check stardust", "/rpta", "/rptb", "/rptc",
   "/upfch", "/lpfch", "/upfski", "/lpfski", "/upfth", "/lpfth", "/ban username/email 1440", "/unban username/email",
+  "/rejapp", "/accapp", "/numapp", "/ownsr", "/elo", "/numrg", "/upfw", "/rpfw", "/resetmastery",
 ];
 
 function wholeNumber(raw: string, limit: number, label: string) {
@@ -58,6 +59,25 @@ export function parseAdminCommand(raw: string, hasSelectedPlayer = false): Admin
   if (/^\/bann\b/i.test(command)) throw new Error("Use /ban username/email minutes. Use 0 minutes for a permanent ban.");
   if (/^\/(?:set|check|grant|revoke)\b.*\b(?:coins?|obstacle[_ ]*points?|versus[_ ]*points?|melons?)\b/i.test(command))
     throw new Error("Coin balances are gameplay-only and cannot be changed by admin commands.");
+  const global = command.match(/^\/(rejapp|accapp|numapp)$/i);
+  if (global) return { action: ({ rejapp: "appeal_reject_all", accapp: "appeal_accept_all", numapp: "appeal_count" } as const)[global[1].toLowerCase() as "rejapp" | "accapp" | "numapp"] };
+  const ranked = command.match(/^\/(ownsr|elo|numrg)(?:\s+(.+))?$/i);
+  if (ranked) {
+    const args = ranked[2] ? argumentsFor(ranked[2]) : [];
+    if (args.length !== 1 && !(args.length === 0 && hasSelectedPlayer))
+      throw new Error(`Use /${ranked[1].toLowerCase()} [exact username].`);
+    return { action: ({ ownsr: "ranked_owned", elo: "ranked_elo", numrg: "ranked_games" } as const)[ranked[1].toLowerCase() as "ownsr" | "elo" | "numrg"], targetText: args[0] };
+  }
+  const newItem = command.match(/^\/(upfw|rpfw|resetmastery)\s+(.+)$/i);
+  if (newItem) {
+    const op = newItem[1].toLowerCase(), args = argumentsFor(newItem[2]);
+    const targetText = args.length === 2 ? args.shift() : undefined;
+    if (args.length !== 1 || (!targetText && !hasSelectedPlayer))
+      throw new Error(`Use /${op} [exact username] [${op === "resetmastery" ? "mastery character" : "weapon"}].`);
+    if (op !== "resetmastery" && args[0].toLowerCase().replace(/[ _-]/g, "") === "lightsaber")
+      throw new Error("Lightsaber is included and cannot be granted or revoked.");
+    return { action: op === "resetmastery" ? "mastery_reset" : op === "upfw" ? "photon_grant" : "photon_revoke", itemKind: op === "resetmastery" ? "mastery" : "photon_weapon", itemName: args[0], targetText };
+  }
   let match = command.match(/^\/(grant|revoke)\s+(character|cosmetic|mastery)\s+\[([^\[\]]+)\](?:\s+(.+))?$/i);
   if (match) return { action: match[1].toLowerCase() as "grant" | "revoke", itemKind: match[2].toLowerCase(), itemName: match[3].trim(), targetText: target(match[4]) };
   match = command.match(/^\/set\s+(high[_ ]score|gems|photons|stardust)\s+(\S+)(?:\s+(.+))?$/i);
@@ -103,6 +123,14 @@ export function isV23AdminCommand(command: AdminCommand) {
     (["grant", "revoke"].includes(command.action) && command.itemKind === "mastery") ||
     (command.action === "set" && ["photons", "stardust"].includes(command.statKey ?? ""));
 }
+
+export function isOverhaulAdminCommand(command: AdminCommand) {
+  return command.action.startsWith("appeal_") || command.action.startsWith("ranked_") ||
+    command.action === "mastery_reset" || command.itemKind === "photon_weapon";
+}
+
+export const formatRankedAdminValue = (owned: boolean, games: number, rating: number | null) =>
+  !owned || games < 5 || rating === null ? null : `${Math.round(rating)}${games <= 20 ? "P" : ""}`;
 
 /** Resolve only an exact supported mastery, never a partial character match. */
 export function resolveAdminMastery(raw: string) {

@@ -370,18 +370,12 @@ const SENTINEL_TIE_BREAK_ORDER: readonly HazardKind[] = [
 
 /** Picks one stable analyzed type from cumulative damage totals. */
 export const selectSentinelAnalyzedSource = (
-  damageBySource: Readonly<Partial<Record<HazardKind, number>>>,
+  damageBySource: Readonly<Partial<Record<HazardKind, number>>>,random:()=>number=Math.random,
 ): HazardKind | null => {
-  let winner: HazardKind | null = null;
-  let highestDamage = 0;
-  for (const kind of SENTINEL_TIE_BREAK_ORDER) {
-    const total = Math.max(0, finiteOr(damageBySource[kind] ?? 0));
-    if (total > highestDamage) {
-      winner = kind;
-      highestDamage = total;
-    }
-  }
-  return winner;
+  const totals=SENTINEL_TIE_BREAK_ORDER.map(kind=>({kind,total:Math.max(0,finiteOr(damageBySource[kind]??0))}));
+  const highest=Math.max(0,...totals.map(row=>row.total));if(highest===0)return null;
+  const tied=totals.filter(row=>row.total===highest);
+  return tied[Math.min(tied.length-1,Math.floor(Math.max(0,Math.min(.999999999,random()))*tied.length))].kind;
 };
 
 export interface HammerTarget {
@@ -1074,7 +1068,7 @@ export const claimBrokerCoinFund = (
   funds: BrokerFunds,
   currentAttackPoints: number,
 ) => {
-  const claimed = Math.max(0, finiteOr(funds.coins));
+  const claimed = Math.floor(Math.max(0, finiteOr(funds.coins)));
   return {
     claimed,
     attackPoints: Math.max(0, finiteOr(currentAttackPoints)) + claimed,
@@ -1097,20 +1091,20 @@ export const settleBrokerFundsOnDeath = (
   totals: BrokerPayoutTotals,
 ) => ({
   payout: {
-    gems: Math.max(0, finiteOr(funds.gems)),
-    attackPoints: Math.max(0, finiteOr(funds.coins)),
-    score: Math.max(0, finiteOr(funds.melons)),
+    gems: Math.floor(Math.max(0, finiteOr(funds.gems))),
+    attackPoints: Math.floor(Math.max(0, finiteOr(funds.coins))),
+    score: Math.floor(Math.max(0, finiteOr(funds.melons))),
   },
   totals: {
     gems:
       Math.max(0, finiteOr(totals.gems)) +
-      Math.max(0, finiteOr(funds.gems)),
+      Math.floor(Math.max(0, finiteOr(funds.gems))),
     attackPoints:
       Math.max(0, finiteOr(totals.attackPoints)) +
-      Math.max(0, finiteOr(funds.coins)),
+      Math.floor(Math.max(0, finiteOr(funds.coins))),
     score:
       Math.max(0, finiteOr(totals.score)) +
-      Math.max(0, finiteOr(funds.melons)),
+      Math.floor(Math.max(0, finiteOr(funds.melons))),
   },
   funds: EMPTY_BROKER_FUNDS,
 });
@@ -1120,10 +1114,10 @@ export interface ProspectorGemWarningSchedule {
   readonly lane: number;
   readonly warningAtMs: number;
   readonly spawnAtMs: number;
-  readonly warningDurationMs: 5000;
+  readonly warningDurationMs: 4000;
 }
 
-/** Gives Prospector a stable lane warning exactly five seconds before spawn. */
+/** Gives Prospector a stable lane warning exactly four seconds before spawn. */
 export const getProspectorGemWarningSchedule = (
   gemId: string | number,
   lane: number,
@@ -1135,9 +1129,9 @@ export const getProspectorGemWarningSchedule = (
   return {
     gemId,
     lane: clamp(Math.floor(finiteOr(lane)), 0, safeLaneCount - 1),
-    warningAtMs: Math.max(0, safeSpawnAtMs - 5000),
+    warningAtMs: Math.max(0, safeSpawnAtMs - 4000),
     spawnAtMs: safeSpawnAtMs,
-    warningDurationMs: 5000,
+    warningDurationMs: 4000,
   };
 };
 

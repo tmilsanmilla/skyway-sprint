@@ -6,10 +6,10 @@ const step = (s,key,type,fields={}) => m.reduceMasteryQuest(s,key,{type,...field
 const repeat = (s,key,type,n,fields={}) => {for(let i=0;i<n;i++)s=step(s,key,type,fields);return s;};
 const startTrial = key => m.reduceMasteryTrial(m.createMasteryTrial(key),{type:'accept'}).state;
 const frames = (s,n,hp=1) => {for(let i=0;i<n;i++)s=m.reduceMasteryTrial(s,{type:'frame',seconds:1,hp}).state;return s;};
-test('all eight exact costs and sequential three quests, only one active globally',()=>{
+test('all eight exact costs and sequential three quests, equipped owned quests progress without manual activation',()=>{
  assert.deepEqual(m.MASTERIES.map(x=>x.price),[200,200,225,225,250,260,260,300]);
  let s=bought('runner_dash');s=m.purchaseMasteryQuest(s,'medic_bloom',500,true).state;
- assert.equal(s.active,'runner_dash');assert.equal(step(s,'medic_bloom','gem').quests.medic_bloom.progress[0],0);
+ assert.equal(s.active,'runner_dash');assert.equal(step(s,'medic_bloom','gem').quests.medic_bloom.progress[0],1);
  s=m.activateMasteryQuest(s,'medic_bloom');assert.equal(s.active,'medic_bloom');
  assert.match(m.purchaseMasteryQuest(s,'tank_guard',1000,false).error,/Unlock/);
  assert.match(m.purchaseMasteryQuest(s,'tank_guard',259,true).error,/260/);

@@ -5,8 +5,7 @@ export interface UpdateLogEntry {
   readonly changes: readonly string[];
 }
 
-export const LATEST_UPDATE_VERSION = "2.7";
-export const VISIBLE_UPDATE_LIMIT = 10;
+export const VISIBLE_UPDATE_LIMIT = Number.POSITIVE_INFINITY;
 
 /**
  * Player-facing release history, newest first.
@@ -15,6 +14,17 @@ export const VISIBLE_UPDATE_LIMIT = 10;
  * what players will notice rather than database, deployment, or code details.
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
+  {
+    id: "2026-11-21-six-class-overhaul",
+    publishedAt: "2026-11-22T02:55:14Z",
+    title: "SIX CLASSES + PHOTON RACE",
+    changes: [
+      "Rebuilt the roster into Runner, Healer, Tank, Trickster, Tactician and Chaotic classes with specific character descriptions.",
+      "Added Photon Race, a separate Quests tab, more admin commands and searchable command documentation.",
+      "Waves use a shared 40-second clock and a 20% speed step; melon scoring and Unlimited collection requirements follow the new balance.",
+      "Mastery effects belong to their original characters; separate Inventory flairs are removed.",
+    ],
+  },
   {
     id: "2026-11-18-ranked-unknown-map",
     publishedAt: "2026-11-18T22:38:35Z",
@@ -385,14 +395,17 @@ export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   },
 ] as const;
 
-/** Keep the source archive, but show only the ten most recent releases. */
+export const LATEST_UPDATE_VERSION = String(UPDATE_LOG.length);
+
+/** Launch is Update 1. Keep stable whole-number labels when filtering history. */
 export const getRecentUpdates = (
   entries: readonly UpdateLogEntry[] = UPDATE_LOG,
 ): readonly (UpdateLogEntry & { readonly version: string })[] => {
-  const latestVersionTenths = Math.round(Number(LATEST_UPDATE_VERSION) * 10);
-  return entries.slice(0, VISIBLE_UPDATE_LIMIT).map((entry, index) => ({
+  return entries.map((entry, index) => ({
     ...entry,
-    version: ((latestVersionTenths - index) / 10).toFixed(1),
+    version: String(UPDATE_LOG.some(item => item.id === entry.id)
+      ? UPDATE_LOG.length - UPDATE_LOG.findIndex(item => item.id === entry.id)
+      : entries.length - index),
   }));
 };
 

@@ -1,0 +1,110 @@
+/** WASM-only disposable database. No connection URI, driver or production SQL. */
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const modulePath = process.env.SKYWAY_TEST_PGLITE_MODULE;
+const metadataPath = process.env.SKYWAY_TEST_ADMIN_METADATA;
+assert.ok(modulePath?.startsWith("/") && modulePath.endsWith("/@electric-sql/pglite/dist/index.js"));
+assert.ok(metadataPath?.endsWith("/admin-installed-functions.json"));
+const { PGlite } = await import(pathToFileURL(modulePath).href);
+const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+assert.equal(metadata.enforced_read_only, "on");
+const db = new PGlite();
+const admin = "00000000-0000-4000-8000-000000000001", player = "00000000-0000-4000-8000-000000000002", coadmin = "00000000-0000-4000-8000-000000000003";
+let checks = 0;
+const eq = (a, b) => { assert.deepEqual(a, b); checks += 1; };
+const one = async (sql, params) => Object.values((await db.query(sql, params)).rows[0])[0];
+const command = (action, target = player, kind = null, key = null) => one("select public.admin_player_command_v24($1,$2,$3,$4)", [action, target, kind, key]);
+try {
+  await db.exec(`
+    create schema auth; create schema app_private; create schema neon_auth;
+    create role anon; create role anonymous; create role authenticated;
+    create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('test.uid',true),'')::uuid$$;
+    create function app_private.has_active_ban(uuid,text,uuid) returns boolean language sql stable as $$select coalesce(current_setting('test.banned',true),'')='true'$$;
+    create function app_private.require_pixel_runtime() returns void language plpgsql as $$begin if current_setting('test.runtime',true)='off' then raise exception 'Runtime closed';end if;end$$;
+    create function app_private.intercept_in_game_player_command(text,uuid,text,jsonb) returns jsonb language sql as $$select case when current_setting('test.game',true)='active' then jsonb_build_object('ok',false,'error','Existing in-game guard') else null end$$;
+    create table public.admin_users(user_id uuid primary key,role text);
+    create table neon_auth."user"(id uuid primary key,email text);
+    create table public.player_stats(user_id uuid primary key,total_gems bigint default 80);
+    create table public.player_bans(id bigint primary key,target_user_id uuid,target_device_id uuid,starts_at timestamptz default now(),expires_at timestamptz,revoked_at timestamptz,revoked_by uuid,revoked_reason text);
+    create table public.player_device_links(user_id uuid,device_id uuid);
+    create table public.player_ban_appeals(id bigint primary key,user_id uuid,status text,appealed_ban_ids bigint[],reviewed_at timestamptz,reviewed_by uuid,admin_note text);
+    create table public.admin_command_audit(id bigint generated always as identity,actor_user_id uuid,actor_email text,target_user_id uuid,action text,command_text text,request jsonb,result jsonb,succeeded boolean,error_message text,created_at timestamptz default now());
+    create table app_private.ranked_requalification(user_id uuid primary key,qualified boolean);
+    create table public.ranked_1v1_seasons(id integer primary key,is_active boolean);
+    create table public.player_ranked_1v1_stats(user_id uuid,season_id integer,matches_played bigint,rating numeric);
+    create table public.player_photon_fury(user_id uuid primary key,unlocked_at timestamptz,selected_weapon_key text);
+    create table app_private.photon_unlocks(user_id uuid,item_key text,kind text,primary key(user_id,item_key));
+    create table public.player_unlocks(user_id uuid,item_key text,item_type text);
+    create table app_private.player_mastery_quests(user_id uuid,character_key text,quest integer,progress numeric,mastered boolean);
+    create table app_private.player_mastery_preferences(user_id uuid,active_character text);
+    create table app_private.mastery_sessions(id integer,user_id uuid,character_key text,context_type text,finished_at timestamptz,trial_failed boolean,event_counts jsonb);
+    create function app_private.mastery_price(text) returns integer language sql as $$select case when $1='runner_dash' then 200 end$$;
+    create function app_private.photon_weapon_rules(text) returns table(weapon_key text,display_name text) language sql as $$select * from(values('lightsaber','Lightsaber'),('photon_blaster','Photon Blaster'),('jolt_shockwave','Jolt Shockwave'))v$$;
+    create function app_private.admin_player_command_v23_core(text,uuid,text default null,text default null,text default null,bigint default null,text[] default null,uuid default null,bigint default null,boolean default false,bigint default null,text default null,text default null) returns jsonb language sql as $$select jsonb_build_object('ok',true,'legacy_delegate',true)$$;
+    insert into public.admin_users values('${admin}','main'),('${coadmin}','admin');
+    insert into neon_auth."user" values('${admin}','admin@example.invalid'),('${player}','player@example.invalid'),('${coadmin}','coadmin@example.invalid');
+    insert into public.player_stats values('${player}',80);
+    insert into public.ranked_1v1_seasons values(1,true);
+    insert into app_private.ranked_requalification values('${player}',true);
+    insert into public.player_ranked_1v1_stats values('${player}',1,0,1488);
+    insert into public.player_photon_fury values('${player}',now(),'jolt_shockwave');
+    insert into app_private.photon_unlocks values('${player}','photon_weapon_jolt_shockwave','weapon'),('${player}','unrelated_theme','theme');
+    insert into public.player_unlocks values('${player}','runner_dash','character');
+    insert into app_private.player_mastery_quests values('${player}','runner_dash',3,99,true);
+    insert into app_private.player_mastery_preferences values('${player}','runner_dash');
+    insert into app_private.mastery_sessions values(1,'${player}','runner_dash','trial',null,false,'{}');
+  `);
+  for (const name of ["is_main_admin", "resolve_ban_appeal", "admin_player_command_v23"])
+    await db.exec(metadata.functions.find(f => f.signature.startsWith(name + "(")).definition);
+  await db.exec(fs.readFileSync(new URL("./six-class-01-admin.sql", import.meta.url), "utf8"));
+  await one("select set_config('test.uid',$1,false)", [admin]);
+  eq((await command("check")).legacy_delegate, true);
+  for (const [games, expected] of [[0, null], [4, null], [5, "1488P"], [20, "1488P"], [21, "1488"]]) {
+    await db.query("update public.player_ranked_1v1_stats set matches_played=$1", [games]);
+    eq((await command("ranked_elo")).value, expected);
+    eq((await command("ranked_games")).value, games);
+  }
+  eq((await command("ranked_owned")).value, 1);
+  await db.exec("update app_private.ranked_requalification set qualified=false");
+  eq((await command("ranked_owned")).value, 0);
+  eq((await command("ranked_games")).value, null);
+  eq((await command("ranked_elo")).value, null);
+  eq((await command("photon_grant", player, "photon_weapon", "Photon Blaster")).ok, true);
+  eq(await one("select count(*)::int from app_private.photon_unlocks where kind='weapon'"), 2);
+  eq((await command("photon_revoke", player, "photon_weapon", "Jolt Shockwave")).ok, true);
+  eq(await one("select selected_weapon_key from public.player_photon_fury"), "lightsaber");
+  eq(await one("select count(*)::int from app_private.photon_unlocks where kind='theme'"), 1);
+  eq((await command("photon_revoke", player, "photon_weapon", "Lightsaber")).ok, false);
+  eq((await command("photon_grant", player, "photon_weapon", "unknown'; delete from public.player_stats; --")).ok, false);
+  eq(await one("select total_gems from public.player_stats"), 80);
+  eq((await command("mastery_reset", player, "mastery", "runner_dash")).ok, true);
+  eq(await one("select count(*)::int from app_private.player_mastery_quests"), 0);
+  eq(await one("select count(*)::int from public.player_unlocks where item_key='runner_dash'"), 1);
+  eq(await one("select active_character from app_private.player_mastery_preferences"), null);
+  eq(await one("select finished_at is not null and trial_failed and event_counts->>'admin_mastery_revoked'='true' from app_private.mastery_sessions"), true);
+  await db.exec(`insert into public.player_bans(id,target_user_id)values(1,'${player}');insert into public.player_ban_appeals values(1,'${player}','pending',array[1]::bigint[],null,null,null),(2,'${player}','pending',array[]::bigint[],null,null,null)`);
+  eq((await command("appeal_count", null)).value, 2);
+  eq((await command("appeal_accept_all", null)).ok, false);
+  eq(await one("select count(*)::int from public.player_ban_appeals where status='pending'"), 2);
+  eq(await one("select revoked_at is null from public.player_bans"), true);
+  await db.exec("update public.player_ban_appeals set appealed_ban_ids=array[1]::bigint[] where id=2");
+  eq((await command("appeal_accept_all", null)).changed_count, 2);
+  eq(await one("select count(*)::int from public.player_ban_appeals where status='approved'"), 2);
+  eq(await one("select revoked_at is not null from public.player_bans"), true);
+  eq((await command("appeal_reject_all", null)).changed_count, 0);
+  await db.exec("select set_config('test.game','active',false)");
+  eq((await command("mastery_reset", player, "mastery", "runner_dash")).error, "Existing in-game guard");
+  await db.exec("select set_config('test.game','',false);select set_config('test.runtime','off',false)");
+  await assert.rejects(command("ranked_owned"), /Runtime closed/); checks += 1;
+  await db.exec("select set_config('test.runtime','',false)");
+  for (const uid of [player, coadmin]) {
+    await one("select set_config('test.uid',$1,false)", [uid]);
+    await assert.rejects(command("ranked_owned"), /Only main admins/); checks += 1;
+  }
+  eq(await one("select has_function_privilege('authenticated','app_private.admin_player_command_v24_core(text,uuid,text,text,text,bigint,text[],uuid,bigint,boolean,bigint,text,text)','execute')"), false);
+  eq(await one("select has_function_privilege('anon','public.admin_player_command_v24(text,uuid,text,text,text,bigint,text[],uuid,bigint,boolean,bigint,text,text)','execute')"), false);
+  eq(await one("select has_function_privilege('authenticated','public.admin_player_command_v24(text,uuid,text,text,text,bigint,text[],uuid,bigint,boolean,bigint,text,text)','execute')"), true);
+  console.log(JSON.stringify({ checks, failed: 0, engine: "PGlite WASM", actualCurrentPublicWrapper: true, realIdentityOrNativeOrNetwork: false, concurrentTransactions: false }));
+} finally { await db.close(); }

@@ -159,11 +159,11 @@ test('Photons use only whole points with minimum five, or sixteen for Jolt', () 
   assert.equal(photonRunReward({ ...tick, elapsed: 1000 }), 5);
   assert.equal(Object.hasOwn(tick, 'score'), false);
 });
-test('Magician adds one bonus point per complete 45 active seconds before the Photon reward', () => {
-  const run = quiet('photon_magician', { elapsed: 89.999, reflections: 5 });
+test('Magician adds one bonus point per complete 40 active seconds before the Photon reward', () => {
+  const run = quiet('photon_magician', { elapsed: 79.999, reflections: 5 });
   assert.equal(photonBonusPoints(run), 1); assert.equal(photonTotalPoints(run), 6);
-  assert.equal(photonBonusPoints({ ...run, elapsed: 90 }), 2);
-  assert.equal(photonRunReward({ ...run, elapsed: 90 }), 5);
+  assert.equal(photonBonusPoints({ ...run, elapsed: 80 }), 2);
+  assert.equal(photonRunReward({ ...run, elapsed: 80 }), 5);
   assert.equal(photonBonusPoints({ ...run, characterKey: 'photon_tick' }), 0);
 });
 test('Tick guards .5s with .8s cooldown; Trumpet has five HP and twelve durability', () => {

@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {sixClassMultiplayerFixture}from './six-class-multiplayer-test-fixture.mjs';
+const db=await sixClassMultiplayerFixture(),artifacts=process.env.SKYWAY_TEST_ARTIFACTS;
+const read=name=>fs.readFileSync(`${artifacts}/${name}.sql`,'utf8');
+const a='11111111-1111-4111-8111-111111111111',b='22222222-2222-4222-8222-222222222222',x='33333333-3333-4333-8333-333333333333';
+const v=async(sql,args)=>Object.values((await db.query(sql,args)).rows[0])[0];let checks=0;const eq=(a,b)=>{assert.deepEqual(a,b);checks++;};
+const uid=u=>v("select set_config('test.uid',$1,false)",[u]);
+const make=async()=>{const id=crypto.randomUUID();await db.query("insert into public.multiplayer_matches(id,host_user_id,guest_user_id,status,current_wave,map_key,mode)values($1,$2,$3,'countdown',1,'classic','casual')",[id,a,b]);await db.query("insert into app_private.match_setup_19 values($1,'character',clock_timestamp()+interval '15 seconds',null)",[id]);await db.query("insert into public.multiplayer_players(match_id,user_id,slot,username,hearts,max_hearts,character_key,character_class,score)values($1,$2,1,'A',3,3,'runner_ace','runner',0),($1,$3,2,'B',3,3,'runner_ace','runner',0)",[id,a,b]);return id;};
+const pick=(id,key)=>v('select public.choose_1v1_character($1,$2)',[id,key]);
+try{
+ await db.exec(`create table app_private.match_bans_19(match_id uuid,user_id uuid,map_key text);create function app_private.prepare_ruins_bans(uuid)returns void language sql as $$select$$;`);
+ await db.exec(read('app_private.duel_character_allowed_23'));await db.exec(read('app_private.setup_19_health'));await db.exec(read('app_private.advance_setup_19'));
+ await db.exec(`create or replace function app_private.get_1v1_state_qol_base(mid uuid)returns jsonb language plpgsql as $$declare r jsonb;begin perform app_private.advance_setup_19(mid);select jsonb_build_object('match',to_jsonb(m),'self',to_jsonb(p),'opponent',to_jsonb(q))into r from public.multiplayer_matches m join public.multiplayer_players p on p.match_id=m.id and p.user_id=auth.uid()join public.multiplayer_players q on q.match_id=m.id and q.user_id<>p.user_id where m.id=mid;return r;end$$;
+ insert into app_private.one_v_one_map_rules(map_key,sort_order,display_name,lane_count,obstacle_scaling,healing_enabled,coin_point_reward,wave_point_reward,allowed_attacks,allowed_character_classes,natural_spawn_weights,gameplay_rules)values('grove',2,'Grove',5,1,true,1,1,'{}',array['medic'],'{}','{}');
+ insert into public.player_unlocks(user_id,item_key,item_type,rarity)values('${a}','runner_cartographer','character','legendary'),('${b}','runner_cartographer','character','legendary');
+ `);
+ const sql=fs.readFileSync(new URL('./six-class-07-cartographer.sql',import.meta.url),'utf8');await db.exec(sql);await db.exec(sql);checks+=2;
+ const first=await make();await uid(a);let state=await pick(first,'runner_cartographer');eq(state.match.status,'countdown');eq(state.six_class.cartography.self_locked,true);eq(state.six_class.cartography.can_choose,true);
+ await assert.rejects(pick(first,'runner_ace'),/locked/);checks++;
+ await assert.rejects(v("select public.select_cartographer_map_v1($1,'unknown-unreviewed')",[first]),/Unknown arena/);checks++;
+ await uid(b);await pick(first,'medic_patch');eq(await v('select status from public.multiplayer_matches where id=$1',[first]),'countdown');
+ await uid(a);state=await v("select public.select_cartographer_map_v1($1,'grove')",[first]);eq(state.match.map_key,'grove');eq(state.match.status,'countdown');eq(state.self.character_key,'runner_cartographer');eq(state.self.character_confirmed,true);eq(state.opponent.character_key,'medic_patch');eq(state.opponent.character_confirmed,false);
+ eq(await v('select original_key from app_private.six_class_players where match_id=$1 and user_id=$2',[first,a]),'runner_cartographer');
+ await uid(b);state=await pick(first,'medic_patch');eq(state.match.status,'playing');eq(state.self.character_class,'medic');eq(state.opponent.character_key,'runner_cartographer');
+ const second=await make();await uid(a);await pick(second,'runner_cartographer');await v("select public.select_cartographer_map_v1($1,'grove')",[second]);
+ await uid(b);state=await pick(second,'runner_cartographer');eq(state.match.map_key,'classic');eq(state.match.status,'playing');eq(state.six_class.cartography.both,true);eq(state.self.character_key,'runner_cartographer');eq(state.opponent.character_key,'runner_cartographer');
+ await assert.rejects(v("select public.select_cartographer_map_v1($1,'grove')",[second]),/Original live Cartographer/);checks++;
+ await uid(x);const third=await make();await assert.rejects(pick(third,'runner_cartographer'),/Original live character/);checks++;
+ eq(Number(await v('select count(*)::int from app_private.six_class_cartography where match_id=$1',[third])),0);
+ eq(await v("select has_table_privilege('authenticated','app_private.six_class_cartography','UPDATE')"),false);eq(await v("select has_function_privilege('anon','public.select_cartographer_map_v1(uuid,text)','EXECUTE')"),false);
+ eq(Number(await v('select total_gems from public.player_stats where user_id=$1',[a])),987);eq(Number(await v('select stardust from public.player_stats where user_id=$1',[b])),456);
+ console.log(`PASS ${checks} Cartographer single/double/repick/original-match WASM checks; native/concurrency/hosted/real-account cases 0`);
+}catch(error){console.error({message:error.message,position:error.position,where:error.where});process.exitCode=1;}finally{await db.close();}

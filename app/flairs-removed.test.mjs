@@ -9,8 +9,10 @@ test("Inventory flairs, equipment state, sprites, and bonuses are removed",()=>{
   assert.doesNotMatch(page,/WeaponInventory|selectedWeapon|activeWeapon|weapon_key|hasWeaponEffect|set_player_weapon|weapon:|WEAPONS \/ FLAIRS/);
   assert.doesNotMatch(css,/character-weapon|weapon-showcase|weapon-roster|active-weapon-readout|weapon-symbol|weapon-color/);
 });
-test("all 80 characters, their active skills, and map weapons remain",()=>{
-  assert.equal([...page.matchAll(/key: "(?:runner|medic|tank|trickster|misc)_[^"]+",\s*name:/g)].length,80);
+test("all 132 catalog characters and existing map weapons remain",async()=>{
+  const {OVERHAUL_CHARACTERS}=await import('./overhaul-catalog.ts');
+  assert.equal(OVERHAUL_CHARACTERS.length,132);
+  assert.match(page,/OVERHAUL_CHARACTERS/);
   assert.match(page,/hasCharacterAbility\("medic_lifeline"\)/);
   assert.match(page,/hasCharacterAbility\("trickster_hex"\)/);
   assert.match(page,/throwHexChakram/);

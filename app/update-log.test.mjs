@@ -32,22 +32,14 @@ test("every update has a unique timestamped player summary", () => {
   }
 });
 
-test("players see only the latest ten updates while the source archive is kept", () => {
-  const recent = getRecentUpdates();
-  assert.equal(VISIBLE_UPDATE_LIMIT, 10);
-  assert.equal(recent.length, 10);
-  assert.ok(UPDATE_LOG.length > recent.length);
-  assert.deepEqual(recent.map(({ id }) => id), UPDATE_LOG.slice(0, 10).map(({ id }) => id));
-  assert.equal(getRecentUpdates([]).length, 0);
-  assert.equal(getRecentUpdates(UPDATE_LOG.slice(0, 3)).length, 3);
+test("players can read the complete archive without a ten-entry cap", () => {
+  assert.equal(VISIBLE_UPDATE_LIMIT, Infinity);
+  assert.deepEqual(getRecentUpdates().map(e=>e.id), UPDATE_LOG.map(e=>e.id));
+  assert.equal(getRecentUpdates([]).length,0);
+  assert.equal(getRecentUpdates(UPDATE_LOG.slice(0,3)).length,3);
 });
-
-test("release numbers advance to 2.7 without using the archive count", () => {
-  assert.equal(LATEST_UPDATE_VERSION, "2.7");
-  assert.equal(getRecentUpdates()[0].id, "2026-11-18-ranked-unknown-map");
-  assert.equal(getRecentUpdates()[7].id, "2026-10-10-update-2-0");
-  assert.deepEqual(getRecentUpdates().map(({ version }) => version), [
-    "2.7", "2.6", "2.5", "2.4", "2.3", "2.2", "2.1", "2.0", "1.9", "1.8",
-  ]);
-  assert.ok(getRecentUpdates().every(({ title }) => !/^UPDATE \d+:/.test(title)));
+test("integer release numbers cover the entire archive newest first",()=>{
+  assert.equal(LATEST_UPDATE_VERSION,String(UPDATE_LOG.length));
+  assert.equal(getRecentUpdates()[0].id,'2026-11-21-six-class-overhaul');
+  assert.deepEqual(getRecentUpdates().map(e=>e.version),UPDATE_LOG.map((_,i)=>String(UPDATE_LOG.length-i)));
 });

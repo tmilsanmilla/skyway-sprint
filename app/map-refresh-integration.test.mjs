@@ -95,7 +95,7 @@ test('queued map actions are bound to the original account, auth generation and 
 });
 test('actual wave healing and practice opponent use shared map-health and paid-armory rules',()=>{
  const page=readFileSync(new URL('./page.tsx',import.meta.url),'utf8');
- assert.match(page,/state.current.hearts \+ getAllowedHealing\(activeMapId, healAmount\+flairEffects.waveHealExtra\)/);
+ assert.ok(/before\+getAllowedHealing\(activeMapId,effect.amount\)/.test(page),"character healing uses the shared map healing rule");
  assert.match(page,/planBotAttackPurchases\(activeMapId, botBudgetBefore, attackLimit\)/);
  assert.doesNotMatch(page,/attack.cost <= botBudget|botBudget -= chosen.cost/);
 });

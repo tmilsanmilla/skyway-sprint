@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import type { SkywayRpcClient } from "./skyway-client";
-import { BASE_ADMIN_COMMANDS, PROTECTED_STARTER_CHARACTERS, ADMIN_SKIN_TIERS, parseAdminCommand, isV23AdminCommand, resolveAdminMastery, adminMasterySuggestions } from "./admin-command-rules";
+import { BASE_ADMIN_COMMANDS, PROTECTED_STARTER_CHARACTERS, ADMIN_SKIN_TIERS, parseAdminCommand, isV23AdminCommand, isOverhaulAdminCommand, resolveAdminMastery, adminMasterySuggestions } from "./admin-command-rules";
 import { PHOTON_CHARACTERS } from "./photon-fury-rules";
 import { PHOTON_THEMES } from "./photon-collection-rules";
 import { MASTERIES } from "./mastery-rules";
@@ -758,6 +758,19 @@ export function AdminPlayerEditor({
     setStatus("");
     try {
       const parsed = parseAdminCommand(command, Boolean(selected));
+      if (parsed.action.startsWith("appeal_")) {
+        const { data, error } = await supabase.rpc("admin_player_command_v24", {
+          p_action: parsed.action, p_target_user_id: null, p_command_text: command,
+        });
+        if (lookupGeneration !== lookupGenerationRef.current) return;
+        if (error) throw new Error(error.message);
+        if (!data?.ok) throw new Error(data?.error || "Command was rejected.");
+        setCommand("");
+        setCommandFeedback({ tone: "success", message: parsed.action === "appeal_count"
+          ? `ACTIVE APPEALS: ${data.value ?? 0}`
+          : `${parsed.action === "appeal_accept_all" ? "Accepted" : "Rejected"} ${data.changed_count ?? 0} active appeals.` });
+        return;
+      }
       if (parsed.action === "rptc") {
         const { data, error } = await supabase.rpc("admin_player_command_v23", {
           p_action: "rptc", p_target_user_id: null, p_command_text: command,
@@ -796,7 +809,7 @@ export function AdminPlayerEditor({
       }
       let item: CatalogItem | undefined;
       const mastery = parsed.itemKind === "mastery" && parsed.itemName ? resolveAdminMastery(parsed.itemName) : undefined;
-      if (parsed.itemName && !isV23AdminCommand(parsed)) {
+      if (parsed.itemName && !isV23AdminCommand(parsed) && !isOverhaulAdminCommand(parsed)) {
         const { data, error } = await supabase.rpc("admin_command_suggestions", {
           p_fragment: parsed.itemName,
           p_kind: parsed.itemKind ?? null,
@@ -813,10 +826,18 @@ export function AdminPlayerEditor({
         );
         if (!item) throw new Error("Choose an exact item from the suggestions.");
         if (PROTECTED_STARTER_CHARACTERS.has(item.item_key))
-          throw new Error("The four starter characters cannot be granted or revoked.");
+          throw new Error("Starter characters cannot be granted or revoked.");
       }
       const commandResult =
-        isV23AdminCommand(parsed)
+        isOverhaulAdminCommand(parsed)
+          ? await supabase.rpc("admin_player_command_v24", {
+              p_action: parsed.action,
+              p_target_user_id: target.user_id,
+              p_item_kind: parsed.itemKind ?? null,
+              p_item_key: mastery?.key ?? parsed.itemName ?? null,
+              p_command_text: command,
+            })
+          : isV23AdminCommand(parsed)
           ? await supabase.rpc("admin_player_command_v23", {
               p_action: parsed.action,
               p_target_user_id: target.user_id,
@@ -857,13 +878,15 @@ export function AdminPlayerEditor({
         ok?: boolean;
         error?: string;
         revoked_count?: number;
-        value?: number | null;
+        value?: number | string | null;
         noop?: boolean;
         message?: string;
       } | null;
       if (!result?.ok) throw new Error(result?.error || "Command was rejected.");
       const completedMessage =
-        parsed.action === "check"
+        parsed.action.startsWith("ranked_")
+          ? `${parsed.action === "ranked_owned" ? "OWNS RANKED" : parsed.action === "ranked_games" ? "RANKED GAMES" : "ELO"}: ${result.value === null ? "NULL" : result.value ?? 0} · ${target.username || target.email}`
+          : parsed.action === "check"
           ? `${parsed.statKey?.toUpperCase()}: ${result.value === null ? "NULL (Photon Fury is locked)" : result.value ?? 0} · ${target.username || target.email}`
           : result.noop
             ? result.message || "No changes were needed."

@@ -1,0 +1,54 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {sixClassFixture}from './six-class-test-fixture.mjs';
+const db=await sixClassFixture(),artifacts=process.env.SKYWAY_TEST_ARTIFACTS;
+const u='11111111-1111-4111-8111-111111111111',x='22222222-2222-4222-8222-222222222222';
+let checks=0;const eq=(a,b)=>{assert.deepEqual(a,b);checks++;},v=async(sql,args)=>Object.values((await db.query(sql,args)).rows[0])[0];
+const run=async(key,seconds=100)=>{await db.query('update public.player_loadouts set character_key=$2 where user_id=$1',[u,key]);return v("insert into public.player_progression_runs(user_id,started_at,active_seconds,verified_wave)values($1,clock_timestamp()-$2*interval '1 second',$2,1+floor($2/40.))returning run_id",[u,seconds]);};
+const checkpoint=async(id,key,counters={},seconds=90)=>v('select public.record_six_class_run_v1($1,gen_random_uuid(),$2)',[id,{version:1,originalKey:key,key,elapsed:seconds,counters}]);
+const complete=async(id,score=80,gems=20)=>{await db.query('update public.player_progression_runs set completed_at=clock_timestamp(),heartbeat_active=false where run_id=$1',[id]);await db.query("insert into public.player_progression_events(user_id,source,source_key,xp_awarded,metadata)values($1,'run',$2,$3,$4)",[u,id,score+gems,{xp_breakdown:{score,gems,total:score+gems}}]);};
+try{
+ await db.exec(`create function app_private.photon_user()returns uuid language plpgsql as $$declare u uuid:=auth.uid();begin if u is null then raise exception 'Sign in required';end if;return u;end$$;
+ create function public.get_player_progression()returns jsonb language sql as $$select to_jsonb(s)from public.player_stats s where user_id=auth.uid()$$;
+ create function app_private.apply_player_xp(u uuid,n bigint,completed boolean)returns jsonb language plpgsql as $$begin update public.player_stats set lifetime_xp=lifetime_xp+n where user_id=u;return public.get_player_progression();end$$;
+ create table if not exists app_private.mastery_sessions(id uuid,context_id uuid,user_id uuid,context_type text,character_key text,flair_character text,finished_at timestamptz,started_at timestamptz,gem_multiplier numeric,gem_fraction numeric);
+ create table if not exists app_private.player_mastery_quests(user_id uuid,character_key text,mastered boolean,mastery_enabled boolean);
+ create function app_private.mastery_owns_character(uuid,text)returns boolean language sql as $$select true$$;
+ create table app_private.six_class_players(match_id uuid,user_id uuid,current_key text,checkpoint jsonb);
+ create function app_private.claim_player_gem_before_mastery_flairs(ctx uuid,pickup text)returns jsonb language plpgsql as $$
+ declare u uuid:=auth.uid();e public.player_progression_events;n bigint;total bigint;begin
+ if not exists(select 1 from public.player_progression_runs where run_id=ctx and user_id=u and completed_at is null)then raise exception 'Original active pickup receipt required';end if;
+ select *into e from public.player_progression_events where user_id=u and source='gem'and source_key=ctx::text||':'||pickup;
+ if e.id is not null then return jsonb_build_object('is_new',false,'gems_awarded',e.metadata->'gems_awarded','total_gems',(select total_gems from public.player_stats where user_id=u));end if;
+ select count(*)+1 into n from public.player_progression_events where user_id=u and source='gem'and metadata->>'context_id'=ctx::text;
+ insert into public.player_progression_events(user_id,source,source_key,xp_awarded,metadata)values(u,'gem',ctx::text||':'||pickup,0,jsonb_build_object('context_id',ctx,'context_type','endless','gems_awarded',n,'streak',n));
+ update public.player_stats set total_gems=total_gems+n where user_id=u returning total_gems into total;
+ return jsonb_build_object('is_new',true,'gems_awarded',n,'streak',n,'total_gems',total);
+ end $$;
+ `);
+ const before=JSON.parse(fs.readFileSync(`${artifacts}/reward-patch-manifest.json`,'utf8')).beforeDefinition;await db.exec(before);
+ const sql=fs.readFileSync(new URL('./six-class-06-run-rewards.sql',import.meta.url),'utf8');await db.exec(sql);await db.exec(sql);checks+=2;
+ await v("select set_config('test.uid',$1,false)",[u]);
+ const engineer=await run('misc_engineer');await checkpoint(engineer,'misc_engineer');
+ const dustBefore=Number(await v('select stardust from public.player_stats where user_id=$1',[u]));
+ const first=await v("select public.claim_player_gem($1,'one')",[engineer]);eq(first.character_stardust_awarded,3);
+ await v("select public.claim_player_gem($1,'one')",[engineer]);eq(Number(await v('select stardust from public.player_stats where user_id=$1',[u])),dustBefore+3);
+ const second=await v("select public.claim_player_gem($1,'two')",[engineer]);eq(second.character_stardust_awarded,6);
+ await v("select set_config('test.uid',$1,false)",[x]);await assert.rejects(checkpoint(engineer,'misc_engineer'),/Original active run/);checks++;
+ await v("select set_config('test.uid',$1,false)",[u]);await assert.rejects(checkpoint(engineer,'misc_engineer',{moves:99999}),/bounded run counter/);checks++;
+ await assert.rejects(checkpoint(engineer,'runner_ace'),/Original run character/);checks++;
+ const prospector=await run('misc_prospector');await checkpoint(prospector,'misc_prospector');
+ const rewards=[];for(let n=0;n<4;n++)rewards.push((await v('select public.claim_player_gem($1,$2)',[prospector,'p'+n])).gems_awarded);eq(rewards,[1,3,5,7]);
+ const particle=await run('chaotic_particle');await checkpoint(particle,'chaotic_particle');await complete(particle,100,0);
+ const xpBefore=Number(await v('select lifetime_xp from public.player_stats where user_id=$1',[u]));
+ const settled=await v('select public.finish_six_class_run_v1($1)',[particle]);eq(settled.xp_awarded,200);eq(Number(await v('select lifetime_xp from public.player_stats where user_id=$1',[u])),xpBefore+100);
+ await v('select public.finish_six_class_run_v1($1)',[particle]);eq(Number(await v('select lifetime_xp from public.player_stats where user_id=$1',[u])),xpBefore+100);
+ const glide=await run('chaotic_glide',250);await checkpoint(glide,'chaotic_glide',{},247);await complete(glide,100,0);
+ const gemsBefore=Number(await v('select total_gems from public.player_stats where user_id=$1',[u]));await v('select public.finish_six_class_run_v1($1)',[glide]);eq(Number(await v('select total_gems from public.player_stats where user_id=$1',[u])),gemsBefore+3);
+ const switched=await run('trickster_switch',100);await checkpoint(switched,'trickster_switch',{moves:150});await complete(switched,100,0);eq((await v('select public.finish_six_class_run_v1($1)',[switched])).xp_breakdown.character_bonus,31);
+ const trial=await run('chaotic_particle');await checkpoint(trial,'chaotic_particle');await db.query('update public.player_progression_runs set test_mode=true where run_id=$1',[trial]);await complete(trial,0,0);eq((await v('select public.finish_six_class_run_v1($1)',[trial])).xp_awarded,0);
+ eq(Number(await v('select total_gems from public.player_stats where user_id=$1',[x])),123);eq(Number(await v('select stardust from public.player_stats where user_id=$1',[x])),456);
+ eq(await v("select has_table_privilege('authenticated','app_private.six_class_runs','UPDATE')"),false);eq(await v("select has_function_privilege('anon','public.finish_six_class_run_v1(uuid)','EXECUTE')"),false);
+ await v("select set_config('test.runtime','off',false)");await assert.rejects(v('select public.finish_six_class_run_v1($1)',[particle]),/Runtime closed/);checks++;
+ console.log(`PASS ${checks} bounded original-run reward/duplicate/actor WASM checks; native/hosted/real-account cases 0`);
+}catch(error){console.error({message:error.message,position:error.position,where:error.where});process.exitCode=1;}finally{await db.close();}

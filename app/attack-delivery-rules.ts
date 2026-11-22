@@ -2,7 +2,12 @@ export const WAVE_PROGRESS_LENGTH = 2250;
 export const ATTACK_RELEASE_START_FRACTION = 0.1;
 export const ATTACK_RELEASE_END_FRACTION = 0.8;
 export const WAVE_START_SPEED_MULTIPLIER = 1;
-export const WAVE_SPEED_STEP = 0.25;
+export const WAVE_SPEED_STEP = 0.2;
+export const NORMAL_WAVE_DURATION_MS = 40_000;
+/** Active gameplay clock; movement/score modifiers never shorten the wave. */
+export const waveProgressDelta = (elapsedMs: number, durationMs = NORMAL_WAVE_DURATION_MS) =>
+  Math.max(0, Number.isFinite(elapsedMs) ? elapsedMs : 0) * WAVE_PROGRESS_LENGTH /
+    Math.max(1, Number.isFinite(durationMs) ? durationMs : NORMAL_WAVE_DURATION_MS);
 export const PURCHASED_ATTACK_SPAWN_Y = -12;
 export const PURCHASED_ATTACK_ENTRY_GAP = 24;
 
@@ -90,7 +95,7 @@ export const getAttackReleaseProgresses = (
   });
 };
 
-/** Endless and 1v1 start at 1x; every later wave adds another 0.25x. */
+/** Endless and 1v1 start at 1x; every later wave adds another 0.20x. */
 export const getWaveSpeedMultiplier = (waveNumber: number): number =>
   WAVE_START_SPEED_MULTIPLIER +
   Math.max(0, Math.floor(Number.isFinite(waveNumber) ? waveNumber : 1) - 1) *

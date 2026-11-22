@@ -5,7 +5,7 @@ export type RotatingMode = "rng" | "hardcore_duel" | "quicksand" | "mundane";
 export const MATCH_SETUP = { banSeconds: 10, announcementSeconds: 4, characterSeconds: 15 } as const;
 export const ROTATING_MODE_LEVEL = 15;
 export const HARDCORE_DUEL_MAPS: readonly MapId[] = ["classic", "ruins", "desert", "skyway", "pitch", "factory", "meadow"];
-export const RNG_MAP_WEIGHTS = { classic: 30, pitch: 25, factory: 25, meadow: 20 } as const;
+export const RNG_MAP_WEIGHTS = { classic: 40, factory: 30, pitch: 20, meadow: 10 } as const;
 export const RNG_RARITY_WEIGHTS = { uncommon: 15, rare: 35, epic: 35, legendary: 15 } as const;
 const newYorkDay = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short" });
 const newYorkDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" });
@@ -26,7 +26,7 @@ export const MUNDANE_MAP_WEIGHTS = { classic: 55, factory: 25, meadow: 10, pitch
 export const QUICKSAND_RULES = { map: "classic", character: "runner_ace", baseSpeed: 4, scoreSpeedMultiplier: 1, startingHp: 4, maxHp: 4 } as const;
 export const melonBaseScore = (wave: number, mode?: DuelMode) => {
   const w = Math.max(1, Math.floor(Number.isFinite(wave) ? wave : 1));
-  return mode === "quicksand" ? Math.floor(627 + 99 * w ** 1.4) : Math.floor(285 + 45 * w ** 1.4);
+  return mode === "quicksand" ? Math.floor(627 + 99 * w ** 1.6) : Math.floor(285 + 45 * w ** 1.6);
 };
 export const isDuelCharacterAllowed = (mode: DuelMode, character: { key: string; rarity: string; classKey: string }) => {
   if (mode === "quicksand" || mode === "hardcore_duel") return character.key === "runner_ace";
@@ -36,12 +36,12 @@ export const isDuelCharacterAllowed = (mode: DuelMode, character: { key: string;
 };
 export type UnlimitedRequirement = { key: string; label: string; complete: boolean; progress: string };
 export const unlimitedRequirements = (catalog: readonly { key: string; rarity: string; classKey: string }[], owned: readonly string[], level: number, ranked: boolean, photon: boolean): UnlimitedRequirement[] => {
-  const keys = new Set(owned), unique = new Map(catalog.filter(c => ["runner", "medic", "tank", "trickster", "misc"].includes(c.classKey)).map(c => [c.key, c]));
+  const keys = new Set(owned), unique = new Map(catalog.filter(c => ["runner", "medic", "tank", "trickster", "misc", "chaotic"].includes(c.classKey)).map(c => [c.key, c]));
   const count = (rarities: readonly string[]) => [...unique.values()].filter(c => keys.has(c.key) && rarities.includes(c.rarity)).length;
   return [
-    { key: "collection", label: "Own all 80 Common, Uncommon, Rare and Epic characters", count: count(["common", "uncommon", "rare", "epic"]), target: 80 },
-    { key: "legendary", label: "Own at least 18 Legendary characters", count: count(["legendary"]), target: 18 },
-    { key: "mythic", label: "Own at least 3 Mythic characters", count: count(["mythic"]), target: 3 },
+    { key: "collection", label: "Own all 96 Common, Uncommon, Rare and Epic characters", count: count(["default", "common", "uncommon", "rare", "epic"]), target: 96 },
+    { key: "legendary", label: "Own at least 21 of 24 Legendary characters", count: count(["legendary"]), target: 21 },
+    { key: "mythic", label: "Own at least 5 of 12 Mythic characters", count: count(["mythic"]), target: 5 },
   ].map(r => ({ key: r.key, label: r.label, complete: r.count >= r.target, progress: r.count >= r.target ? "Completed" : `${r.count}/${r.target}` })).concat([
     { key: "modes", label: "Own Ranked and Photon Fury", complete: ranked && photon, progress: ranked && photon ? "Completed" : ranked ? "Photon Fury needed" : photon ? "Ranked needed" : "Both modes needed" },
     { key: "level", label: "Reach level 45", complete: level >= 45, progress: level >= 45 ? "Completed" : "In progress" },
@@ -58,7 +58,7 @@ export const weightedChoice = <T extends string>(weights: Readonly<Record<T, num
   throw new Error("Invalid weights");
 };
 export const rngClasses = (rollOne: number, rollTwo: number): [CharacterClassId, CharacterClassId] => {
-  const classes: CharacterClassId[] = ["runner", "medic", "tank", "trickster", "misc"];
-  const first = classes.splice(Math.min(4, Math.floor(Math.max(0, rollOne) * 5)), 1)[0];
-  return [first, classes[Math.min(3, Math.floor(Math.max(0, rollTwo) * 4))]];
+  const classes: CharacterClassId[] = ["runner", "medic", "tank", "trickster", "misc", "chaotic"];
+  const first = classes.splice(Math.min(5, Math.floor(Math.max(0, rollOne) * 6)), 1)[0];
+  return [first, classes[Math.min(4, Math.floor(Math.max(0, rollTwo) * 5))]];
 };

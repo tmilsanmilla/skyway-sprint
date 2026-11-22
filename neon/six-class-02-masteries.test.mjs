@@ -1,0 +1,72 @@
+/** Executes current protected function bodies only in an empty WASM fixture.
+ * Reads no URI, credentials or account data; does not start a native engine. */
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import {pathToFileURL} from "node:url";
+const modulePath=process.env.SKYWAY_TEST_PGLITE_MODULE,metadataPath=process.env.SKYWAY_TEST_MASTERY_METADATA;
+assert.ok(modulePath?.startsWith("/")&&modulePath.endsWith("/@electric-sql/pglite/dist/index.js"));
+assert.ok(metadataPath?.endsWith("/mastery-installed-metadata.json"));
+const metadata=JSON.parse(fs.readFileSync(metadataPath,"utf8"))[1][0];assert.equal(metadata.enforced_read_only,"on");
+const {PGlite}=await import(pathToFileURL(modulePath).href),db=new PGlite();
+let checks=0;const eq=(a,b)=>{assert.deepEqual(a,b);checks++;};
+const value=async(sql,args)=>Object.values((await db.query(sql,args)).rows[0])[0];
+const u="11111111-1111-4111-8111-111111111111",other="22222222-2222-4222-8222-222222222222",context="33333333-3333-4333-8333-333333333333";
+const body=name=>metadata.functions.find(f=>f.signature.startsWith(name+"(")).definition;
+try{
+  const script=fs.readFileSync(new URL("../scripts/test-masteries-sql.mjs",import.meta.url),"utf8");
+  const fixture=script.split("sql(`create schema auth;")[1]?.split("`);")[0];assert.ok(fixture&&!fixture.includes("${"));
+  await db.exec("create schema auth;"+fixture);
+  await db.exec(fs.readFileSync(new URL("./update-2-3-masteries.sql",import.meta.url),"utf8"));
+  await db.exec(`
+    alter table app_private.mastery_sessions add column if not exists trial_replay boolean not null default false;
+    create table app_private.mastery_smoke_state(match_id uuid,user_id uuid,wave integer,bombs_used integer,cooldown_until timestamptz);
+    create table app_private.mastery_smoke_actions(match_id uuid,user_id uuid,strength text,active_until timestamptz,created_at timestamptz);
+    alter table public.multiplayer_matches add column status text;
+    alter table public.multiplayer_players add column status text;
+    create function app_private.require_pixel_runtime() returns void language plpgsql as $$begin if current_setting('test.runtime',true)='off' then raise exception 'Runtime closed';end if;end$$;
+    select set_config('skyway.test_uid','${u}',false);
+    insert into public.player_loadouts(user_id,character_key) values('${u}','runner_stride');
+    insert into public.player_unlocks(user_id,item_key,item_type)values('${u}','runner_dash','character'),('${u}','runner_stride','character'),('${u}','medic_bloom','character');
+    insert into public.player_mastery_dummy values(1);
+  `.replace("    insert into public.player_mastery_dummy values(1);", ""));
+  for(const name of ["begin_mastery_session","credit_mastery_events","get_mastery_profile","get_mastery_smoke_effect","claim_player_gem","set_player_flair","set_mastery_toggle"])await db.exec(body(name));
+  const migration=fs.readFileSync(new URL("./six-class-02-masteries.sql",import.meta.url),"utf8");
+  await db.exec(migration);await db.exec(migration);checks+=2;
+  await db.exec(`
+    insert into app_private.player_mastery_quests(user_id,character_key)values('${u}','runner_dash'),('${u}','runner_stride');
+    insert into app_private.player_mastery_preferences(user_id,active_character,flair_character)values('${u}','runner_dash','medic_bloom');
+    insert into public.player_progression_runs(run_id,user_id,started_at,active_seconds)values('${context}','${u}',clock_timestamp()-interval '100 seconds',100);
+  `);
+  const session=await value("select public.begin_mastery_session($1,'endless','runner_stride')",[context]);
+  eq(typeof session.session_id,"string");
+  eq(await value("select flair_character from app_private.mastery_sessions where id=$1",[session.session_id]),null);
+  const event=[{seq:1,at:0,type:"lane-change"}];
+  await value("select public.credit_mastery_events($1,$2::jsonb)",[session.session_id,JSON.stringify(event)]);
+  eq(Number(await value("select progress from app_private.player_mastery_quests where user_id=$1 and character_key='runner_stride'",[u])),1);
+  eq(Number(await value("select progress from app_private.player_mastery_quests where user_id=$1 and character_key='runner_dash'",[u])),0);
+  await value("select public.credit_mastery_events($1,$2::jsonb)",[session.session_id,JSON.stringify(event)]);
+  eq(Number(await value("select progress from app_private.player_mastery_quests where user_id=$1 and character_key='runner_stride'",[u])),1);
+  await assert.rejects(value("select public.set_player_flair('medic_bloom')"),/cannot be equipped separately/);checks++;
+  await assert.rejects(value("select public.set_mastery_toggle('runner_stride','flair',true)"),/mastery toggle/);checks++;
+  eq(await value("select flair_character from app_private.player_mastery_preferences where user_id=$1",[u]),"medic_bloom");
+  await db.exec(`update app_private.mastery_sessions set finished_at=clock_timestamp();insert into app_private.player_mastery_quests(user_id,character_key,quest,mastered,mastery_enabled,flair_rewrite_enabled)values('${u}','medic_bloom',3,true,true,false);update public.player_loadouts set character_key='medic_bloom' where user_id='${u}';`);
+  const bloom=await value("select public.begin_mastery_session($1,'endless','medic_bloom')",[context]);
+  eq(await value("select flair_character from app_private.mastery_sessions where id=$1",[bloom.session_id]),"medic_bloom");
+  eq(Number(await value("select gem_multiplier from app_private.mastery_sessions where id=$1",[bloom.session_id])),1.35);
+  for(let i=0;i<3;i++)await value("select public.claim_player_gem($1,$2)",[context,"new-"+i]);
+  eq(Number(await value("select total_gems from public.player_stats where user_id=$1",[u])),4);
+  await value("select public.claim_player_gem($1,'new-2')",[context]);
+  eq(Number(await value("select total_gems from public.player_stats where user_id=$1",[u])),4);
+  await db.exec("update app_private.player_mastery_quests set mastery_enabled=false where character_key='medic_bloom'");
+  await value("select public.claim_player_gem($1,'disabled')",[context]);
+  eq(Number(await value("select total_gems from public.player_stats where user_id=$1",[u])),5);
+  await db.exec("update app_private.mastery_sessions set character_key='runner_dash',flair_character='medic_bloom',gem_multiplier=1.25;update app_private.player_mastery_quests set mastery_enabled=true where character_key='medic_bloom'");
+  for(let i=0;i<4;i++)await value("select public.claim_player_gem($1,$2)",[context,"legacy-cross-"+i]);
+  eq(Number(await value("select total_gems from public.player_stats where user_id=$1",[u])),9);
+  eq(Number(await value("select total_gems from public.player_stats where user_id=$1",[other])),0);
+  await db.exec("select set_config('test.runtime','off',false)");
+  await assert.rejects(value("select public.begin_mastery_session($1,'endless','medic_bloom')",[context]),/Runtime closed/);checks++;
+  await db.exec("select set_config('test.runtime','on',false);select set_config('skyway.test_uid','22222222-2222-4222-8222-222222222222',false)");
+  await assert.rejects(value("select public.credit_mastery_events($1,'[]'::jsonb)",[session.session_id]),/Owned mastery session/);checks++;
+  console.log(`PASS ${checks} WASM current-source mastery/automatic-quest/account-boundary checks; native SQL 0`);
+}finally{await db.close();}

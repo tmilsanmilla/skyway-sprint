@@ -14,7 +14,7 @@ create or replace function app_private.photon_character_rules(p_key text)
 returns table(character_key text,max_hp numeric,durability integer,guard_seconds numeric,cooldown_seconds numeric,
  bonus_point_seconds integer,heal_amount numeric,heal_cooldown_seconds numeric) language sql immutable set search_path='' as $$
  select * from(values
-('photon_magician',4.,7,0.4,1,45,0.,0.),
+('photon_magician',4.,7,0.4,1,40,0.,0.),
 ('photon_tick',4,7,0.5,0.8,null,0,0),
 ('photon_trumpet',5,12,0.4,0.8,null,0,0),
 ('photon_saxophone',4,7,0.4,1.2,null,0.5,25),

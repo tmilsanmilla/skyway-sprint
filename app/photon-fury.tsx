@@ -12,6 +12,7 @@ import { audioEngine, type Soundtrack } from "./audio-engine";
 import { Obstacle } from "./obstacle-sprite";
 import { PHOTON_GUIDE } from "./photon-guide";
 import { PhotonCollection, type PhotonRewardView } from "./photon-collection";
+import {PhotonRace} from "./photon-race";
 import { PhotonAvatar } from "./photon-avatar";
 import { DEFAULT_PHOTON_THEME, PHOTON_THEMES } from "./photon-collection-rules";
 import {
@@ -69,6 +70,9 @@ export function PhotonFury({
   onStardust,
   onUnlocked,
 }: Props) {
+  const [raceOpen,setRaceOpen]=useState(false),[raceUnlocked,setRaceUnlocked]=useState(false);
+  const onRaceUnlock=useCallback(()=>setRaceUnlocked(true),[]);
+  useEffect(()=>{let active=true;if(userId)void supabase.rpc("get_photon_race_profile").then(({data,error})=>{if(active&&!error)setRaceUnlocked(data?.unlocked===true);});return()=>{active=false;};},[userId]);
   const [unlocked, setUnlocked] = useState(false);
   const [balance, setBalance] = useState(0);
   const [loading, setLoading] = useState(Boolean(userId));
@@ -520,6 +524,7 @@ export function PhotonFury({
     "--photon-accent": chosenTheme.accent,
   } as CSSProperties;
 
+  if(raceOpen&&userId)return <PhotonRace userId={userId} level={level} owned={owned} photons={balance} onBalance={setBalance} onUnlock={onRaceUnlock} onExit={()=>setRaceOpen(false)}/>;
   return (
     <section
       className={`photon-panel photon-futuristic theme-${theme}`}
@@ -694,6 +699,7 @@ export function PhotonFury({
                 </div>
               )}
               {unlocked || testMode ? (
+                <>
                 <button
                   disabled={
                     busy ||
@@ -704,6 +710,8 @@ export function PhotonFury({
                 >
                   {busy ? "SAVING…" : "START RUN"}
                 </button>
+                <button disabled={busy||savePending||!userId||testMode} onClick={()=>setRaceOpen(true)}>{raceUnlocked?"QUEUE PHOTON RACE · 1V1":"PHOTON RACE · LOCKED"}</button>
+                </>
               ) : (
                 <>
                   <p>

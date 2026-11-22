@@ -5296,7 +5296,7 @@ footer p small {
 }
 .mode-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(160px, 250px));
+  grid-template-columns: repeat(5, minmax(130px, 230px));
   justify-content: center;
   gap: 14px;
   min-height: 82px;
@@ -5341,8 +5341,10 @@ footer p small {
   opacity: 0.65;
 }
 .mode-actions .mode-endless {
-  background: #ffc52f;
+  background: #d5d5d5;
 }
+.mode-actions .mode-photon {background:#06170c;color:#8aff9d;border-color:#224a2a;}
+.mode-actions .mode-photon.active {background:#06170c;color:#8aff9d;box-shadow:6px 6px 0 #40c56b;}
 .mode-actions .mode-versus {
   background: #dbe9ff;
 }

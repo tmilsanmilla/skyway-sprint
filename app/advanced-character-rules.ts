@@ -775,7 +775,8 @@ export type CharacterCategory =
   | "healer"
   | "tank"
   | "trickster"
-  | "misc";
+  | "misc"
+  | "chaotic";
 export type CharacterRarity =
   | "default"
   | "common"

@@ -1,7 +1,6 @@
 "use client";
 
 import { MASTERIES, masteryDefinition, type MasteryAccountState, type MasteryKey } from "./mastery-rules";
-import { cycleFlair, flairDescription, type InventoryFlair } from "./flair-rules";
 import type { MasterySyncStatus } from "./use-masteries";
 
 /** Display-only preview: completion/unlocks still come from the saved profile. */
@@ -67,13 +66,4 @@ export function CharacterMastery({ character, state, busy, onToggle, onTrial, sh
   return <section className="character-mastery" aria-label={`${definition.name} mastery`}>
     {quest.mastered ? <>{showMasteryToggle ? <CharacterMasteryToggle character={character} state={state} busy={busy} onToggle={onToggle} /> : null}<p>{definition.ability}</p><label><input type="checkbox" checked={quest.flairRewriteEnabled} disabled={busy} onChange={(event) => onToggle(definition.key, "flair", event.target.checked)} /> Rewritten flair</label><p>Independent of mastery. Turn off to restore this flair&apos;s original score bonus.</p><button type="button" disabled={busy} onClick={() => onTrial(definition.key)}>Replay trial of {definition.name}</button><p>Practice replay only. No rewards; your mastery and flair settings stay unchanged.</p></> : quest.complete ? <button type="button" disabled={busy} onClick={() => onTrial(definition.key)}>Enter trial of {definition.name}</button> : <><strong>Quest {quest.quest + 1} of 3</strong><p>{definition.quests[quest.quest]}</p><div>{definition.targets[quest.quest].map((target, i) => <span key={i}>{Math.min(target, Math.floor((quest.progress[i] ?? 0) * 100) / 100)} / {target}{i + 1 < definition.targets[quest.quest].length ? " · " : ""}</span>)}</div></>}
   </section>;
-}
-interface FlairPickerProps { character: string; flairs: readonly InventoryFlair[]; selected: string | null; state: MasteryAccountState; busy?: boolean; onEquip: (key: string) => void; }
-export function FlairPicker({ character, flairs, selected, state, busy, onEquip }: FlairPickerProps) {
-  const flair = flairs.find((entry) => entry.key === selected) ?? flairs.find((entry) => entry.key === character) ?? flairs[0];
-  if (!flair) return null;
-  const mastery = masteryDefinition(flair.key);
-  const rewritten = !!mastery && !!state.quests[mastery.key]?.mastered && !!state.quests[mastery.key]?.flairRewriteEnabled;
-  const cycle = (direction: -1 | 1) => { const key = cycleFlair(flair.key, direction, flairs); if (key) onEquip(key); };
-  return <section className="flair-picker" aria-label="Equipped flair"><h4>Flair</h4><div className="flair-cycle"><button type="button" disabled={busy || flairs.length < 2} aria-label="Previous flair" onClick={() => cycle(-1)}>◀</button><strong>{flair.name}</strong><button type="button" disabled={busy || flairs.length < 2} aria-label="Next flair" onClick={() => cycle(1)}>▶</button></div><p>{flairDescription(flair, character, rewritten)}</p><label>Choose flair<select value={flair.key} disabled={busy} onChange={(event) => onEquip(event.target.value)}>{flairs.map((entry) => <option key={entry.key} value={entry.key}>{entry.name} · {entry.characterName}</option>)}</select></label></section>;
 }

@@ -56,10 +56,10 @@ export type MasteryQuestEvent =
   | { type: "trial-wave"; wave: number }
   | { type: "trial-died" }
   | { type: "run-start" | "run-end" };
-/** One active quest is credited, and an event never spills over into the next quest. */
+/** Only the equipped character’s purchased quest is credited. An event never spills into the next quest. */
 export function reduceMasteryQuest(state: MasteryAccountState, character: string, event: MasteryQuestEvent): MasteryAccountState {
-  const key = state.active;
-  if (!key || key !== character) return state;
+  const key = masteryDefinition(character)?.key;
+  if (!key) return state;
   const current = state.quests[key];
   if (!current || current.complete) return state;
   const def = masteryDefinition(key)!;
