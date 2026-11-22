@@ -28,6 +28,9 @@ try{
   await db.exec(`create table ${table.schema}.${table.table}(${[...columns,...keys].join(',')})`);
  }
  for(const c of file("game-constraints.json"))await db.exec(`alter table ${c.schema}.${c.table_name} add constraint ${c.name} ${c.definition}`);
+
+ const healthTriggers=JSON.parse(fs.readFileSync(`${artifacts}/health-column-trigger-metadata.json`,'utf8')).structuredContent.data[2].rows;
+ for(const trigger of healthTriggers){await db.exec(trigger.function_definition);await db.exec(trigger.definition);}
  const targets=new Set(file("catalog-patch-manifest.json").map(f=>f.function.split('(')[0]));
  for(const f of functions)if(targets.has(f.schema+'.'+f.name))await db.exec(f.definition);
  await db.exec(fs.readFileSync(`${artifacts}/public.join_1v1_queue.sql`,"utf8"));
@@ -46,6 +49,11 @@ try{
  ('desert',1,'Desert',5,1,false,1,1,'{}',array['runner','medic','tank','trickster','misc'],'{}','{}');
  `);
  const sql=fs.readFileSync(new URL("./six-class-04-catalog.sql",import.meta.url),"utf8");await db.exec(sql);checks++;await db.exec(sql);checks++;
+ for(const trigger of healthTriggers){
+  eq(await v("select pg_get_triggerdef(oid)from pg_trigger where tgrelid='public.multiplayer_players'::regclass and tgname=$1",[trigger.tgname]),trigger.definition);
+  eq(await v("select md5(prosrc)from pg_proc where oid=$1::regprocedure",[trigger.function]),trigger.function_body_md5);
+ }
+ eq(Number(await v("select count(*)::int from pg_attribute where attrelid='public.multiplayer_players'::regclass and attname in('hearts','max_hearts')and atttypmod=-1")),2);
  eq(Number(await v("select count(*)::int from app_private.six_class_catalog")),132);
  eq(Number(await v("select count(*)::int from public.extraction_catalog where item_type='character'and active")),132);
  eq(Number(await v("select count(*)::int from public.player_unlocks")),2);

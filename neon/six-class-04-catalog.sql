@@ -38,7 +38,20 @@ do $six$ declare d text;begin
  elsif d is not null then raise exception 'Unexpected existing multiplayer_players.multiplayer_players_max_hearts_check';end if;
 end $six$;
 
-alter table public.multiplayer_players alter column hearts type numeric,alter column max_hearts type numeric;
+-- PostgreSQL pins UPDATE OF triggers to their column types. The whole change is
+-- atomic under the table lock; each exact trigger and function is retained.
+do $health_type$ declare expected jsonb:=$trigger_pins$[{"name":"enforce_1v1_mirage_invulnerability","definition":"CREATE TRIGGER enforce_1v1_mirage_invulnerability BEFORE UPDATE OF hearts, status, eliminated_at, death_order ON public.multiplayer_players FOR EACH ROW EXECUTE FUNCTION app_private.enforce_1v1_mirage_invulnerability()","enabled":"O","functionBody":"7b1177201d74a2f1b3aff40e6eea7df8"},{"name":"track_1v1_hidden_state","definition":"CREATE TRIGGER track_1v1_hidden_state BEFORE UPDATE OF hearts, wave ON public.multiplayer_players FOR EACH ROW EXECUTE FUNCTION app_private.track_1v1_hidden_state()","enabled":"O","functionBody":"52af6b5bcea7f64483d63e3a6c089bf1"},{"name":"zz_hardcore_duel_health_19","definition":"CREATE TRIGGER zz_hardcore_duel_health_19 BEFORE INSERT OR UPDATE OF hearts, max_hearts, character_key ON public.multiplayer_players FOR EACH ROW EXECUTE FUNCTION app_private.hardcore_duel_health_19()","enabled":"O","functionBody":"19ed5a060c89c56e91b27bc140bf6dbc"}]$trigger_pins$::jsonb;actual jsonb;t jsonb;begin
+ lock table public.multiplayer_players in access exclusive mode;
+ if exists(select 1 from pg_attribute where attrelid='public.multiplayer_players'::regclass and attname in('hearts','max_hearts')and atttypmod<>-1)then
+  select pinned into actual from (select jsonb_agg(jsonb_build_object('name',t.tgname,'definition',pg_get_triggerdef(t.oid),'enabled',t.tgenabled::text,'functionBody',md5(p.prosrc))order by t.tgname) from pg_trigger t join pg_proc p on p.oid=t.tgfoid where t.tgrelid='public.multiplayer_players'::regclass and not t.tgisinternal and exists(select 1 from pg_attribute a where a.attrelid=t.tgrelid and a.attname in('hearts','max_hearts')and a.attnum=any(t.tgattr)))snapshot(pinned);
+  if actual is distinct from expected then raise exception 'Health column trigger/source drift';end if;
+  for t in select value from jsonb_array_elements(expected)loop execute format('drop trigger %I on public.multiplayer_players',t->>'name');end loop;
+  alter table public.multiplayer_players alter column hearts type numeric,alter column max_hearts type numeric;
+  for t in select value from jsonb_array_elements(expected)loop execute t->>'definition';end loop;
+  select pinned into actual from (select jsonb_agg(jsonb_build_object('name',t.tgname,'definition',pg_get_triggerdef(t.oid),'enabled',t.tgenabled::text,'functionBody',md5(p.prosrc))order by t.tgname) from pg_trigger t join pg_proc p on p.oid=t.tgfoid where t.tgrelid='public.multiplayer_players'::regclass and not t.tgisinternal and exists(select 1 from pg_attribute a where a.attrelid=t.tgrelid and a.attname in('hearts','max_hearts')and a.attnum=any(t.tgattr)))snapshot(pinned);
+  if actual is distinct from expected then raise exception 'Health column trigger preservation mismatch';end if;
+ end if;
+end $health_type$;
 
 do $six$ begin if not exists(select 1 from pg_constraint where conrelid='public.extraction_catalog'::regclass and conname='six_class_catalog_class')then alter table public.extraction_catalog add constraint six_class_catalog_class check((item_type='character'and character_class in('runner','medic','tank','trickster','misc','chaotic'))or(item_type<>'character'and character_class is null));end if;end $six$;
 

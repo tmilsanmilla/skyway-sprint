@@ -27,6 +27,9 @@ export async function sixClassFixture(){const db=new PGlite();
   await db.exec(`create table ${table.schema}.${table.table}(${[...columns,...keys].join(',')})`);
  }
  for(const c of file("game-constraints.json"))await db.exec(`alter table ${c.schema}.${c.table_name} add constraint ${c.name} ${c.definition}`);
+
+ const healthTriggers=JSON.parse(fs.readFileSync(`${artifacts}/health-column-trigger-metadata.json`,'utf8')).structuredContent.data[2].rows;
+ for(const trigger of healthTriggers){await db.exec(trigger.function_definition);await db.exec(trigger.definition);}
  const targets=new Set(file("catalog-patch-manifest.json").map(f=>f.function.split('(')[0]));
  for(const f of functions)if(targets.has(f.schema+'.'+f.name))await db.exec(f.definition);
  await db.exec(fs.readFileSync(`${artifacts}/public.join_1v1_queue.sql`,"utf8"));
