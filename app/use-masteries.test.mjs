@@ -26,6 +26,25 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const profile=n=>({data:{active:null,quests:{},photons:n},error:null});
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};};
 
+test('stalled frame receipt uses the same bounded duration as its active timestamp',async()=>{
+ const batches=[];
+ const f=fixture(async(name,args)=>{
+  if(name==='get_mastery_profile')return profile(1);
+  if(name==='begin_mastery_session')return{data:'run-A',error:null};
+  if(name==='credit_mastery_events'){
+   batches.push(structuredClone(args.p_batch));
+   return args.p_batch.some(e=>e.type==='frame'&&(!Number.isFinite(e.seconds)||e.seconds<0||e.seconds>1))?{data:null,error:{message:'Invalid mastery frame'}}:profile(1);
+  }
+  throw new Error(name);
+ });
+ const hook=f.render('A');await tick();await hook.begin('run-A','endless','runner_ace');
+ hook.record({type:'frame',seconds:1.25,hp:1});
+ assert.equal(await hook.flush(),true);
+ assert.equal(batches[0][0].seconds,1);assert.equal(batches[0][0].at,1);
+ hook.record({type:'frame',seconds:.5,hp:1});await hook.flush();
+ assert.equal(batches[1][0].seconds,.5);assert.equal(batches[1][0].at,1.5);
+});
+
 test('failed or thrown batches retry exact sequence/time before newer events; only one request in flight',async()=>{
  const held=deferred(),calls=[];let attempt=0;
  const f=fixture(async(name,args)=>{

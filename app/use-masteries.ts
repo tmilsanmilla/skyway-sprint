@@ -112,7 +112,12 @@ export function useMasteries(userId: string | null) {
   },[apply,current,patch]);
   const record=useCallback((event:MasteryQuestEvent)=>{
     const queue=session.current;if(!queue||queue.ending||!current(queue.uid,queue.epoch))return;
-    if(event.type==="frame")queue.seconds+=Number.isFinite(event.seconds)?Math.max(0,Math.min(1,event.seconds)):0;
+    if(event.type==="frame"){
+      // The receipt and its timestamp must credit the identical bounded time.
+      // Keeping an oversized raw duration would poison every exact retry.
+      const seconds=Number.isFinite(event.seconds)?Math.max(0,Math.min(1,event.seconds)):0;
+      event={...event,seconds};queue.seconds+=seconds;
+    }
     queue.events.push({...event,seq:++queue.sequence,at:queue.seconds});
     if(!queue.trial)queue.preview=reduceMasteryQuest(queue.preview,queue.character,event);
   },[current]);

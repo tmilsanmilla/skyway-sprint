@@ -10646,7 +10646,7 @@ function SkywayGame() {
       applyOverhaulEffects();
       const rawProgressGain = (activeElapsedMs / 12) * (1 + wave * 0.01);
       masteryFrameMsRef.current+=Math.min(5000,activeElapsedMs);
-      if(masteryFrameMsRef.current>=500){recordMastery({type:"frame",seconds:masteryFrameMsRef.current/1000,hp:state.current.hearts});masteryFrameMsRef.current=0;}
+      while(masteryFrameMsRef.current>=500){recordMastery({type:"frame",seconds:.5,hp:state.current.hearts});masteryFrameMsRef.current-=500;}
       let waveProgressGain = activeElapsedMs / (1000*overhaulWaveSeconds(overhaul?.name||"Ace",isOnlineVersus)) * WAVE_PROGRESS_LENGTH;
       let characterScoreMultiplier = overhaulRef.current?.modifiers().score ?? 1;
       if(mastered&&activeCharacter==="runner_dash")characterScoreMultiplier*=1.2/1.06;
