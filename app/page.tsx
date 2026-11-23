@@ -4306,7 +4306,14 @@ function SkywayGame() {
           await refreshMasteries();
           if(uid!==userIdRef.current||resetIntent!==progressionResetIntentRef.current)return;
         }
-        await beginMasterySession(progressionRunIdRef.current,"endless",runCharacter);
+        const uid=userIdRef.current,runId=progressionRunIdRef.current;
+        const {error:bindError}=await supabase.rpc("bind_six_class_run_v1",{p_run_id:runId,p_mode:mode,p_character_key:runCharacter});
+        if(uid!==userIdRef.current||resetIntent!==progressionResetIntentRef.current||runId!==progressionRunIdRef.current)return;
+        if(bindError){showAbilityNotice("CHARACTER SAVE COULD NOT START · RETRY",1800);return;}
+        if(!nextRunIsTestMode){
+          const sessionId=await beginMasterySession(runId,"endless",runCharacter);
+          if(!sessionId){showAbilityNotice("QUEST SAVE COULD NOT START · RETRY",1800);return;}
+        }
         if(resetIntent!==progressionResetIntentRef.current)return;
       }
       salveUsesRef.current=0;
@@ -4394,7 +4401,7 @@ function SkywayGame() {
       resetCharacterAbilityState();
       overhaulRef.current?.close();
       overhaulRef.current=new OverhaulRuntime({key:runCharacter,owned:ownedCharacterKeys,online:mapOverride!==undefined&&isOnlineVersus,laneCount:runMapRules.laneCount,map:runMapId,opponentKey:versusOpponentCharacter||undefined,legalKeys:OVERHAUL_CHARACTERS.filter(c=>isCharacterClassAllowed(runMapId,c.classKey)).map(c=>c.key)});
-      overhaulRef.current.synchronize(runStartingHearts,runMapHealth.maxHp,runCenterLane);
+      overhaulRef.current.synchronize(runStartingHearts,mode==="hardcore"?1:runMapHealth.maxHp,runCenterLane);
       overhaulRewardRef.current={gems:0,stardust:0};overhaulNextWaveRef.current=null;setOverhaulChallenge(null);
 
       recordMastery({type:"run-start"});
@@ -8614,8 +8621,10 @@ function SkywayGame() {
     if (!running || paused || wavePause) return;
     let raf = 0,
       prev = performance.now();
+    const resetFrameClock=()=>{prev=performance.now();};
+    document.addEventListener("visibilitychange",resetFrameClock);
     const tick = (now: number) => {
-      const activeElapsedMs=Math.max(0,now-prev);
+      const activeElapsedMs=Math.min(1000,Math.max(0,now-prev));
       const dt=Math.min(32,activeElapsedMs);
       prev=now;
       const overhaul=overhaulRef.current;
@@ -10788,7 +10797,7 @@ function SkywayGame() {
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {document.removeEventListener("visibilitychange",resetFrameClock);cancelAnimationFrame(raf);};
   }, [
     running,
     paused,
