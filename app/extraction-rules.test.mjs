@@ -7,8 +7,8 @@ import { HARDCORE_SCORE_MULTIPLIER, endlessCharacter } from "./progression-rules
 test("booster box prices, pull mixes, level gates, and 99-box maximum match exactly", () => {
   assert.equal(EXTRACTION_MAX_QUANTITY,99);
   for (const [kind,cost,minLevel,counts] of [
-    ["normal",11,0,{normal:10}], ["rare",19,10,{normal:7,rare:2,bonus:2}],
-    ["legendary",27,20,{normal:5,rare:3,bonus:3,legendary:1}],
+    ["normal",11,0,{normal:14}], ["rare",19,10,{normal:12,bonus:2,rare:2}],
+    ["legendary",27,20,{normal:10,bonus:3,rare:3,legendary:2}],
   ]) {
     const box=EXTRACTION_BOXES[kind];
     assert.equal(box.cost,cost); assert.equal(box.minLevel,minLevel);

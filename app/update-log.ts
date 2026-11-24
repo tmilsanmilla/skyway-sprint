@@ -15,6 +15,17 @@ export const VISIBLE_UPDATE_LIMIT = Number.POSITIVE_INFINITY;
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
+    id:"2026-11-23-track-and-field",publishedAt:"2026-11-24T00:00:00Z",title:"TRACK AND FIELD",
+    changes:[
+      "Solo run progress is saved after the run, with pending results retained for safe retry. Hardcore starts and stays at one maximum HP.",
+      "Flare is Epic. Jester is Rare and joins Trickster. Roster rows are grouped by rarity, with double-width Mythics and clearer character/mastery descriptions.",
+      "Unknown Map and Pixel Pulse sign-in are removed. Existing linked players keep their Skyway account and progress using Skyway sign-in.",
+      "Photon characters now have twelve looks each including default; Laserdrome has fifty-five themes including default. Mystery boxes and extraction packs use the revised rewards.",
+      "Photon Race costs 1,000 Photons plus 1,000 Stardust. Previous purchases are refunded 1,000 Photons once. Ranked begins a new season at 1,500 ELO with zero wins and losses; historical results remain archived.",
+      "Classic returns to a gray road. Azure preserves the former blue look as an optional environment. Trials use distinct normal obstacle speeds and show the actual failure reason.",
+    ],
+  },
+  {
     id: "2026-11-21-six-class-overhaul",
     publishedAt: "2026-11-22T02:55:14Z",
     title: "SIX CLASSES + PHOTON RACE",
@@ -25,16 +36,7 @@ export const UPDATE_LOG: readonly UpdateLogEntry[] = [
       "Mastery effects belong to their original characters; separate Inventory flairs are removed.",
     ],
   },
-  {
-    id: "2026-11-18-ranked-unknown-map",
-    publishedAt: "2026-11-18T22:38:35Z",
-    title: "RANKED UNKNOWN MAP",
-    changes: [
-      "Ranked map bans now show three named arenas and one Unknown Map card. Ban the mystery card just like any other map.",
-      "If Unknown Map is selected, both runners see the same arena during the four-second reveal before character selection. Forced-Ace arenas still skip character selection.",
-      "The revealed arena keeps its normal lanes, hazards, character restrictions and scoring. Unknown Map does not appear in Endless, Photon Fury or casual modes.",
-    ],
-  },
+
   {
     id: "2026-11-17-photon-balance-and-mastery-toggle",
     publishedAt: "2026-11-18T00:17:02Z",

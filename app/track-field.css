@@ -1,0 +1,26 @@
+/* Track and Field: map defaults remain map-specific; Azure is an owned look. */
+.mode-select{grid-template-columns:repeat(2,minmax(0,1fr));margin:0 auto 20px;justify-self:center;align-self:center;max-width:600px}
+.playfield.map-classic{--map-road:#626667;--map-road-alt:#6b7070;--map-edge:#d4d2bf;--map-lane:#f3edce;--map-sky-top:#92c979;--map-sky-bottom:#d7e5ac;--map-scenery:#4c8544}
+.playfield.map-volcano{--map-road:#30272a;--map-road-alt:#38272b;--map-edge:#f9672d;--map-sky-top:#38202d;--map-sky-bottom:#a5482c;--map-scenery:#582d2c}
+.playfield.map-terminal{--map-road:#585b5c;--map-road-alt:#636769;--map-edge:#f6cf50;--map-sky-top:#9c998a;--map-sky-bottom:#ddd5b6;--map-scenery:#6d7476}
+.map-terminal:not([class*="environment-"])>.road::after{background:repeating-linear-gradient(0deg,transparent 0 50px,#363a3c 50px 55px);border-inline:5px solid #b6b9b4}
+.playfield.environment-azure_map{--map-road:#265664;--map-road-alt:#2b626d;--map-edge:#6ce2bd;--map-lane:#f8e9b7;background:#59c5df}
+.environment-azure_map>.road{background:repeating-linear-gradient(0deg,#265664 0 48px,#2b626d 48px 96px)}
+.environment-azure_map>.sky{background:linear-gradient(155deg,#59c5df,#d5f4d4)}
+.environment-azure_map>.horizon span{background:#3ba77d}
+.inventory-roster{display:block}
+.inventory-rarity-group{margin:16px 0}
+.inventory-rarity-group h5{margin:0 0 7px;font-size:11px}
+.inventory-rarity-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.inventory-rarity-row>button{min-width:0;max-width:100%;padding:8px;display:grid;place-items:center;text-align:center;overflow-wrap:anywhere}
+.inventory-rarity-row>button[data-rarity="mythic"]{grid-column:span 2}
+.inventory-character-name em{display:none}
+.character-portrait{position:relative}
+.character-portrait:has(.overhaul-character-art)>i{visibility:hidden}
+.character-portrait .overhaul-character-art{position:absolute;inset:2px;width:calc(100% - 4px);height:calc(100% - 4px)}
+.overhaul-art-body>.head,.overhaul-art-body>.body,.overhaul-art-body>.arm,.overhaul-art-body>.leg{display:none}
+.photon-skin-simplistic .photon-suit-emblem{opacity:.7;font-size:8px}
+.photon-skin-variant-two .body{border-inline:3px solid var(--photon-skin-color);filter:brightness(1.15)}
+.photon-skin-mantle{position:absolute;inset:36% -20% 5%;z-index:-1;clip-path:polygon(20% 0,80% 0,100% 100%,50% 80%,0 100%);background:var(--photon-skin-color);opacity:.65}
+.photon-skin-satellite{position:absolute;top:-15%;right:-25%;width:8px;height:8px;border:2px solid var(--photon-skin-color);transform:rotate(45deg);box-shadow:0 0 9px var(--photon-skin-color)}
+@media(max-width:700px){.mode-select{grid-template-columns:repeat(2,minmax(0,1fr));width:100%;margin-inline:auto}.inventory-rarity-row{gap:4px}.inventory-rarity-row>button{padding:5px;font-size:10px}.inventory-character-name b{font-size:10px}}

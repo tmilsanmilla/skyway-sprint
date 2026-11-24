@@ -4,8 +4,8 @@ import {supabase} from "./skyway-client";
 import {emptyMasteryAccount, reduceMasteryQuest, type MasteryAccountState, type MasteryKey, type MasteryQuestEvent} from "./mastery-rules";
 
 type ReceiptEvent = MasteryQuestEvent & {seq:number;at:number};
-export type MasterySyncStatus = "idle" | "starting" | "saved" | "pending" | "syncing" | "retrying";
-type SessionQueue = {uid:string;epoch:number;id:string;character:string;trial:boolean;preview:MasteryAccountState;events:ReceiptEvent[];batch:ReceiptEvent[]|null;failed:boolean;sequence:number;seconds:number;flight:Promise<boolean>|null;ending:boolean;endRecorded:boolean};
+export type MasterySyncStatus = "idle" | "starting" | "saved" | "pending" | "syncing" | "retrying" | "buffered";
+type SessionQueue = {uid:string;epoch:number;id:string;character:string;trial:boolean;preview:MasteryAccountState;events:ReceiptEvent[];batch:ReceiptEvent[]|null;failed:boolean;buffered:boolean;sequence:number;seconds:number;flight:Promise<boolean>|null;ending:boolean;endRecorded:boolean};
 type View = {owner:string|null;account:MasteryAccountState;liveAccount:MasteryAccountState;syncStatus:MasterySyncStatus;pendingEvents:number;flair:string|null;randomizer:boolean;photons:number;busy:boolean;error:string;trialFailed:boolean;trialReplay:boolean};
 const emptyView = (owner:string|null=null):View => {const account=emptyMasteryAccount();return{owner,account,liveAccount:account,syncStatus:"idle",pendingEvents:0,flair:null,randomizer:false,photons:0,busy:false,error:"",trialFailed:false,trialReplay:false};};
 const SYNC_ERROR="Quest progress could not sync. It will retry.";
@@ -34,7 +34,7 @@ export function useMasteries(userId: string | null) {
   const publish=useCallback((queue:SessionQueue)=>{
     if(session.current!==queue||!current(queue.uid,queue.epoch))return;
     const pendingEvents=queue.events.length+(queue.batch?.length??0);
-    patch(queue.uid,queue.epoch,{liveAccount:queue.preview,pendingEvents,syncStatus:queue.failed?"retrying":queue.flight?"syncing":pendingEvents?"pending":"saved"});
+    patch(queue.uid,queue.epoch,{liveAccount:queue.preview,pendingEvents,syncStatus:queue.failed?"retrying":queue.flight?"syncing":pendingEvents?"pending":queue.buffered?"buffered":"saved"});
   },[current,patch]);
   const apply=useCallback((data:unknown,uid:string,generation:number,acknowledgedBatch=false)=>{
     if(!current(uid,generation)||!data||typeof data!=="object")return;
@@ -105,7 +105,7 @@ export function useMasteries(userId: string | null) {
       // Resetting these would silently replay ignored events until the old
       // counters were reached, or cause a backwards-clock rejection.
       if(data?.profile)apply(data.profile,uid,generation);
-      session.current={uid,epoch:generation,id,character,trial:trial!==null,preview:confirmed.current,events:[],batch:null,failed:false,sequence,seconds,flight:null,ending:false,endRecorded:false};
+      session.current={uid,epoch:generation,id,character,trial:trial!==null,preview:confirmed.current,events:[],batch:null,failed:false,buffered:false,sequence,seconds,flight:null,ending:false,endRecorded:false};
       patch(uid,generation,{trialReplay:trial!==null&&data?.trial_replay===true,error:"",syncStatus:"saved",liveAccount:confirmed.current});
       return id;
     }catch{if(beginIntent.current===intent)patch(uid,generation,{error:"Mastery session could not start. Please retry.",syncStatus:"retrying"});return null;}
@@ -133,7 +133,7 @@ export function useMasteries(userId: string | null) {
           const {data,error:failure}=await supabase.rpc("credit_mastery_events",{p_session_id:queue.id,p_batch:batch});
           if(!valid())return false;
           if(failure)throw new Error(failure.message);
-          queue.batch=null;queue.failed=false;
+          queue.batch=null;queue.failed=false;queue.buffered=data?.buffered===true;
           apply(data,queue.uid,queue.epoch,true);
           setSnapshot(previous=>current(queue.uid,queue.epoch)&&previous.owner===queue.uid&&previous.error===SYNC_ERROR?{...previous,error:""}:previous);
         }catch{
@@ -158,8 +158,9 @@ export function useMasteries(userId: string | null) {
     queue.ending=true;
     if(!queue.endRecorded){queue.events.push({type:"run-end",seq:++queue.sequence,at:queue.seconds});queue.endRecorded=true;if(!queue.trial)queue.preview=reduceMasteryQuest(queue.preview,queue.character,{type:"run-end"});}
     if(!await flushQueue(queue)||session.current!==queue||queue.events.length)return false;
-    session.current=null;patch(queue.uid,queue.epoch,{liveAccount:confirmed.current,pendingEvents:0,syncStatus:"idle"});return true;
-  },[flushQueue,patch]);
+    if(queue.trial&&queue.buffered){const result=await supabase.rpc("settle_solo_trial_exit_v1",{p_session_id:queue.id});if(result.error)return false;if(result.data?.mastery)apply(result.data.mastery,queue.uid,queue.epoch);}
+    session.current=null;patch(queue.uid,queue.epoch,{liveAccount:confirmed.current,pendingEvents:0,syncStatus:queue.buffered?"buffered":"idle"});return true;
+  },[apply,flushQueue,patch]);
   const finish=useCallback(async()=>{
     const queue=session.current;if(!queue||!current(queue.uid,queue.epoch))return false;
     queue.ending=true;
@@ -168,7 +169,7 @@ export function useMasteries(userId: string | null) {
       const {data,error:failure}=await supabase.rpc("finish_mastery_trial",{p_session_id:queue.id});
       if(session.current!==queue||!current(queue.uid,queue.epoch))return false;
       if(failure){patch(queue.uid,queue.epoch,{error:failure.message});return false;}
-      apply(data,queue.uid,queue.epoch);session.current=null;patch(queue.uid,queue.epoch,{liveAccount:confirmed.current,pendingEvents:0,syncStatus:"idle"});await refresh();return current(queue.uid,queue.epoch);
+      apply(data?.mastery??data,queue.uid,queue.epoch);session.current=null;patch(queue.uid,queue.epoch,{liveAccount:confirmed.current,pendingEvents:0,syncStatus:"idle"});await refresh();return current(queue.uid,queue.epoch);
     }catch{patch(queue.uid,queue.epoch,{error:"Mastery could not be confirmed. Please retry."});return false;}
   },[apply,current,flushQueue,patch,refresh]);
   useEffect(()=>{

@@ -9,7 +9,7 @@ export const PROTECTED_STARTER_CHARACTERS = new Set([
 export const PROTECTED_PHOTON_CHARACTERS = new Set([
   "photon_magician", "photon_wizard", "photon_bluff", "photon_bell",
 ]);
-export const ADMIN_SKIN_TIERS = ["intermediate", "pro", "ascendant", "divine", "immortal"] as const;
+export const ADMIN_SKIN_TIERS = ["simplistic", "intermediate", "intermediate_2", "pro", "pro_2", "ascendant", "ascendant_2", "divine", "divine_2", "immortal", "immortal_2"] as const;
 export type AdminCommand = {
   action: "grant" | "revoke" | "set" | "check" | "ban" | "unban" | "rpta" | "rptb" | "rptc" | "photon_grant" | "photon_revoke" | "appeal_accept_all" | "appeal_reject_all" | "appeal_count" | "ranked_owned" | "ranked_elo" | "ranked_games" | "mastery_reset";
   targetText?: string;

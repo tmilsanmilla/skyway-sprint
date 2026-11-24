@@ -15,7 +15,6 @@ import { AdminPlayerEditor } from "./admin-player-editor";
 import { AdminCommandDocumentation } from "./admin-command-documentation";
 import { isMigrationMaintenanceMode } from "./migration-maintenance";
 import { accountNoticeTone } from "./account-presentation";
-import { AccountAvatar } from "./account-avatar";
 import { AccountPreferencesPanel } from "./account-preferences-panel";
 import { useAccountPreferences } from "./use-account-preferences";
 import { getRecentUpdates } from "./update-log";
@@ -32,9 +31,10 @@ const OverhaulChallengePanel=dynamic(()=>import("./overhaul-challenge-panel").th
 import { PhotonFury } from "./photon-fury";
 import { QuestHub } from "./quest-hub";
 import { useMasteries } from "./use-masteries";
+import {setSoloRunView,retryPendingSoloRuns,captureSoloRun} from "./skyway-client";
 import { CharacterMasteryToggle } from "./mastery-menu";
 import { getFlairEffects } from "./flair-rules";
-import { roundedHealthForConditions, strideShieldSeconds, salveWaveHeal, salveLowHealthMultipliers, guardBlueDamage, type MasteryKey } from "./mastery-rules";
+import { masteryDefinition, roundedHealthForConditions, strideShieldSeconds, salveWaveHeal, salveLowHealthMultipliers, guardBlueDamage, type MasteryKey } from "./mastery-rules";
 import { createMasteryRuntime, startMasteryWave, decorateMasteryItem, pruneMasteryRuntime, resolveBloomCollection, resolveMasteryMiss, consumeBloomAbility, guardBlueGemPickup, vaultAvailable, resolveMasteryVault, resolveGuardContact, smokeNearMissSeconds, spendLocalSmoke, smokeOverlayBands, type SmokeStrength } from "./mastery-engine";
 import "./mastery.css";
 import { MasteryTrialDisclaimer } from "./mastery-trial";
@@ -1282,8 +1282,7 @@ const orderRosterWithStarterFirst = (
 ) =>
   [...roster].sort(
     (left, right) =>
-      Number(isStarterCharacter(right.key)) -
-      Number(isStarterCharacter(left.key)),
+      RARITY_ORDER[left.rarity] - RARITY_ORDER[right.rarity] || Number(isStarterCharacter(right.key)) - Number(isStarterCharacter(left.key)),
   );
 const isCharacterOwned = (owned: Unlock[], characterKey?: string | null) =>
   Boolean(
@@ -3054,12 +3053,16 @@ function SkywayGame() {
         }
         if (userIdRef.current !== awardUserId) return;
         if(!result.error){
+          void refreshMasteries();
           const extra=await supabase.rpc("finish_six_class_run_v1",{p_run_id:runId});
           if(userIdRef.current!==awardUserId)return;
           if(extra.error)result=extra;else result={...result,data:{...result.data,...extra.data}};
         }
         const { data, error } = result;
         if (!error) {
+          const actualGems=Number(data?.total_gems),actualDust=Number(data?.stardust);
+          if(Number.isSafeInteger(actualGems)&&actualGems>=0){gemsRef.current=actualGems;setGems(actualGems);}
+          if(Number.isSafeInteger(actualDust)&&actualDust>=0)setStardust(actualDust);
           applyProgressionPayload(data, awardUserId);
           if (progressionRunIdRef.current === runId) setRunXpTotal(
             Math.max(
@@ -3106,6 +3109,21 @@ function SkywayGame() {
         progressionAwardPromiseRef.current = null;
     });
   }, [applyProgressionPayload, guest, over, playScope, progressionRunVersion,endMasterySession]);
+  useEffect(()=>{
+    if(!authReady||guest||running||!userIdRef.current)return;
+    const uid=userIdRef.current;
+    void retryPendingSoloRuns().then(async results=>{
+      if(userIdRef.current!==uid||!results.some(r=>!r.error))return;
+      void refreshProgression(uid);void refreshMasteries();
+      // A recovered response can be an older idempotent receipt. Re-read the
+      // current wallet instead of replacing newer balances with cached totals.
+      const {data,error}=await supabase.from("player_stats").select("total_gems,stardust").eq("user_id",uid).maybeSingle();
+      if(error||!data||userIdRef.current!==uid||state.current.running)return;
+      const gems=Number(data.total_gems),dust=Number(data.stardust);
+      if(Number.isSafeInteger(gems)&&gems>=0){gemsRef.current=gems;setGems(gems);}
+      if(Number.isSafeInteger(dust)&&dust>=0)setStardust(dust);
+    }).catch(()=>{/* The original pending receipt stays available for retry. */});
+  },[authReady,guest,running,refreshProgression,refreshMasteries]);
   useEffect(() => {
     if (running && !over) {
       setRunXpTotal(null);
@@ -3165,10 +3183,16 @@ function SkywayGame() {
       )
         return null;
       if (blocking) setPlayerAccessChecking(true);
-      const { data, error } = await supabase.rpc("register_player_device", {
-        p_device_token: getOrCreateDeviceToken(),
-        p_label: "Web browser",
-      });
+      const requestDevice = () => Promise.resolve(supabase.rpc("register_player_device", {
+        p_device_token: getOrCreateDeviceToken(), p_label: "Web browser",
+      })).catch(()=>({data:null,error:{message:"The account connection is temporarily unavailable. Retry connection."}}));
+      let response=await requestDevice();
+      for(let attempt=0;attempt<2&&response.error;attempt++){
+        await new Promise(resolve=>setTimeout(resolve,400*(attempt+1)));
+        if(userIdRef.current!==requestUserId||authSessionUserIdRef.current!==requestUserId)return null;
+        response=await requestDevice();
+      }
+      const {data,error}=response;
       if (
         userIdRef.current !== requestUserId ||
         authSessionUserIdRef.current !== requestUserId
@@ -4251,7 +4275,7 @@ function SkywayGame() {
       if (trackProgression && progressionAwardPromiseRef.current)
         await progressionAwardPromiseRef.current;
       if (resetIntent !== progressionResetIntentRef.current) return;
-      if(!await endMasterySession()){showAbilityNotice("QUEST PROGRESS IS STILL SYNCING · TRY AGAIN",1400);return;}
+      await endMasterySession();
       if (resetIntent !== progressionResetIntentRef.current) return;
       if (trackProgression && userIdRef.current) {
         const startingUserId = userIdRef.current;
@@ -4649,7 +4673,7 @@ function SkywayGame() {
           if(error.code||!/network|fetch|connection|timeout|502|503|504/i.test(error.message))break;
         }catch{if(!current())return false;}
       }
-      if(current())showAbilityNotice("CHARACTER SAVE INTERRUPTED · MATCH WILL RECONCILE",2200);
+      if(current())console.error("Character checkpoint pending after connection interruption");
       return false;
     });overhaulNetworkQueueRef.current=task;return task;
   },[showAbilityNotice]);
@@ -4658,6 +4682,7 @@ function SkywayGame() {
     return queueOverhaulNetwork(runtime,runtime.online?"six_class_checkpoint_v1":"record_six_class_run_v1",{p_nonce:crypto.randomUUID(),p_checkpoint:checkpoint});
   },[queueOverhaulNetwork]);
   overhaulSaveRef.current=saveOverhaulCheckpoint;
+  useEffect(()=>{setSoloRunView(()=>({runId:progressionRunIdRef.current,score:scoreRef.current,wave:waveRef.current,gems:gemsRef.current,checkpoint:overhaulRef.current?.checkpoint()??null}));const timer=setInterval(captureSoloRun,100);return()=>{clearInterval(timer);setSoloRunView(null);};},[]);
   useEffect(()=>{
     const runtime=overhaulRef.current,oracle=abilityChoice?.kind==="oracle-prophecy"||abilityChoice?.kind==="oracle-passive";
     const previous=overhaulLegacyPhaseRef.current;
@@ -11828,7 +11853,12 @@ function SkywayGame() {
       setUserEmail(user?.email ?? null);
       if (user) {
         const sessionUserId = user.id;
-        const sessionVerificationError = await verifyCurrentNeonSession();
+        let sessionVerificationError = await verifyCurrentNeonSession();
+        for(let attempt=0;attempt<2&&sessionVerificationError;attempt++){
+          await new Promise(resolve=>setTimeout(resolve,400*(attempt+1)));
+          if(userIdRef.current!==sessionUserId||authSessionGenerationRef.current!==generation)return;
+          sessionVerificationError=await verifyCurrentNeonSession();
+        }
         if (
           userIdRef.current !== sessionUserId ||
           authSessionGenerationRef.current !== generation
@@ -11848,7 +11878,7 @@ function SkywayGame() {
         }
         await refreshPlayerAccess(false, sessionUserId);
         if (authSessionGenerationRef.current !== generation) return;
-        const accountReads = await Promise.resolve().then(() => Promise.all([
+        const readAccount = () => Promise.resolve().then(() => Promise.all([
           supabase
             .from("player_stats")
             .select("total_gems,high_score,stardust")
@@ -11873,13 +11903,19 @@ function SkywayGame() {
           supabase.rpc("get_player_progression"),
           isPixelPulseAvailable ? supabase.rpc("get_my_pixel_identity") : Promise.resolve({ data: null }),
         ])).catch(() => null);
+        let accountReads = await readAccount();
+        for(let attempt=0;attempt<2 && (!accountReads || accountReads.some(result=>"error" in result && result.error));attempt++){
+          await new Promise(resolve=>setTimeout(resolve,400*(attempt+1)));
+          if(userIdRef.current!==sessionUserId||authSessionGenerationRef.current!==generation)return;
+          accountReads=await readAccount();
+        }
         if (
           userIdRef.current !== sessionUserId ||
           authSessionGenerationRef.current !== generation
         )
           return;
         if (!accountReads || accountReads.some(result => "error" in result && result.error)) {
-          setPlayerAccessError("Your saved account data could not be loaded. Nothing has been reset. Try again.");
+          setPlayerAccessError("Account connection is taking longer than expected. Retry connection.");
           setPlayerAccessChecking(false); setAuthReady(true); return;
         }
         const [{ data: firstStats }, { data: profile }, { data: admin }, { data: role },
@@ -11891,7 +11927,7 @@ function SkywayGame() {
           .catch(() => ({ data: null }))).data;
         if (userIdRef.current !== sessionUserId || authSessionGenerationRef.current !== generation) return;
         if (!stats || !Array.isArray(owned) || !progression || typeof progression !== "object") {
-          setPlayerAccessError("Your saved account data could not be loaded. Nothing has been reset. Try again.");
+          setPlayerAccessError("Account connection is taking longer than expected. Retry connection.");
           setPlayerAccessChecking(false); setAuthReady(true); return;
         }
         if (stats) {
@@ -14127,10 +14163,6 @@ function SkywayGame() {
     >
       {phoenixClip&&running?<div className="phoenix-song-panel"><OverhaulSongPlayer clip={PHOENIX_CLIP} volume={musicVolume} onComplete={()=>{setPhoenixClip(false);if(state.current.running)void audioEngine.start(soundtrack);}}/><button onClick={()=>{setPhoenixClip(false);if(state.current.running)void audioEngine.start(soundtrack);}}>RETURN TO GAME MUSIC</button></div>:null}
       {overhaulChallenge?<OverhaulChallengePanel key={`${overhaulChallenge.runtime.originalKey}:${overhaulChallenge.id}`} kind={overhaulChallenge.kind} blocked={!!overhaulChallenge.runtime.interference} data={overhaulChallenge.data} choices={overhaulChallenge.runtime.choiceCharacters(overhaulChallenge.kind)} online={overhaulChallenge.runtime.online} onResolve={(kind,value)=>resolveOverhaulChallenge(overhaulChallenge.runtime,kind,value,overhaulChallenge.id)}/>:null}
-      {!guest && <button className="account-avatar-control" aria-label={`Account settings for ${username || "your account"}`}
-        disabled={isVersusRun} onClick={() => { cancelPendingProgressionStart(); setSettingsOpen(true); setPauseMenuOpen(false); setPaused(true); }}>
-        <AccountAvatar name={username || userEmail || "?"} color={avatarColor} font={avatarFont}/>
-      </button>}
       <div
         className={`game-layout view-${mainView}${showPlayerLevel ? " has-player-level" : ""}`}
       >
@@ -14306,6 +14338,7 @@ function SkywayGame() {
         )}
         {activeTrial ? <MasteryTrialGame character={activeTrial} replay={masteries.trialReplay} onEvent={recordMastery} onFinish={masteries.finish} serverFailed={masteries.trialFailed} onExit={()=>void endMasterySession().then(ok=>{if(ok){setActiveTrial(null);setMainView("quests");}})} /> : mainView === "quests" ? <QuestHub state={masteries.account} owned={ownedCharacterKeys} photons={masteries.photons} busy={masteries.busy||running||isVersusRun||!!activeTrial} syncStatus={masteries.syncStatus} error={masteries.error} onPurchase={key=>void masteries.purchase(key)} onTrial={key=>setTrialRequest(key)} onToggle={(key,on)=>void masteries.toggle(key,"mastery",on)} onRetry={()=>void masteries.flush()}/> : mainView === "photon" ? (
           <PhotonFury
+            stardust={stardust}
             key={userIdRef.current ?? "guest"}
             userId={guest ? null : userIdRef.current}
             level={playerProgression.level}
@@ -14544,7 +14577,7 @@ function SkywayGame() {
                           <b>MAP RULES</b>
                           <ul>
                             {activeMapGuide.rules.map((rule) => (
-                              <li key={rule}>{rule}</li>
+                              <li key={rule}>{rule.charAt(0).toUpperCase() + rule.slice(1)}</li>
                             ))}
                           </ul>
                         </section>
@@ -16375,7 +16408,7 @@ function SkywayGame() {
                         )}
                       {over && !guest && !isVersusRun && (
                         <div className="run-xp-summary" role="status">
-                          {runXpError ? "XP COULD NOT BE SAVED YET" : runXpTotal === null
+                          {runXpError ? "SAVE PENDING" : runXpTotal === null
                             ? "SAVING XP…"
                             : `+${runXpTotal.toLocaleString()} XP · SCORE + GEMS`}
                           {runXpError && <button type="button" onClick={() => {
@@ -17407,7 +17440,8 @@ function SkywayGame() {
                           )}
                         </p>
                         <div className="inventory-roster">
-                          {roster.map((character) => {
+                          {(["common","uncommon","rare","epic","legendary","mythic"] as const).map(rarity=><section className="inventory-rarity-group" key={rarity} aria-label={`${rarity} characters`}><h5>{rarity.toUpperCase()}</h5><div className="inventory-rarity-row">
+                          {roster.filter(character=>character.rarity===rarity).map((character) => {
                             const owned = isCharacterOwned(
                               unlocks,
                               character.key,
@@ -17425,6 +17459,7 @@ function SkywayGame() {
                             return (
                               <button
                                 key={character.key}
+                                data-rarity={character.rarity}
                                 className={`${focused ? "focused" : ""}${
                                   equipped ? " equipped" : ""
                                 }${available ? "" : " locked"}${
@@ -17454,7 +17489,7 @@ function SkywayGame() {
                                   className={`character-portrait ${character.key}`}
                                   aria-hidden="true"
                                 >
-                                  <i />
+                                  <i /><OverhaulCharacterArt character={character.key} />
                                 </span>
                                 <span className="inventory-character-name">
                                   <b>{character.name}</b>
@@ -17480,7 +17515,7 @@ function SkywayGame() {
                                 </small>
                               </button>
                             );
-                          })}
+                          })}</div></section>)}
                         </div>
                         {sectionFocused && focusedCharacter && (
                           <div
@@ -17495,7 +17530,7 @@ function SkywayGame() {
                                 className={`character-portrait ${focusedCharacter.key}`}
                                 aria-hidden="true"
                               >
-                                <i />
+                                <i /><OverhaulCharacterArt character={focusedCharacter.key} />
                               </span>
                               <div>
                                 <small>
@@ -17534,7 +17569,7 @@ function SkywayGame() {
                             </div>
                             <section className="character-ability-explainer">
                               <header>
-                                <small>ABILITY</small>
+                                <small>BASE ABILITY</small>
                                 <b>{focusedCharacterAbility?.name}</b>
                               </header>
                               <ul>
@@ -17542,9 +17577,11 @@ function SkywayGame() {
                                   .split(/(?<=[.!?])\s+|;\s+/)
                                   .filter(Boolean)
                                   .map((rule) => (
-                                    <li key={rule}>{rule}</li>
+                                    <li key={rule}>{rule.charAt(0).toUpperCase() + rule.slice(1)}</li>
                                   ))}
                               </ul>
+                              <h5>MASTERY CHANGES</h5>
+                              <p>{masteryDefinition(focusedCharacter.key)?.ability ?? "No mastery changes are available for this character."}</p>
                             </section>
                             <details className="inventory-subsection character-cosmetics-subsection">
                               <summary className="inventory-subsection-heading">
@@ -17688,7 +17725,7 @@ function SkywayGame() {
                   : adminTab === "admins"
                     ? "ADMIN 02 · ADMINS"
                     : adminTab === "players"
-                      ? "ADMIN 03 · PLAYER LOOKUP + COMMANDS"
+                      ? "ADMIN 03 · COMMAND LINE"
                       : adminTab === "appeals"
                         ? "ADMIN 04 · APPEALS + BANS"
                         : "ADMIN 05 · DOCUMENTATION"}
@@ -17714,7 +17751,7 @@ function SkywayGame() {
                     setPaused(true);
                   }}
                 >
-                  03 · PLAYER LOOKUP
+                  03 · COMMAND LINE
                 </button>
                 <button
                   className={adminTab === "appeals" ? "active" : ""}

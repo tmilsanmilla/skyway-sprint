@@ -24,6 +24,7 @@ function setup(overrides={}){
   applyProgressionPayload:data=>events.push(['progression',data]),supabase:{from:response,rpc:response},
  };
  for(const name of new Set(arrow.getText(ast).match(/\bset[A-Z]\w*/g)))context[name]=value=>events.push([name,value]);
+ context.setTimeout=(callback)=>{queueMicrotask(callback);};
  vm.createContext(context);vm.runInContext(body,context);
  return {context,events,calls,run:()=>context.applySession({user:actor},1)};
 }
@@ -32,17 +33,19 @@ test('actual page hydrate restores saved account data on a fresh client',async()
 });
 for(const relation of ['player_stats','player_profiles','player_unlocks','player_loadouts','get_player_progression'])test('actual page refuses failed '+relation+' instead of displaying an empty account',async()=>{
  const h=setup({[relation]:{error:{message:'synthetic unavailable'}}});await h.run();
- assert(h.events.some(([k,v])=>k==='setPlayerAccessError'&&v.includes('Nothing has been reset')));
+ assert(h.events.some(([k,v])=>k==='setPlayerAccessError'&&v.includes('Retry connection')));
  assert(!h.events.some(([k])=>['setGems','setUnlocks','setUsernameRequired','progression'].includes(k)));
 });
 test('new-account provisioning race rereads stats and never guesses zero',async()=>{
  let count=0;const h=setup({player_stats:()=>++count===1?null:valid.player_stats});await h.run();assert.equal(count,2);assert(h.events.some(([k,v])=>k==='setGems'&&v===777));
 });
 test('still-missing stats blocks the game without replacing progress',async()=>{
- const h=setup({player_stats:null});await h.run();assert(h.events.some(([k,v])=>k==='setPlayerAccessError'&&v.includes('Nothing has been reset')));assert(!h.events.some(([k])=>k==='setGems'));
+ const h=setup({player_stats:null});await h.run();assert(h.events.some(([k,v])=>k==='setPlayerAccessError'&&v.includes('Retry connection')));assert(!h.events.some(([k])=>k==='setGems'));
 });
 test('late old-account reads cannot hydrate a newer sign-in generation',async()=>{
  let release;const wait=new Promise(r=>release=r);const h=setup({get_player_progression:()=>wait});
  const pending=h.run();while(!h.calls.includes('get_player_progression'))await new Promise(r=>setTimeout(r,0));
  h.context.authSessionGenerationRef.current=2;h.context.userIdRef.current='different-id';const mark=h.events.length;release(valid.get_player_progression);await pending;assert.equal(h.events.length,mark);
 });
+
+test('transient account read retries before showing an error or replacing progress',async()=>{let reads=0;const h=setup({player_stats:()=>++reads===1?{error:{message:'temporary'}}:valid.player_stats});await h.run();assert.equal(reads,2);assert(h.events.some(([k,v])=>k==='setGems'&&v===777));assert(!h.events.some(([k,v])=>k==='setPlayerAccessError'&&v));});

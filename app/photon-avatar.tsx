@@ -16,7 +16,7 @@ export function PhotonAvatar({ character, guarding = false, lane, skin = "" }: {
     ...(appearance ? { "--photon-skin-color": appearance.color } : {}),
   } as CSSProperties;
   return (
-    <div className={`runner photon-runner photon-character-${character} photon-skin-${tier}`}
+    <div className={`runner photon-runner photon-character-${character} photon-skin-${tier}${appearance?.variant===2?" photon-skin-variant-two":""}`}
       style={style} role="img" aria-label={`${getPhotonCharacter(character).name} · ${appearance?.name ?? "Default"}`}>
       <div className="head" />
       <div className="body" />
@@ -24,6 +24,7 @@ export function PhotonAvatar({ character, guarding = false, lane, skin = "" }: {
       <i className="leg g1" /><i className="leg g2" />
       <em /><i className="photon-accessory" />
       <span className="photon-suit-emblem" aria-hidden="true">{appearance?.emblem ?? "◈"}</span>
+      {appearance?.variant===2?<><i className="photon-skin-mantle"/><i className="photon-skin-satellite"/></>:null}
       {guarding ? <i className="photon-blade" /> : null}
     </div>
   );

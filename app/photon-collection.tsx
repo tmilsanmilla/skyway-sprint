@@ -67,7 +67,7 @@ export function PhotonCollection({
         <summary>MYSTERY BOX · {PHOTON_BOX_COST} PHOTONS</summary>
         <p>
           One Traditional character, bonus characters and skins, then a theme
-          pack, an Intermediate skin or Stardust. All duplicate characters,
+          pack, a Simplistic skin or Stardust. All duplicate characters,
           skins and themes return 10 Gems.
         </p>
         <details>
@@ -83,13 +83,13 @@ export function PhotonCollection({
             skin instead 45%.
           </p>
           <p>
-            Skins: all 16 characters equally likely; Intermediate 53% · Pro 35%
-            · Ascendant 8% · Divine 3% · Immortal 1%. C: two themes 72% ·
-            Intermediate skin 24% · 75 Stardust 4%.
+            Skins: all 16 characters equally likely; Simplistic 2% · Intermediate 52% · Pro 34%
+            · Ascendant 8% · Divine 3% · Immortal 1%. C: two themes 71% ·
+            Simplistic skin 27% · 85 Stardust 2%.
           </p>
           <p>
-            Themes: Common 40% · Uncommon 30% · Rare 15.1% · Epic 11.4% ·
-            Legendary 3.3% · Mythic 0.2%.
+            Themes: Common 40% · Uncommon 30% · Rare 15.2% · Epic 11.2% ·
+            Legendary 3.3% · Mythic 0.3%.
           </p>
         </details>
         <button
@@ -133,7 +133,7 @@ export function PhotonCollection({
         <summary>CHARACTER SKINS</summary>
         <p>
           Skins are cosmetic only. Each character has a free Default look and
-          five box-only looks. Equip a separate owned skin for each character.
+          eleven box-only looks. Equip a separate owned skin for each character.
         </p>
         {(Object.keys(PHOTON_CHARACTERS) as PhotonCharacterKey[]).map((key) => (
           <details className="photon-skin-group" key={key}>

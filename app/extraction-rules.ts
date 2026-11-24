@@ -21,77 +21,10 @@ export const PULL_PROFILES = {
 export const extractionOddsValid = (profile: PullProfile) => PULL_PROFILES[profile].weights.reduce<number>((sum, n) => sum + n, 0) === 100;
 export const EXTRACTION_ODDS_NOTICE = "These pull odds are unavailable. No Gems will be spent.";
 export const EXTRACTION_BOXES = {
-  normal: {
-    name: "NORMAL BOX",
-    cost: 11,
-    minLevel: 0,
-    pullCount: 10,
-    mix: "10 NORMAL PULLS",
-    pulls: [
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-    ],
-  },
-  rare: {
-    name: "RARE BOX",
-    cost: 19,
-    minLevel: 10,
-    pullCount: 11,
-    mix: "7 NORMAL · 2 RARE · 2 BONUS PULLS",
-    pulls: [
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-      "rare",
-      "rare",
-      "bonus",
-      "bonus",
-    ],
-  },
-  legendary: {
-    name: "LEGENDARY BOX",
-    cost: 27,
-    minLevel: 20,
-    pullCount: 12,
-    mix: "5 NORMAL · 3 RARE · 3 BONUS · 1 LEGENDARY PULL",
-    pulls: [
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-      "normal",
-      "rare",
-      "rare",
-      "rare",
-      "bonus",
-      "bonus",
-      "bonus",
-      "legendary",
-    ],
-  },
-} as const satisfies Record<
-  ExtractionOption,
-  {
-    name: string;
-    cost: number;
-    minLevel: number;
-    pullCount: number;
-    mix: string;
-    pulls: readonly PullProfile[];
-  }
->;
+  normal: {"name": "NORMAL BOX", "cost": 11, "minLevel": 0, "pullCount": 14, "mix": "14 NORMAL PULLS", "pulls": ["normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal"]},
+  rare: {"name": "RARE BOX", "cost": 19, "minLevel": 10, "pullCount": 16, "mix": "12 NORMAL PULLS \u00b7 2 BONUS PULLS \u00b7 2 RARE PULLS", "pulls": ["normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "bonus", "bonus", "rare", "rare"]},
+  legendary: {"name": "LEGENDARY BOX", "cost": 27, "minLevel": 20, "pullCount": 18, "mix": "10 NORMAL PULLS \u00b7 3 BONUS PULLS \u00b7 3 RARE PULLS \u00b7 2 LEGENDARY PULLS", "pulls": ["normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "bonus", "bonus", "bonus", "rare", "rare", "rare", "legendary", "legendary"]},
+} as const satisfies Record<ExtractionOption,{name:string;cost:number;minLevel:number;pullCount:number;mix:string;pulls:readonly PullProfile[]}>;
 export const DIRECT_UNLOCK_COSTS = {
   common: { cosmetic: 24, character: 120 },
   uncommon: { cosmetic: 32, character: 160 },

@@ -40,6 +40,6 @@ test("players can read the complete archive without a ten-entry cap", () => {
 });
 test("integer release numbers cover the entire archive newest first",()=>{
   assert.equal(LATEST_UPDATE_VERSION,String(UPDATE_LOG.length));
-  assert.equal(getRecentUpdates()[0].id,'2026-11-21-six-class-overhaul');
+  assert.equal(getRecentUpdates()[0].id,'2026-11-23-track-and-field');
   assert.deepEqual(getRecentUpdates().map(e=>e.version),UPDATE_LOG.map((_,i)=>String(UPDATE_LOG.length-i)));
 });

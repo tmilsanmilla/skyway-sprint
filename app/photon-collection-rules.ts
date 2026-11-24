@@ -10,11 +10,11 @@ export const PHOTON_BOX_ODDS = {
   rush: [41, 33, 26],
   strategic: [57, 32, 11],
   wild: [26, 18, 11, 45],
-  skins: [53, 35, 8, 3, 1],
-  partC: [72, 24, 4],
-  themes: [4000, 3000, 1510, 1140, 330, 20],
+  skins: [2, 52, 34, 8, 3, 1],
+  partC: [71, 27, 2],
+  themes: [4000, 3000, 1520, 1120, 330, 30],
 } as const;
-export const PHOTON_SKIN_TIERS = ["intermediate", "pro", "ascendant", "divine", "immortal"] as const;
+export const PHOTON_SKIN_TIERS = ["simplistic", "intermediate", "pro", "ascendant", "divine", "immortal"] as const;
 export type PhotonSkinTier = (typeof PHOTON_SKIN_TIERS)[number];
 export type PhotonThemeRarity =
   "common" | "uncommon" | "rare" | "epic" | "legendary" | "mythic";
@@ -36,9 +36,9 @@ const SKIN_SIGNATURES: Record<PhotonCharacterKey, readonly [string, string, stri
   photon_oyster: ["Pearl Shell", "Iridescent Reef", "Galactic Pearl", "#f5b7e3", "◉"],
   photon_spade: ["Carbon Suit", "Obsidian Dealer", "Astral Ace", "#c9a0ff", "♠"],
 };
-export const PHOTON_SKINS = Object.entries(PHOTON_CHARACTERS).flatMap(
+const LEGACY_PHOTON_SKINS = Object.entries(PHOTON_CHARACTERS).flatMap(
   ([key, c]) =>
-    PHOTON_SKIN_TIERS.map((tier) => ({
+    PHOTON_SKIN_TIERS.filter(tier=>tier!=="simplistic").map((tier) => ({
       key: `${key}_${tier}`,
       character: key as PhotonCharacterKey,
       tier,
@@ -57,6 +57,31 @@ export const PHOTON_SKINS = Object.entries(PHOTON_CHARACTERS).flatMap(
                 : `${c.name}'s prismatic astral armor, luminous crown and starfield trail. Cosmetic only.`,
     })),
 );
+export interface PhotonSkin { key:string;character:PhotonCharacterKey;tier:PhotonSkinTier;name:string;color:string;emblem:string;description:string;variant?:number; }
+const SECOND_SKIN_STORIES: Record<PhotonCharacterKey,readonly[string,string,string]> = {
+ photon_magician:["Backstage", "A street illusionist who learned to split light in the abandoned theaters of Laserdrome", "segmented violet coat, diamond cuffs and twin orbiting cards"],
+ photon_tick:["Pendulum", "A clockkeeper guarding the last mechanical observatory between the stars", "brass pendulum, luminous dial and a ring of numbered sparks"],
+ photon_trumpet:["Procession", "The lone herald of a fleet that returned from the far side of the sun", "flared shoulder bells, gold braiding and a fanfare crest"],
+ photon_saxophone:["Afterhours", "A wandering soloist whose midnight broadcasts guide ships through the dark", "copper lapels, a moonlit scarf and drifting musical notes"],
+ photon_wizard:["Wayfinder", "A scholar who charted stable passages through the shifting nebulae", "split rune mantle, glass compass and an angular portal crown"],
+ photon_nuclear:["Containment", "An engineer who keeps a miniature star alive inside a portable containment rig", "layered reactor shielding, chartreuse vents and isotope rings"],
+ photon_burner:["Cinderwake", "A courier who carries the first flame from a world remade by its own sunrise", "charred armor edges, ember ribbons and a rising flame plume"],
+ photon_bull:["Ironbound", "A guardian raised in the zero-gravity foundries of the outer moons", "swept bronze horns, plated shoulders and a comet-shaped buckle"],
+ photon_bluff:["Refraction", "A decoy specialist who escaped a mirrored city by inventing a second shadow", "split teal visor, checker panels and offset hologram fins"],
+ photon_magnet:["Northstar", "A navigator following the magnetic memory left inside a shattered planet", "asymmetric pole gauntlets, rose field lines and a floating compass"],
+ photon_bear:["Winterwatch", "A sentinel who watches over the hibernation gardens on an icebound station", "ivory shoulder fur, aurora claws and a triangular lantern"],
+ photon_wrench:["Blueprint", "A mechanic rebuilding a lost spaceport from the diagrams sewn into a work coat", "layered tool belt, cyan schematics and a rotating gear crest"],
+ photon_bell:["Eveningstar", "A keeper whose chimes mark safe passages across the station's silent rings", "silver bell collar, crescent epaulets and a luminous sound halo"],
+ photon_static:["Stormglass", "A collector who traps harmless lightning inside polished glass armor", "forked antennae, pale electric panels and branching spark trails"],
+ photon_oyster:["Moonreef", "A diver who found a living pearl reef beneath an artificial lunar ocean", "layered shell plates, opal ribbons and a small orbiting pearl"],
+ photon_spade:["Nightdeal", "A cardrunner carrying the final hand from a tournament held beyond the event horizon", "split obsidian tails, lilac suit marks and a fan of crystal cards"],
+};
+const variants = ["intermediate","pro","ascendant","divine","immortal"] as const;
+export const PHOTON_SKINS: readonly PhotonSkin[] = Object.entries(PHOTON_CHARACTERS).flatMap(([raw,c])=>{
+ const key=raw as PhotonCharacterKey,[title,story,look]=SECOND_SKIN_STORIES[key],signature=SKIN_SIGNATURES[key];
+ const simple:PhotonSkin={key:`${key}_simplistic`,character:key,tier:"simplistic",name:`${c.name} First Light`,color:signature[3],emblem:signature[4],variant:0,description:`${story}. This early uniform uses a plain fitted suit, a small signature crest and ${look.split(",")[0]}. Its restrained details mark the start of ${c.name}'s journey. Cosmetic only.`};
+ return [simple,...variants.flatMap((tier,index)=>[LEGACY_PHOTON_SKINS.find(s=>s.character===key&&s.tier===tier)!,{key:`${key}_${tier}_2`,character:key,tier,name:`${c.name} ${title} ${["Circuit","Vanguard","Constellation","Sanctum","Infinity"][index]}`,color:signature[3],emblem:signature[4],variant:2,description:`${story}. The ${tier} edition adds ${look}, ${["a stitched luminous border","articulated light plates","a constellation of crystal highlights","a radiant ceremonial crown","an eclipse core surrounded by star ribbons"][index]}. Each detail recalls a chapter of the same journey while keeping the character's familiar silhouette. Cosmetic only.`}])];
+});
 export const PHOTON_THEMES = [
   {
     key: "photon_theme_cobalt",
@@ -201,14 +226,44 @@ export const PHOTON_THEMES = [
   { key: "photon_theme_aurora", name: "Aurora Palace", rarity: "legendary", floor: "#07242d", glow: "#cdffd9", accent: "#9575ec" },
   { key: "photon_theme_infinity", name: "Infinity Spire", rarity: "mythic", floor: "#090722", glow: "#f4dfff", accent: "#d96bff" },
   { key: "photon_theme_elysium", name: "Elysium Gate", rarity: "mythic", floor: "#211d06", glow: "#fff7a2", accent: "#b6a9ef" },
+  {"key": "photon_theme_switchyard", "name": "Switchyard Nine", "rarity": "common", "floor": "#071a13", "glow": "#7dffb3", "accent": "#3d7b62"},
+  {"key": "photon_theme_harbor", "name": "Starlight Harbor", "rarity": "common", "floor": "#180c25", "glow": "#cb98ff", "accent": "#644383"},
+  {"key": "photon_theme_tram", "name": "Moon Tram Depot", "rarity": "common", "floor": "#12151d", "glow": "#b5e2e1", "accent": "#426b76"},
+  {"key": "photon_theme_market", "name": "Night Market", "rarity": "common", "floor": "#1d1021", "glow": "#ff9cde", "accent": "#844474"},
+  {"key": "photon_theme_relay_deck", "name": "Relay Deck", "rarity": "common", "floor": "#1e1908", "glow": "#ffe59b", "accent": "#9b754a"},
+  {"key": "photon_theme_orchard", "name": "Plasma Orchard", "rarity": "uncommon", "floor": "#180c25", "glow": "#cb98ff", "accent": "#644383"},
+  {"key": "photon_theme_greenhouse", "name": "Orbital Greenhouse", "rarity": "uncommon", "floor": "#12151d", "glow": "#b5e2e1", "accent": "#426b76"},
+  {"key": "photon_theme_foundry", "name": "Violet Foundry", "rarity": "uncommon", "floor": "#1d1021", "glow": "#ff9cde", "accent": "#844474"},
+  {"key": "photon_theme_reservoir", "name": "Ion Reservoir", "rarity": "uncommon", "floor": "#1e1908", "glow": "#ffe59b", "accent": "#9b754a"},
+  {"key": "photon_theme_courtyard", "name": "Satellite Courtyard", "rarity": "uncommon", "floor": "#071a13", "glow": "#7dffb3", "accent": "#3d7b62"},
+  {"key": "photon_theme_spectrum", "name": "Spectrum Causeway", "rarity": "rare", "floor": "#12151d", "glow": "#b5e2e1", "accent": "#426b76"},
+  {"key": "photon_theme_hollow", "name": "Crystal Hollow", "rarity": "rare", "floor": "#1d1021", "glow": "#ff9cde", "accent": "#844474"},
+  {"key": "photon_theme_turbine", "name": "Aurora Turbine", "rarity": "rare", "floor": "#1e1908", "glow": "#ffe59b", "accent": "#9b754a"},
+  {"key": "photon_theme_vault", "name": "Magnetic Vault", "rarity": "rare", "floor": "#071a13", "glow": "#7dffb3", "accent": "#3d7b62"},
+  {"key": "photon_theme_catwalk", "name": "Lunar Catwalk", "rarity": "rare", "floor": "#180c25", "glow": "#cb98ff", "accent": "#644383"},
+  {"key": "photon_theme_tesseract", "name": "Tesseract Hall", "rarity": "epic", "floor": "#1d1021", "glow": "#ff9cde", "accent": "#844474"},
+  {"key": "photon_theme_supercell", "name": "Supercell Lab", "rarity": "epic", "floor": "#1e1908", "glow": "#ffe59b", "accent": "#9b754a"},
+  {"key": "photon_theme_geode", "name": "Living Geode", "rarity": "epic", "floor": "#071a13", "glow": "#7dffb3", "accent": "#3d7b62"},
+  {"key": "photon_theme_spire", "name": "Thunder Spire", "rarity": "epic", "floor": "#180c25", "glow": "#cb98ff", "accent": "#644383"},
+  {"key": "photon_theme_equinox", "name": "Equinox Pavilion", "rarity": "epic", "floor": "#12151d", "glow": "#b5e2e1", "accent": "#426b76"},
+  {"key": "photon_theme_solstice", "name": "Solstice Crown", "rarity": "legendary", "floor": "#1e1908", "glow": "#ffe59b", "accent": "#9b754a"},
+  {"key": "photon_theme_meridian", "name": "Celestial Meridian", "rarity": "legendary", "floor": "#071a13", "glow": "#7dffb3", "accent": "#3d7b62"},
+  {"key": "photon_theme_heliosphere", "name": "Heliosphere", "rarity": "legendary", "floor": "#180c25", "glow": "#cb98ff", "accent": "#644383"},
+  {"key": "photon_theme_parallax", "name": "Parallax Palace", "rarity": "legendary", "floor": "#12151d", "glow": "#b5e2e1", "accent": "#426b76"},
+  {"key": "photon_theme_firmament", "name": "Glass Firmament", "rarity": "legendary", "floor": "#1d1021", "glow": "#ff9cde", "accent": "#844474"},
+  {"key": "photon_theme_eventide", "name": "Eventide Nexus", "rarity": "mythic", "floor": "#071a13", "glow": "#7dffb3", "accent": "#3d7b62"},
+  {"key": "photon_theme_genesis", "name": "Genesis Well", "rarity": "mythic", "floor": "#180c25", "glow": "#cb98ff", "accent": "#644383"},
+  {"key": "photon_theme_omnidrome", "name": "Omnidrome", "rarity": "mythic", "floor": "#12151d", "glow": "#b5e2e1", "accent": "#426b76"},
+  {"key": "photon_theme_eternity", "name": "Eternity Fold", "rarity": "mythic", "floor": "#1d1021", "glow": "#ff9cde", "accent": "#844474"},
+  {"key": "photon_theme_zenith", "name": "Zenith Beyond", "rarity": "mythic", "floor": "#1e1908", "glow": "#ffe59b", "accent": "#9b754a"},
 ] as const;
 export const DEFAULT_PHOTON_THEME = {
   key: "default",
   name: "Laserdrome",
   rarity: "default",
-  floor: "#080e25",
-  glow: "#3cf4ff",
-  accent: "#7b46ed",
+  floor: "#08090c",
+  glow: "#6bff82",
+  accent: "#793fc3",
 } as const;
 export type PhotonBoxItem = {
   kind: "character" | "skin" | "theme" | "gems" | "stardust";
@@ -248,14 +303,14 @@ const weighted = (
   }
   throw new Error("Invalid box odds");
 };
-const skin = (
+export const rollPhotonSkin = (
   random: () => number,
   intermediateOnly = false,
   part: "B" | "C" = "B",
 ): PhotonBoxItem => ({
   kind: "skin",
   part,
-  key: `${pick(keys, random)}_${intermediateOnly ? "intermediate" : weighted(PHOTON_SKIN_TIERS, PHOTON_BOX_ODDS.skins, random)}`,
+  key: (()=>{const character=pick(keys,random),tier=intermediateOnly?"simplistic":weighted(PHOTON_SKIN_TIERS,PHOTON_BOX_ODDS.skins,random);return pick(PHOTON_SKINS.filter(s=>s.character===character&&s.tier===tier).map(s=>s.key),random);})(),
 });
 export const rollPhotonMysteryBox = (
   random: () => number = Math.random,
@@ -293,9 +348,9 @@ export const rollPhotonMysteryBox = (
               PHOTON_BOX_ODDS.wild,
               random,
             );
-    results.push(key === "skin" ? skin(random) : { kind: "character", key, part: "B" });
+    results.push(key === "skin" ? rollPhotonSkin(random) : { kind: "character", key, part: "B" });
   }
-  for (let i = 0; i < (twoCharacters ? 1 : 2); i++) results.push(skin(random));
+  for (let i = 0; i < (twoCharacters ? 1 : 2); i++) results.push(rollPhotonSkin(random));
   const c = unit(random);
   if (c < PHOTON_BOX_ODDS.partC[0] / 100)
     for (let i = 0; i < 2; i++) {
@@ -313,8 +368,8 @@ export const rollPhotonMysteryBox = (
         ),
       });
     }
-  else if (c < (PHOTON_BOX_ODDS.partC[0] + PHOTON_BOX_ODDS.partC[1]) / 100) results.push(skin(random, true, "C"));
-  else results.push({ kind: "stardust", key: "stardust_75", amount: 75, part: "C" });
+  else if (c < (PHOTON_BOX_ODDS.partC[0] + PHOTON_BOX_ODDS.partC[1]) / 100) results.push(rollPhotonSkin(random, true, "C"));
+  else results.push({ kind: "stardust", key: "stardust_85", amount: 85, part: "C" });
   return results;
 };
 /** All owned character/skin/theme duplicates return the same 10 Gems. */

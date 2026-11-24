@@ -23,7 +23,7 @@ export function MasteryTrialGame({character,onEvent,onFinish,onExit,serverFailed
   let ok=false;try{ok=await onFinish();}catch{/* Keep the same trial available for a safe retry. */}
   setFinishFailed(!ok);setStatus(ok?replay?"Replay complete. No rewards or mastery settings changed.":"Mastery unlocked!":replay?"Replay could not be confirmed. Keep this screen open and retry.":"Mastery could not be confirmed. Keep this screen open and retry.");
  },[onFinish,replay]);
- useEffect(()=>{if(serverFailed){ref.current.trial={...ref.current.trial,phase:"failed",failure:"The trial failed its server check. Try again."};}},[serverFailed]);
+ useEffect(()=>{if(serverFailed&&ref.current.trial.phase!=="failed"){ref.current.trial={...ref.current.trial,phase:"failed",failure:"A required trial objective was missed. Try the trial again."};}},[serverFailed]);
  const emit=useCallback((event:MasteryTrialEvent)=>{
   const s=ref.current,r=reduceMasteryTrial(s.trial,event);s.trial=r.state;
   s.hp=Math.max(r.healthFloor??0,s.hp-r.damage);
@@ -103,9 +103,9 @@ export function MasteryTrialGame({character,onEvent,onFinish,onExit,serverFailed
       if(kind==="snowflake"&&character==="medic_remedy")emit({type:"snowflake-spawn"});
      }
     }
-    const speed=22*(1+.25*(s.wave-1));
+    const speedFor=(kind:Piece["kind"])=>({car:42,barrel:32,log:25,rock:19,spikes:28,snowflake:26,gem:26}[kind]??26)*(1+.2*(s.wave-1));
     s.pieces=s.pieces.filter(p=>{
-     p.y+=dt*speed;
+     p.y+=dt*speedFor(p.kind);
      if(!p.resolved&&p.lane===s.lane&&p.y>=83&&p.y<=94){
       p.resolved=true;
       if(p.kind==="gem"){emit({type:"gem",collected:true});if(s.bloomWave!==s.wave){s.hp=Math.min(3,s.hp+.5);s.bloomWave=s.wave;}}

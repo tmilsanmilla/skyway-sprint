@@ -24,7 +24,7 @@ export const ADMIN_COMMAND_DOCUMENTATION = [
   ["/unban [username/email]", "Remove that account’s active bans."],
   ["/upfch [username] [character]", "Unlock an exact Photon Fury character; included starters cannot be changed."],
   ["/lpfch [username] [character]", "Revoke a Photon Fury character and safely repair its equipped selection."],
-  ["/upfski [username] [character] [tier]", "Unlock a Photon skin: intermediate, pro, ascendant, divine or immortal."],
+  ["/upfski [username] [character] [tier]", "Unlock a Photon skin: simplistic, intermediate, pro, ascendant, divine or immortal; use _2 for a second variant."],
   ["/lpfski [username] [character] [tier]", "Revoke that exact Photon skin and restore its default if equipped."],
   ["/upfth [username] [theme]", "Unlock an exact Photon theme."],
   ["/lpfth [username] [theme]", "Revoke a Photon theme and restore the default if equipped."],
@@ -42,7 +42,7 @@ export function AdminCommandDocumentation() {
   const [query, setQuery] = useState("");
   const matches = ADMIN_COMMAND_DOCUMENTATION.filter(row => row.join(" ").toLowerCase().includes(query.toLowerCase().trim()));
   return <section className="admin-command-documentation">
-    <h3>COMMAND REFERENCE</h3>
+    <h3>ALL GAME COMMANDS</h3>
     <p>Commands are available to main admins. Use brackets around names with spaces. A selected player may replace the username argument where supported. Commands are recorded in the player’s moderation history.</p>
     <label>Find a command<input aria-label="Search command documentation" type="search" value={query} onChange={event => setQuery(event.target.value)} /></label>
     <dl>{matches.map(([syntax, description]) => <div key={syntax}><dt><code>{syntax}</code></dt><dd>{description}</dd></div>)}</dl>

@@ -14,7 +14,7 @@ export function trackedQuestProgress(key: MasteryKey, state: MasteryAccountState
   return { definition, quest, targets, values, waiting };
 }
 const amount = (value: number) => (Math.floor(value * 100) / 100).toLocaleString();
-const syncLabel = (status: MasterySyncStatus) => status === "retrying" ? "Save interrupted · retrying" : status === "starting" ? "Connecting quest…" : status === "syncing" || status === "pending" ? "Saving progress…" : "Progress saved";
+const syncLabel = (status: MasterySyncStatus) => status === "buffered" ? "Saves after this run" : status === "retrying" ? "Save interrupted · retrying" : status === "starting" ? "Connecting quest…" : status === "syncing" || status === "pending" ? "Saving progress…" : "Progress saved";
 function QuestProgressBars({ progress }: { progress: NonNullable<ReturnType<typeof trackedQuestProgress>> }) {
   return <div className="mastery-progress-bars">{progress.targets.map((target, i) => <label key={i}><span>{progress.targets.length > 1 ? `Goal ${i + 1} · ` : ""}{amount(progress.values[i])} / {amount(target)}</span><progress aria-label={`${progress.definition.name} quest ${progress.quest + 1}, goal ${i + 1}`} max={target} value={progress.values[i]} /></label>)}</div>;
 }

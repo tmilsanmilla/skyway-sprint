@@ -48,6 +48,7 @@ type Props = {
   userId: string | null;
   level: number;
   gems: number;
+  stardust: number;
   testMode: boolean;
   soundtrack: Soundtrack;
   onGems: (gems: number) => void;
@@ -64,6 +65,7 @@ export function PhotonFury({
   userId,
   level,
   gems,
+  stardust,
   testMode,
   soundtrack,
   onGems,
@@ -524,7 +526,7 @@ export function PhotonFury({
     "--photon-accent": chosenTheme.accent,
   } as CSSProperties;
 
-  if(raceOpen&&userId)return <PhotonRace userId={userId} level={level} owned={owned} photons={balance} onBalance={setBalance} onUnlock={onRaceUnlock} onExit={()=>setRaceOpen(false)}/>;
+  if(raceOpen&&userId)return <PhotonRace userId={userId} level={level} owned={owned} photons={balance} stardust={stardust} onStardust={onStardust} onBalance={setBalance} onUnlock={onRaceUnlock} onExit={()=>setRaceOpen(false)}/>;
   return (
     <section
       className={`photon-panel photon-futuristic theme-${theme}`}

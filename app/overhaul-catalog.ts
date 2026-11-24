@@ -121,7 +121,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "DANGER CORE",
-    "description": "At 2 HP or more: score−10%, speed−10%. At 1.5 HP: both+5%. At 1 HP: score+20%, speed+15%. At 0.5 HP: score+35%, speed+25%. Health conditions use nearest-half-heart display rules."
+    "description": "At 2 HP or more: score −10%, speed −10%. At 1.5 HP: both +5%. At 1 HP: score +20%, speed +15%. At 0.5 HP: score +35%, speed +25%. Health conditions use nearest-half-heart display rules."
   },
   {
     "key": "medic_halo",
@@ -193,7 +193,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "LANE COUNT",
-    "description": "Each lane change permanently adds 0.1% score. From 100 changes onward, each change grants a shield after 0.1 seconds, lasting 0.4 seconds divided by current wave speed. After 57 changes, earn floor((changes−55)/3) bonus XP at run end."
+    "description": "Each lane change permanently adds 0.1% score. From 100 changes onward, each change grants a shield after 0.1 seconds, lasting 0.4 seconds divided by current wave speed. After 57 changes, earn floor((changes −55)/3) bonus XP at run end."
   },
   {
     "key": "runner_melonhead",
@@ -205,7 +205,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "MELONHEAD",
-    "description": "Consecutive melons award 1×,2×,3× and so on of normal melon score. Snowflake freeze lasts 3.5 seconds."
+    "description": "Consecutive melons award 1×, 2×, 3× and so on of normal melon score. Snowflake freeze lasts 3.5 seconds."
   },
   {
     "key": "runner_blitz",
@@ -217,7 +217,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "VOLT CLEAVE",
-    "description": "Each wave adds 5% movement speed and 4% score, linearly: wave 6 gives+30% speed and+24% score. No Volt Cleave."
+    "description": "Each wave adds 5% movement speed and 4% score, linearly: wave 6 gives +30% speed and +24% score. No Volt Cleave."
   },
   {
     "key": "runner_velocity",
@@ -229,7 +229,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "FULL VELOCITY",
-    "description": "Build Velocity by moving successfully. Each 1% Velocity grants 1% speed and 2% score, capped at+100% speed/+200% score. Upbeat music begins at 50%; a rainbow appears at 100%. Hits reset Velocity."
+    "description": "Build Velocity by moving successfully. Each 1% Velocity grants 1% speed and 2% score, capped at +100% speed/+200% score. Upbeat music begins at 50%; a rainbow appears at 100%. Hits reset Velocity."
   },
   {
     "key": "runner_cartographer",
@@ -253,7 +253,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "ZENITH CLIMB",
-    "description": "Gain 2% score per wave. At waves 5/7/9/11/13 gain normal Dash, Horizon+Glacier,9-second Orbit wrap, Reactor, then Stride. Starting wave 15 awards 15,000 score during a 10-second Time Stop without healing."
+    "description": "Gain 2% score per wave. At waves 5/7/9/11/13 gain normal Dash, Horizon +Glacier, 9-second Orbit wrap, Reactor, then Stride. Starting wave 15 awards 15, 000 score during a 10-second Time Stop without healing."
   },
   {
     "key": "runner_streaker",
@@ -265,7 +265,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "STREAKER",
-    "description": "Wave speed rises 35% per wave instead of 20%; every flawless wave permanently adds 5% score. E once per even wave adds 14×flawless-waves³ score in Endless,9× in 1 v 1. Snowflake contact breaks a flawless wave. A successful burst also gives a brief visible trail, not extra defense."
+    "description": "Wave speed rises 35% per wave instead of 20%; every flawless wave permanently adds 5% score. E once per even wave adds 14×flawless-waves³ score in Endless, 9× in 1 v 1. Snowflake contact breaks a flawless wave. A successful burst also gives a brief visible trail, not extra defense."
   },
   {
     "key": "medic_patch",
@@ -373,7 +373,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "FIELD ALCHEMY",
-    "description": "Start 3 HP/max 4 HP. Each physical gem gives 4 ingredient points and each melon gives 3. Keys 1/2/3 brew+1/+2/+3 HP potions for 12/20/25 points. Brewing takes 15 seconds; only one brewing or stored potion is allowed. E drinks it."
+    "description": "Start 3 HP/max 4 HP. Each physical gem gives 4 ingredient points and each melon gives 3. Keys 1/2/3 brew +1/+2/+3 HP potions for 12/20/25 points. Brewing takes 15 seconds; only one brewing or stored potion is allowed. E drinks it."
   },
   {
     "key": "medic_gauze",
@@ -457,7 +457,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "SAGE",
-    "description": "Start/max 3 HP. Hazards are 81%ordinary,9%obviously harmless,1%disguised harmless,9%ordinary disguised as harmless. Harmless hits heal 0.5 HP and give one herb; consecutive melons give increasing herbs. E with at least 15 herbs brews a stone for 20 seconds, consuming all herbs; E too early without enough herbs is fatal. Drink it for 0.5 HP and 15 seconds of Luck (+5 percentage points each to gems/melons and honest holograms);25-second brew cooldown follows."
+    "description": "Start/max 3 HP. Hazards are 81% ordinary, 9% obviously harmless, 1% disguised harmless, 9% ordinary disguised as harmless. Harmless hits heal 0.5 HP and give one herb; consecutive melons give increasing herbs. E with at least 15 herbs brews a stone for 20 seconds, consuming all herbs; E too early without enough herbs is fatal. Drink it for 0.5 HP and 15 seconds of Luck (+5 percentage points each to gems/melons and honest holograms);25-second brew cooldown follows."
   },
   {
     "key": "medic_lifeline",
@@ -517,7 +517,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "THREE PROPHECIES",
-    "description": "Complete prophecies to gain their listed rewards and 1%run XP per successful prophecy. A single failed prophecy ends the run immediately."
+    "description": "Complete prophecies to gain their listed rewards and 1% run XP per successful prophecy. A single failed prophecy ends the run immediately."
   },
   {
     "key": "runner_pacer",
@@ -685,7 +685,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 4,
     "legacyRuntime": false,
     "ability": "HOLD GROUND",
-    "description": "Each second in one lane adds 10% damage reduction, reaching full immunity after 10 seconds. Lane changes reset it. Score−5%."
+    "description": "Each second in one lane adds 10% damage reduction, reaching full immunity after 10 seconds. Lane changes reset it. Score −5%."
   },
   {
     "key": "tank_knight",
@@ -769,7 +769,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "JUGGERNAUT",
-    "description": "Start 3 HP. Each melon raises maximumHP by 0.5, up to 14, without healing. Streak Enders replace 5+2×bonus-max-HP percent of pickups (max 27%) and 5% of ordinary hazards. Touching one resets maxHP to 2, clamps currentHP and removes 1,000 score (minimum 0). Score+5%."
+    "description": "Start 3 HP. Each melon raises maximumHP by 0.5, up to 14, without healing. Streak Enders replace 5+2×bonus-max-HP percent of pickups (max 27%) and 5% of ordinary hazards. Touching one resets maxHP to 2, clamps currentHP and removes 1, 000 score (minimum 0). Score +5%."
   },
   {
     "key": "trickster_phantom",
@@ -793,7 +793,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 6,
     "legacyRuntime": false,
     "ability": "GENERAL",
-    "description": "Start/max 6 HP. Initially take 10% less damage. Adapt separately to barrel/log/spike/rock:10 hits gives 40% reduction,20 gives 70%,40 gives 90%. Initial protection ends at the first adaptation. When three types reach 40 hits, sacrifice one to 20% reduction; the other two remain 90% for the rest of the run."
+    "description": "Start/max 6 HP. Initially take 10% less damage. Adapt separately to barrel/log/spike/rock:10 hits gives 40% reduction, 20 gives 70%, 40 gives 90%. Initial protection ends at the first adaptation. When three types reach 40 hits, sacrifice one to 20% reduction; the other two remain 90% for the rest of the run."
   },
   {
     "key": "trickster_rogue",
@@ -853,7 +853,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 2,
     "legacyRuntime": false,
     "ability": "SLIPSTREAM",
-    "description": "Each consecutive lane change adds 9% speed and 10% score, capped at+270%/+300% after 30 changes. A hit resets the stack."
+    "description": "Each consecutive lane change adds 9% speed and 10% score, capped at +270%/+300% after 30 changes. A hit resets the stack."
   },
   {
     "key": "trickster_burglar",
@@ -865,7 +865,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 2,
     "legacyRuntime": false,
     "ability": "BURGLAR",
-    "description": "In 1 v 1, gain floor(10% of the opponent’s newly earned wave attack points) after each wave; two Burglars cancel. In Endless, gem streak rewards are 1,3,5,7… with 5% less score."
+    "description": "In 1 v 1, gain floor(10% of the opponent’s newly earned wave attack points) after each wave; two Burglars cancel. In Endless, gem streak rewards are 1, 3, 5, 7… with 5% less score."
   },
   {
     "key": "trickster_clockwork",
@@ -889,7 +889,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3.5,
     "legacyRuntime": false,
     "ability": "GASSER",
-    "description": "Start 3.5 HP. E toggles double obstacle damage,20% more speed and double score. Toggle freely; inactive play uses normal values."
+    "description": "Start 3.5 HP. E toggles double obstacle damage, 20% more speed and double score. Toggle freely; inactive play uses normal values."
   },
   {
     "key": "runner_tempo",
@@ -901,7 +901,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 2,
     "legacyRuntime": false,
     "ability": "SWING TEMPO",
-    "description": "After every wave, press E 4 seconds after GO without a timer.3.8–4.2 s gives+25%speed/+50%score;3.5–4.5 s gives+10%/+20%;3.1–4.9 s is normal;2.6–5.4 s gives−10%/−20% and clears gem streak. Outside that range or timeout gives−25%/−50%, clears streak, and gems deal 0.5 HP without rewarding gems for the next wave."
+    "description": "After every wave, press E 4 seconds after GO without a timer.3.8–4.2 s gives +25% speed/+50% score;3.5–4.5 s gives +10%/+20%;3.1–4.9 s is normal;2.6–5.4 s gives −10%/−20% and clears gem streak. Outside that range or timeout gives −25%/−50%, clears streak, and gems deal 0.5 HP without rewarding gems for the next wave."
   },
   {
     "key": "medic_vial",
@@ -931,7 +931,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "key": "runner_flare",
     "name": "Flare",
     "classKey": "trickster",
-    "rarity": "rare",
+    "rarity": "epic",
     "starter": false,
     "startingHp": 2,
     "maxHp": 2,
@@ -961,7 +961,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 9,
     "legacyRuntime": false,
     "ability": "COLOSSUS FRAME",
-    "description": "Start 3 HP/max 9 HP. A flawless wave heals 1.5 HP; a hit wave gives no healing. Rock damage is 2 HP through 4.5 HP,1.5 at 5–7 HP,1 at 7.5–8.5 HP,0.5 at 9 HP. Speed+5%, score+5%."
+    "description": "Start 3 HP/max 9 HP. A flawless wave heals 1.5 HP; a hit wave gives no healing. Rock damage is 2 HP through 4.5 HP, 1.5 at 5–7 HP, 1 at 7.5–8.5 HP, 0.5 at 9 HP. Speed +5%, score +5%."
   },
   {
     "key": "runner_relay",
@@ -973,7 +973,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 2,
     "legacyRuntime": false,
     "ability": "OVERCHARGE RELAY",
-    "description": "Each flawless wave before your one revival earns a bonus, capped at 10. On death, revive at 0.5×floor(bonus/2)HP if positive. After revival, flawless waves give one gem instead. Speed+15%, normal score."
+    "description": "Each flawless wave before your one revival earns a bonus, capped at 10. On death, revive at 0.5×floor(bonus/2)HP if positive. After revival, flawless waves give one gem instead. Speed +15%, normal score."
   },
   {
     "key": "trickster_pterodactyl",
@@ -1009,7 +1009,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 2,
     "legacyRuntime": false,
     "ability": "VOID REALM",
-    "description": "After each 40-second wave, collect up to 12 damned in a 20-second,8-lane Void.70 damnation unlocks two one-hit souls for 25 damnation. Damage reduction is 0.2% per damnation up to 20%. At 100, beat 25 correct ASDF inputs in 20 seconds (two errors lose), then click 15 moving targets in 10 seconds to become a 3-max-HP god; each death lowers maxHP and revives. God E retreats 3 seconds then grants 10 seconds invincibility once per wave. R clears one hazard with a 35-second chakram. Above 100 damnation adds 0.2%score per excess point."
+    "description": "After each 40-second wave, collect up to 12 damned in a 20-second, 8-lane Void.70 damnation unlocks two one-hit souls for 25 damnation. Damage reduction is 0.2% per damnation up to 20%. At 100, beat 25 correct ASDF inputs in 20 seconds (two errors lose), then click 15 moving targets in 10 seconds to become a 3-max-HP god; each death lowers maxHP and revives. God E retreats 3 seconds then grants 10 seconds invincibility once per wave. R clears one hazard with a 35-second chakram. Above 100 damnation adds 0.2% score per excess point."
   },
   {
     "key": "trickster_paradox",
@@ -1045,7 +1045,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 2,
     "legacyRuntime": false,
     "ability": "ECLIPSE",
-    "description": "Randomly ordered eclipses occur at waves 4,8,12,16, then the Solar Eclipse at 20; none follow. Azure starts at 1 HP and alternates 5 seconds invincible/2 seconds normal. Amber boosts score while hazards accelerate; Verdant changes hazards into healing pickups; Violet mirrors lane controls with visible indicators. Solar combines short, visible phases without deleting account resources."
+    "description": "Randomly ordered eclipses occur at waves 4, 8, 12, 16, then the Solar Eclipse at 20; none follow. Azure starts at 1 HP and alternates 5 seconds invincible/2 seconds normal. Amber boosts score while hazards accelerate; Verdant changes hazards into healing pickups; Violet mirrors lane controls with visible indicators. Solar combines short, visible phases without deleting account resources."
   },
   {
     "key": "trickster_echo",
@@ -1057,7 +1057,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 2,
     "legacyRuntime": false,
     "ability": "THE MIRROR",
-    "description": "Complete DreamerI(wave 5),Uplift(5 wave-end healing),Hope(10 damage),DreamerII(wave 15),Understanding(20 physical gems),Idea(25 melons),then The Knowing(0.5 HP back to full). The first six grant a shard; class quests also choose two non-mythic borrowed passives. Knowing sets 7 HP. Each lost shard reduces maxHP by 1 and adds 30%score, capped 175% atzero shards. Atzero in 1 v 1 Unlimited, reflect hits for 10 seconds then send a row of hazards before fading; two Echoes and Endless instead continue at 1 HP."
+    "description": "Complete DreamerI(wave 5), Uplift(5 wave-end healing), Hope(10 damage), DreamerII(wave 15), Understanding(20 physical gems), Idea(25 melons), then The Knowing(0.5 HP back to full). The first six grant a shard; class quests also choose two non-mythic borrowed passives. Knowing sets 7 HP. Each lost shard reduces maxHP by 1 and adds 30% score, capped 175% atzero shards. Atzero in 1 v 1 Unlimited, reflect hits for 10 seconds then send a row of hazards before fading; two Echoes and Endless instead continue at 1 HP."
   },
   {
     "key": "runner_scout",
@@ -1093,7 +1093,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "TIMEKEEPER",
-    "description": "Gems, melons and attack coins move 15% slower; hazards move 5% slower. Each obstacle hit adds 1%run-end XP."
+    "description": "Gems, melons and attack coins move 15% slower; hazards move 5% slower. Each obstacle hit adds 1% run-end XP."
   },
   {
     "key": "tank_drag",
@@ -1189,7 +1189,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "UM",
-    "description": "Tap barrels/logs to turn them into visually identical ash. Alternate collected ash types; repeating one is fatal. Each ash gives floor(370+70×wave^1.7)score. E with fewer than 20 ashes is fatal; otherwise consume all ashes, neutralize one current hazard and award 5,000 score plus one gem."
+    "description": "Tap barrels/logs to turn them into visually identical ash. Alternate collected ash types; repeating one is fatal. Each ash gives floor(370+70×wave^1.7)score. E with fewer than 20 ashes is fatal; otherwise consume all ashes, neutralize one current hazard and award 5, 000 score plus one gem."
   },
   {
     "key": "misc_trunk",
@@ -1213,7 +1213,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": true,
     "ability": "FLUX FIELD",
-    "description": "Pickup speed by lane distance 0–1/2/3/4+ is+50%/+10%/−30%/−50%. All non-pickup speed at distance 0/1/2/3/4+ is−20%/−15%/−3%/+9%/+15%. Flux Field has a 25-second cooldown."
+    "description": "Pickup speed by lane distance 0–1/2/3/4+ is +50%/+10%/−30%/−50%. All non-pickup speed at distance 0/1/2/3/4+ is −20%/−15%/−3%/+9%/+15%. Flux Field has a 25-second cooldown."
   },
   {
     "key": "misc_muncher",
@@ -1237,7 +1237,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "CHALLENGER",
-    "description": "In 1 v 1, earn double attack coins but half melon score. In Endless, owning Sprint grants one second life as Sprint at 1 maxHP,50% extra speed and no healing. Without Sprint, gain 14%score instead."
+    "description": "In 1 v 1, earn double attack coins but half melon score. In Endless, owning Sprint grants one second life as Sprint at 1 maxHP, 50% extra speed and no healing. Without Sprint, gain 14% score instead."
   },
   {
     "key": "misc_carat",
@@ -1261,7 +1261,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": true,
     "ability": "GEM SURVEY",
-    "description": "Danger warnings last 4 seconds. Gem streak rewards are 1,3,5,7… In 1 v 1 each physical gem has 15% chance to double a random opponent hazard’s speed without warning, unless both players are Prospector."
+    "description": "Danger warnings last 4 seconds. Gem streak rewards are 1, 3, 5, 7… In 1 v 1 each physical gem has 15% chance to double a random opponent hazard’s speed without warning, unless both players are Prospector."
   },
   {
     "key": "misc_weaver",
@@ -1273,7 +1273,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "THAWING JACKET",
-    "description": "With Courier owned, use Rescue Hook once per wave and revive once as Courier at 0.5 maxHP,2×speed, normal score and no healing or hook. Without Courier, gain 14%score instead."
+    "description": "With Courier owned, use Rescue Hook once per wave and revive once as Courier at 0.5 maxHP, 2×speed, normal score and no healing or hook. Without Courier, gain 14% score instead."
   },
   {
     "key": "misc_harvester",
@@ -1357,7 +1357,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "SPRING",
-    "description": "Gain one energy per active second; a hit removes 15%, rounded down. Endless energy adds 0.6%score each without a cap. In 1 v 1, nausea falls from 20% by 0.1% per energy tozero at 200;15% of opponent attack coins are secretly yours and stun the collector for 0.7 seconds."
+    "description": "Gain one energy per active second; a hit removes 15%, rounded down. Endless energy adds 0.6% score each without a cap. In 1 v 1, nausea falls from 20% by 0.1% per energy tozero at 200;15% of opponent attack coins are secretly yours and stun the collector for 0.7 seconds."
   },
   {
     "key": "chaotic_glide",
@@ -1393,19 +1393,19 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "HYPERLINK",
-    "description": "Wave hits 0/1/2/3/4/5/6–7/8–9/10+ earn 10/8/7/6/5/4/3/2/1 links; gems add one. Spend 10 for 5 seconds flight (+90%speed/+160%score),15 in 1 v 1 to convert an opponent pickup into a hazard,20 to convert one own hazard into 40%melon/35%coin/25%gem."
+    "description": "Wave hits 0/1/2/3/4/5/6–7/8–9/10+ earn 10/8/7/6/5/4/3/2/1 links; gems add one. Spend 10 for 5 seconds flight (+90% speed/+160% score), 15 in 1 v 1 to convert an opponent pickup into a hazard, 20 to convert one own hazard into 40% melon/35% coin/25% gem."
   },
   {
     "key": "trickster_jester",
     "name": "Jester",
-    "classKey": "misc",
-    "rarity": "uncommon",
+    "classKey": "trickster",
+    "rarity": "rare",
     "starter": false,
     "startingHp": 3,
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "WILD ENCORE",
-    "description": "Roll each wave:40%Positive (40%less damage,0.5 wave healing),40%Neutral (uniform nonzero integer−10…35 gives that%score and 3×that%speed; opponent gets 500 score),20%Negative (barrels 1 HP/logs 2 HP,one Rescue Hook; opponent gets 1,000 score)."
+    "description": "Roll each wave:40% Positive (40% less damage, 0.5 wave healing), 40% Neutral (uniform nonzero integer −10…35 gives that% score and 3×that% speed; opponent gets 500 score), 20% Negative (barrels 1 HP/logs 2 HP, one Rescue Hook; opponent gets 1, 000 score)."
   },
   {
     "key": "trickster_gambit",
@@ -1417,7 +1417,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 2,
     "legacyRuntime": false,
     "ability": "COUNTING CARDS",
-    "description": "Start/max 2 HP. On your first death, roll six 8-sided dice with up to three selective rerolls. A Pair or less gives no revival; higher hands revive at 0.5–2 HP with the shown z bonus plus dice sum. Revival forbids all healing and occurs only once. TwoPair/Triplet/FullHouse/Straight/FourKind-or-ThreePair/Straighter/FullerHouse/TwoTriplet/FiveKind/SixKind use z−45/−30/−15/−5/5/15/30/40/55/75."
+    "description": "Start/max 2 HP. On your first death, roll six 8-sided dice with up to three selective rerolls. A Pair or less gives no revival; higher hands revive at 0.5–2 HP with the shown z bonus plus dice sum. Revival forbids all healing and occurs only once. TwoPair/Triplet/FullHouse/Straight/FourKind-or-ThreePair/Straighter/FullerHouse/TwoTriplet/FiveKind/SixKind use z −45/−30/−15/−5/5/15/30/40/55/75."
   },
   {
     "key": "chaotic_snake",
@@ -1441,7 +1441,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "DEMOLITION",
-    "description": "E clears one nearest hazard in each neighboring lane every 15 seconds; on an edge it also clears your current lane. Rocks may be removed. Score+5%, speed−5%."
+    "description": "E clears one nearest hazard in each neighboring lane every 15 seconds; on an edge it also clears your current lane. Rocks may be removed. Score +5%, speed −5%."
   },
   {
     "key": "chaotic_imagination",
@@ -1453,7 +1453,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 4,
     "legacyRuntime": false,
     "ability": "IMAGINATION",
-    "description": "Start/max 4 HP and score+20%. Each completed wave appends two colors to a memory sequence. After 5 seconds, enter the entire sequence with 1–6 within 10 seconds. Any wrong key or timeout ends the run."
+    "description": "Start/max 4 HP and score +20%. Each completed wave appends two colors to a memory sequence. After 5 seconds, enter the entire sequence with 1–6 within 10 seconds. Any wrong key or timeout ends the run."
   },
   {
     "key": "chaotic_rhythm",
@@ -1465,7 +1465,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "RHYTHM",
-    "description": "Consecutive lane changes 0.8–1.2 seconds apart build Rhythm. Each stack adds 3%speed and score. Early movement or more than 1.2 seconds without a change resets it."
+    "description": "Consecutive lane changes 0.8–1.2 seconds apart build Rhythm. Each stack adds 3% speed and score. Early movement or more than 1.2 seconds without a change resets it."
   },
   {
     "key": "chaotic_bowler",
@@ -1477,7 +1477,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "BOWLER",
-    "description": "After each wave, throw three bowling balls; each has 4 seconds to aim with the pointer. Reset pins after a strike and continue with remaining balls. Each pin knocked down permanently adds 0.1%score, at most 30 pins per frame."
+    "description": "After each wave, throw three bowling balls; each has 4 seconds to aim with the pointer. Reset pins after a strike and continue with remaining balls. Each pin knocked down permanently adds 0.1% score, at most 30 pins per frame."
   },
   {
     "key": "medic_seraph",
@@ -1513,7 +1513,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "POLYGLOT",
-    "description": "After each wave, listen to a 30–45 second language clip, then choose French, Spanish, Japanese, Mandarin Chinese, German, Russian, Italian or Portuguese within 10 seconds. Correct gives 5,000 score; wrong costs 0.5 HP. In 1 v 1 both hear it; opponent correct gives 3,000 score, wrong costs 1 HP."
+    "description": "After each wave, listen to a 30–45 second language clip, then choose French, Spanish, Japanese, Mandarin Chinese, German, Russian, Italian or Portuguese within 10 seconds. Correct gives 5, 000 score; wrong costs 0.5 HP. In 1 v 1 both hear it; opponent correct gives 3, 000 score, wrong costs 1 HP."
   },
   {
     "key": "chaotic_conic",
@@ -1525,7 +1525,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "CONIC",
-    "description": "Each wave draws a different one of ten shapes, with its displayed effect. E in 1 v 1 locks the opponent’s other controls until they identify it with 0–9; wrong answers lock guesses for 1 second. Endless gives 3,500 score per correct wave-end answer. Shape order: ellipse,circle,parabola,hyperbola,spiral,infinity,flat tire,lemon,potato,chip."
+    "description": "Each wave draws a different one of ten shapes, with its displayed effect. E in 1 v 1 locks the opponent’s other controls until they identify it with 0–9; wrong answers lock guesses for 1 second. Endless gives 3, 500 score per correct wave-end answer. Shape order: ellipse, circle, parabola, hyperbola, spiral, infinity, flat tire, lemon, potato, chip."
   },
   {
     "key": "misc_mimic",
@@ -1537,7 +1537,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "COPYCAT",
-    "description": "In 1 v 1, copy the opponent, including Mythics, only if you own that character; otherwise score+6%/speed−6%. In Endless choose either+18%score off the edges or−5%hazard speed/+35%XP."
+    "description": "In 1 v 1, copy the opponent, including Mythics, only if you own that character; otherwise score +6%/speed −6%. In Endless choose either +18% score off the edges or −5% hazard speed/+35% XP."
   },
   {
     "key": "trickster_wildcard",
@@ -1561,7 +1561,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "RHYTHM BREAK",
-    "description": "Begin as any non-Chaotic Legendary. On each death choose an Epic,Rare,Uncommon,then Common from a class not previously used. All five lives earn 5%less score; no class may repeat."
+    "description": "Begin as any non-Chaotic Legendary. On each death choose an Epic, Rare, Uncommon, then Common from a class not previously used. All five lives earn 5% less score; no class may repeat."
   },
   {
     "key": "misc_surveyor",
@@ -1573,7 +1573,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "SURVEYOR",
-    "description": "E marks your current lane every 20 seconds. Collecting a gem or melon there gives 150 score and one Survey point; each point permanently adds 0.1%score up to 20%. Base score+5%, normal 3 HP."
+    "description": "E marks your current lane every 20 seconds. Collecting a gem or melon there gives 150 score and one Survey point; each point permanently adds 0.1% score up to 20%. Base score +5%, normal 3 HP."
   },
   {
     "key": "chaotic_prism",
@@ -1585,7 +1585,7 @@ export const OVERHAUL_CHARACTERS: readonly OverhaulCharacter[] = [
     "maxHp": 3,
     "legacyRuntime": false,
     "ability": "PRISM",
-    "description": "Cycle Red, Green and Blue after waves. Red gives+20%score/+15%speed. Green heals 0.5 HP but gives−10%score. Blue gives 20%less damage but−10%speed. Current color is visible. Start 3 HP/max 4 HP."
+    "description": "Cycle Red, Green and Blue after waves. Red gives +20% score/+15% speed. Green heals 0.5 HP but gives −10% score. Blue gives 20% less damage but −10% speed. Current color is visible. Start 3 HP/max 4 HP."
   }
 ];
 export const OVERHAUL_CLASS_LABELS = { runner: "RUNNER", medic: "HEALER", tank: "TANK", trickster: "TRICKSTER", misc: "TACTICIAN", chaotic: "CHAOTIC" } as const;

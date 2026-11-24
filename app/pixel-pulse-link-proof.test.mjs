@@ -60,19 +60,4 @@ test('signed current credential status is nonce/request bound and exposes only c
 });
 for(const [field,value] of Object.entries({iss:'https://evil.invalid',aud:[PIXEL_CLIENT_ID],sub:randomUUID(),purpose:'pixel-pulse-fresh-link',credential_check_version:2,credential_version:-1,nonce:'other',request_jti:randomUUID(),jti:'invalid',iat:now-31,exp:now+31}))test(`runtime status rejects signed mismatch: ${field}`,async()=>assert.rejects(()=>sign({...status,[field]:value}).then(token=>verifyPixelCredentialStatus(token,{subject,nonce,requestJti:claims.jti},jwks,now))));
 
-test('receiver has separate discovery then explicit Link/Create; ordinary return cannot adopt by email',()=>{
- const route=readFileSync(new URL('./api/pixel-pulse/[action]/route.ts',import.meta.url),'utf8');
- assert.match(route,/phase: "discovery"/);assert.match(route,/pixel_signin_bound/);assert.match(route,/pixel_discovery_save/);
- assert.match(route,/action === "confirm-start"/);assert.match(route,/pixelNativeOwnership\(data\)/);
- assert.match(route,/pixel_attempt_begin_v2/);assert.match(route,/pixel_attempt_take_v2/);assert.match(route,/pixel_bind_account_v2/);
- assert.doesNotMatch(route,/pixel_bind_account\(/);assert.doesNotMatch(route,/pixel_intent: "create"/);
- assert.match(route,/session_hash: pixelHash\(raw\)/);assert.match(route,/proof_jti: proof.jti/);
- const server=readFileSync(new URL('../lib/pixel-pulse-server.ts',import.meta.url),'utf8');
- assert.match(server,/pixel_session_confirm_lease/);assert.match(server,/pixelTokenExpiresAt/);
- assert.match(server,/skyway_auth: "pixel"/);assert.match(server,/pixel_session_hash: session.token_hash/);
- assert.doesNotMatch(server.slice(server.indexOf('export async function redeemPixelLink'),server.indexOf('let nativeKeys')),/headers:.*(?:Cookie|Origin):/);
- assert.doesNotMatch(server.slice(server.indexOf('export async function getPixelSession')),/headers:.*(?:Cookie|Origin):/);
- assert.ok(route.indexOf('pixel_retire_credentials')<route.indexOf('const profile = pixelProfile'));
- const request=readFileSync(new URL('../lib/neon-auth-request-server.ts',import.meta.url),'utf8');
- assert.match(request,/pixel_native_admission/);assert.match(request,/disableCookieCache: "true"/);
-});
+test('retired receiver endpoint does not mount the historical Link/Create factory',()=>{const source=readFileSync(new URL('./api/pixel-pulse/[action]/route.ts',import.meta.url),'utf8');assert.doesNotMatch(source,/redeemPixelLink|pixel_bind_account|pixelNativeOwnership|authorizationUrl/);assert.match(source,/410/);});

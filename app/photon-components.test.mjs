@@ -26,11 +26,11 @@ try {
 }
 const noop=()=>{};
 const props={character:'photon_magician',characters:PHOTON_STARTERS,weapon:'lightsaber',skins:[],skinChoices:{},themes:[],theme:'default',weapons:[],level:15,gems:500,photons:200,busy:false,running:false,results:[],onEquip:noop,onBuyWeapon:noop,onOpen:noop,onSkin:noop,onTheme:noop};
-test('actual collection SSR renders 80 paid skins plus 16 default looks, 24 themes and equip controls',()=>{
+test('actual collection SSR renders 176 paid skins plus 16 default looks, 54 themes and equip controls',()=>{
   const html=renderToStaticMarkup(React.createElement(PhotonCollection,props));
   for(const skin of PHOTON_SKINS)assert.ok(html.includes(skin.name),skin.name);
   for(const theme of PHOTON_THEMES)assert.ok(html.includes(theme.name),theme.name);
-  assert.equal((html.match(/CLASS="photon-skin-preview"/gi)||[]).length,96);
+  assert.equal((html.match(/CLASS="photon-skin-preview"/gi)||[]).length,192);
   assert.match(html,/MYSTERY BOX · 200 PHOTONS/);
   assert.match(html,/CHARACTER LOCKED/);assert.match(html,/>DEFAULT</);assert.match(html,/>EQUIPPED</);
   assert.match(html,/grid-template-columns:repeat\(3/);assert.match(html,/grid-template-columns:repeat\(5/);

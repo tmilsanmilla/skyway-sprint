@@ -10,7 +10,7 @@ const run=(name,extra={})=>new OverhaulRuntime({key:character(name).key,owned:[]
 const resolve=(r,value)=>r.resolveChallenge(r.phase,value,r.challengeId);
 test("132 stable unique characters in six complete classes, with five real starters and safe starting HP",()=>{
   assert.equal(OVERHAUL_CHARACTERS.length,132);assert.equal(new Set(OVERHAUL_CHARACTERS.map(c=>c.key)).size,132);
-  assert.deepEqual(Object.fromEntries(["runner","medic","tank","trickster","misc","chaotic"].map(k=>[k,OVERHAUL_CHARACTERS.filter(c=>c.classKey===k).length])),{runner:22,medic:22,tank:22,trickster:21,misc:23,chaotic:22});
+  assert.deepEqual(Object.fromEntries(["runner","medic","tank","trickster","misc","chaotic"].map(k=>[k,OVERHAUL_CHARACTERS.filter(c=>c.classKey===k).length])),{runner:22,medic:22,tank:22,trickster:22,misc:22,chaotic:22});
   assert.equal(OVERHAUL_STARTERS.size,5);
   for(const c of OVERHAUL_CHARACTERS){assert.ok(c.startingHp>0&&Number.isFinite(c.startingHp)&&c.startingHp<=c.maxHp,c.name);assert.ok(c.description.length>20,c.name);assert.doesNotMatch(c.description,/58seal|zero.*gems|500%.*volume/i);}
   assert.equal(character("Phoenix").key,"medic_revive");assert.equal(character("Knight").maxHp,Infinity);

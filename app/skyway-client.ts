@@ -10,6 +10,7 @@ import {
   fetchWithToken,
 } from "@neondatabase/postgrest-js";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
+import {createSoloRunBuffer,type SoloRpcResult,type SoloView} from "./solo-run-buffer.ts";
 
 const neonDataApiUrl = process.env.NEXT_PUBLIC_NEON_DATA_API_URL?.trim();
 const neonAuthProxyUrl =
@@ -23,124 +24,13 @@ const neonAuth = createInternalNeonAuth<SupabaseAuthAdapterInstance>(
   },
 );
 const managedAuthClient = neonAuth.adapter;
-export const isPixelPulseAvailable =
-  process.env.NEXT_PUBLIC_PIXEL_PULSE_ENABLED === "true";
-// Public returning sign-in is separate from the still-gated first connection.
-// The server accepts only an existing immutable binding on this entry point.
-export const isPixelPulseReturnAvailable = true;
-
-const readPixelSession = async (): Promise<Session | null> => {
-  const response = await fetch("/api/pixel-pulse/session", {
-    cache: "no-store",
-    credentials: "same-origin",
-  });
-  if (!response.ok)
-    throw new Error("Pixel Pulse session check is temporarily unavailable.");
-  return ((await response.json()) as { session: Session | null }).session;
-};
-const openPixelAuthorization = async (action: "start" | "return-start" | "confirm-start", intent: "sign-in" | "link" | "create", nativePassword?: string) => {
-  const response = await fetch(`/api/pixel-pulse/${action}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ intent, ...(nativePassword === undefined ? {} : { nativePassword }) }),
-    cache: "no-store",
-  });
-  const result = (await response.json()) as { url?: string; error?: string };
-  if (!response.ok || !result.url)
-    throw new Error(result.error || "Pixel Pulse sign-in could not start.");
-  const target = new URL(result.url);
-  if (
-    target.origin !== "https://pixel-pulse-websites.vercel.app" ||
-    target.pathname !== "/api/sso/oauth2/authorize"
-  )
-    throw new Error("Pixel Pulse returned an invalid sign-in destination.");
-  window.location.assign(target.href);
-};
-export const continueWithPixelPulse = async (intent: "sign-in" | "link" | "create" = "sign-in") =>
-  openPixelAuthorization(isPixelPulseAvailable ? "start" : "return-start", intent);
-export const confirmWithPixelPulse = async (intent: "link" | "create", nativePassword?: string) =>
-  openPixelAuthorization("confirm-start", intent, nativePassword);
-// This normal managed Skyway password sign-in keeps the discovered Pixel actor
-// while proving the game UUID. It never reads or accepts a Pixel password.
-export const signInForPixelLink = (credentials: { email: string; password: string }) =>
-  managedAuthClient.signInWithPassword(credentials);
-const clearPixelSession = async () => {
-  const response = await fetch("/api/pixel-pulse/signout", {
-    method: "POST",
-    cache: "no-store",
-  });
-  if (!response.ok)
-    throw new Error(
-      "Could not finish signing out of Pixel Pulse on this game.",
-    );
-};
-const authOverrides = {
-  getSession: async () => {
-    const session = await readPixelSession();
-    return session
-      ? { data: { session }, error: null }
-      : managedAuthClient.getSession();
-  },
-  signOut: async (...args: Parameters<typeof managedAuthClient.signOut>) => {
-    await clearPixelSession();
-    return managedAuthClient.signOut(...args);
-  },
-  signInWithPassword: async (
-    ...args: Parameters<typeof managedAuthClient.signInWithPassword>
-  ) => {
-    await clearPixelSession();
-    return managedAuthClient.signInWithPassword(...args);
-  },
-  signUp: async (...args: Parameters<typeof managedAuthClient.signUp>) => {
-    await clearPixelSession();
-    return managedAuthClient.signUp(...args);
-  },
-  onAuthStateChange: (
-    ...args: Parameters<typeof managedAuthClient.onAuthStateChange>
-  ) => {
-    let subscribed = true;
-    let eventSequence = 0;
-    let deliveredPixelUserId: string | null = null;
-    const callback = args[0];
-    const result = managedAuthClient.onAuthStateChange(
-      async (event, session) => {
-        const sequence = ++eventSequence;
-        try {
-          const pixel = await readPixelSession();
-          if (subscribed && sequence === eventSequence) {
-            // Native refreshes/duplicate notifications must not tear down an
-            // active run owned by the same verified Pixel identity.
-            const nextEvent = pixel
-              ? event === "INITIAL_SESSION"
-                ? "INITIAL_SESSION"
-                : deliveredPixelUserId === pixel.user.id ? "TOKEN_REFRESHED" : "SIGNED_IN"
-              : event;
-            deliveredPixelUserId = pixel?.user.id ?? null;
-            callback(nextEvent, pixel || session);
-          }
-        } catch {
-          /* Keep the previous verified account during a transient network failure. */
-        }
-      },
-    );
-    const unsubscribe = result.data.subscription.unsubscribe.bind(
-      result.data.subscription,
-    );
-    result.data.subscription.unsubscribe = () => {
-      subscribed = false;
-      unsubscribe();
-    };
-    return result;
-  },
-};
-const skywayAuthClient = new Proxy(managedAuthClient, {
-  get(target, property) {
-    if (Object.hasOwn(authOverrides, property))
-      return authOverrides[property as keyof typeof authOverrides];
-    const value = Reflect.get(target, property);
-    return typeof value === "function" ? value.bind(target) : value;
-  },
-});
+// Track and Field: the existing Managed Neon identity is the Skyway account.
+export const isPixelPulseAvailable = false;
+export const isPixelPulseReturnAvailable = false;
+export const continueWithPixelPulse = async (..._args: unknown[]) => { throw new Error("Use Skyway sign-in."); };
+export const confirmWithPixelPulse = async (..._args: unknown[]) => { throw new Error("Use Skyway sign-in."); };
+export const signInForPixelLink = (credentials: {email:string;password:string}) => managedAuthClient.signInWithPassword(credentials);
+const skywayAuthClient = managedAuthClient;
 
 type DataSession = {
   userId: string;
@@ -149,7 +39,6 @@ type DataSession = {
 };
 
 let dataSession: DataSession | null = null;
-let pixelTokenRefresh: Promise<string | null> | null = null;
 let nativeTokenRefresh: { session: DataSession; promise: Promise<string | null> } | null = null;
 const jwtClaims = (token: string): { exp?: number; sub?: string } => {
   try {
@@ -183,45 +72,7 @@ const dataToken = async () => {
     }
     return nativeTokenRefresh.promise;
   }
-  let expires = 0;
-  try {
-    expires = JSON.parse(
-      atob(
-        current.accessToken
-          .split(".")[1]
-          .replaceAll("-", "+")
-          .replaceAll("_", "/"),
-      ),
-    ).exp;
-  } catch {
-    /* Fetch a new, server-verified token. */
-  }
-  if (expires > Date.now() / 1000 + 5) return current.accessToken;
-  if (!pixelTokenRefresh)
-    pixelTokenRefresh = (async () => {
-      const response = await fetch("/api/pixel-pulse/token", {
-        method: "POST",
-        cache: "no-store",
-      });
-      const result = (await response.json()) as {
-        token?: string;
-        user_id?: string;
-      };
-      if (
-        !response.ok ||
-        !result.token ||
-        result.user_id !== current.userId ||
-        dataSession !== current
-      )
-        throw new Error(
-          "Pixel Pulse session expired or changed. Sign in again.",
-        );
-      current.accessToken = result.token;
-      return result.token;
-    })().finally(() => {
-      pixelTokenRefresh = null;
-    });
-  return pixelTokenRefresh;
+  throw new Error("Use Skyway sign-in to continue.");
 };
 
 const neonDataClient = neonDataApiUrl
@@ -276,13 +127,23 @@ type RealtimeMutationListener = (
   args: Record<string, unknown>,
 ) => void;
 let realtimeMutationListener: RealtimeMutationListener | null = null;
+let soloView: (()=>SoloView|null)|null=null;
+export const setSoloRunView = (read:(()=>SoloView|null)|null) => {soloView=read;};
+const soloRuns=createSoloRunBuffer({
+ rpc:(name,args,options)=>databaseClient.rpc(name,args,options) as PromiseLike<SoloRpcResult>,
+ owner:()=>dataSession?.userId??null,
+ view:()=>soloView?.()??null,
+ storage:()=>typeof window==="undefined"?null:window.localStorage,
+});
+export const retryPendingSoloRuns=()=>soloRuns.retryPending();
+export const captureSoloRun=()=>soloRuns.capture();
 
 const routedRpc = (
   functionName: string,
   args?: Record<string, unknown>,
   options?: Record<string, unknown>,
 ) => {
-  const result = databaseClient.rpc(functionName, args, options);
+  const result = soloRuns.rpc(functionName, args, options);
   const isOneVOneMutation =
     functionName.includes("1v1") &&
     !functionName.startsWith("get_") &&
@@ -311,7 +172,7 @@ export const supabase: SkywayClient = {
   removeChannel: (() =>
     Promise.resolve("ok")) as SupabaseClient["removeChannel"],
   from: databaseClient.from.bind(databaseClient) as SupabaseClient["from"],
-  rpc: routedRpc as SupabaseClient["rpc"],
+  rpc: routedRpc as unknown as SupabaseClient["rpc"],
 };
 
 export const isNeonDataEnabled = Boolean(neonDataClient);
@@ -324,7 +185,7 @@ export const setDataSession = (
     dataSession = null;
     return expectedUserId === null;
   }
-  if (!expectedUserId || session.user.id !== expectedUserId) return false;
+  if (!expectedUserId || session.user.id !== expectedUserId || session.user.app_metadata?.provider === "pixel-pulse") return false;
   dataSession = {
     userId: expectedUserId,
     accessToken: session.access_token,
@@ -403,13 +264,9 @@ export const setRealtimeMutationListener = (
 };
 
 export const ensureNeonCompatibleSession = async (session: Session | null) => {
+  if (session?.user.app_metadata?.provider === "pixel-pulse") throw new Error("Use your existing Skyway sign-in.");
   if (!session || !neonDataClient) return session;
-  if (session.user.app_metadata?.provider === "pixel-pulse") {
-    const fresh = await readPixelSession();
-    if (!fresh || fresh.user.id !== session.user.id)
-      throw new Error("Pixel Pulse session expired or changed. Sign in again.");
-    return fresh;
-  }
+
   // The Next.js session cache may contain an opaque Better Auth session token.
   // Data API needs the signed JWT from /token, never that cached session token.
   // The pinned Neon adapter routes /token through its get-session cache. With

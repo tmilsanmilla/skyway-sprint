@@ -60,9 +60,7 @@ function requestHarness(pixelResult,nativeAllowed=true) {
  const calls=[];const imports={'server-only':{},'@/lib/neon-auth-server':{neonAuth:{getSession:async args=>{calls.push({name:'native',args});return{data:{user:{id:userId,email:'owned@example.invalid'},session:{id:'native'}}};}}},'@/lib/pixel-pulse-server':{getPixelSession:async()=>{if(pixelResult instanceof Error)throw pixelResult;return pixelResult;}},'@/lib/neon-server':{neonServerSql:async()=>{calls.push({name:'admission'});return[{allowed:nativeAllowed}];}}};
  return{request:load(requestCode,imports),calls};
 }
-test('actual account/realtime verifier never falls back to any native cookie after Pixel failure',async()=>{
- const h=requestHarness(new Error('synthetic Pixel outage'));await assert.rejects(()=>h.request.verifyNeonRequest());assert.equal(h.calls.length,0);
-});
-test('actual native verifier bypasses cache and denies linked native account without altering password',async()=>{
+test('account/realtime verifier uses only the existing native authority after Pixel retirement',async()=>{const h=requestHarness(new Error('old Pixel outage'));assert.equal((await h.request.verifyNeonRequest()).user.id,userId);assert.deepEqual(h.calls.map(c=>c.name),['native','admission']);});
+test('actual native verifier bypasses cache and enforces native admission without altering password',async()=>{
  const denied=requestHarness(null,false);assert.equal(await denied.request.verifyNeonRequest(),null);assert.deepEqual(denied.calls[0].args,{query:{disableCookieCache:'true'}});assert.equal(denied.calls[1].name,'admission');const allowed=requestHarness(null,true);assert.equal((await allowed.request.verifyNeonRequest()).user.id,userId);
 });
