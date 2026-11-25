@@ -15,6 +15,16 @@ export const VISIBLE_UPDATE_LIMIT = Number.POSITIVE_INFINITY;
  */
 export const UPDATE_LOG: readonly UpdateLogEntry[] = [
   {
+    id: "2026-11-25-road-and-inventory",
+    publishedAt: "2026-11-25T18:00:00Z",
+    title: "CLASSIC ROAD + INVENTORY RESTORED",
+    changes: [
+      "Classic uses a gray asphalt road in solo and queued runs. Each other map keeps its own scenery.",
+      "Inventory characters use white rectangular cards again. Every class lists Common, Uncommon, Rare, Epic, Legendary and Mythic as separate rows.",
+      "Photon Fury tracks use black surfaces and green lane markings across all themes.",
+    ],
+  },
+  {
     id:"2026-11-23-track-and-field",publishedAt:"2026-11-24T00:00:00Z",title:"TRACK AND FIELD",
     changes:[
       "Solo run progress is saved after the run, with pending results retained for safe retry. Hardcore starts and stays at one maximum HP.",

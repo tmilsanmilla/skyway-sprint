@@ -1,6 +1,9 @@
-/* Photon-only visual layer. This mode is a luminous arena, not a highway reskin. */
+/* Photon-only visual layer: black running surface and green track markings. */
 .photon-futuristic {
   --photon-panel: #080e22;
+  --photon-track-floor: #020805;
+  --photon-track-glow: #53ff93;
+  --photon-track-accent: #0d3b20;
   color-scheme: dark;
   color: #edfaff;
   border-radius: 18px;
@@ -49,7 +52,7 @@
   border-radius: 12px;
   margin-inline: 12px;
   width: calc(100% - 24px);
-  background: #030713;
+  background: #020805;
 }
 .photon-futuristic .photon-arena {
   inset: 0;
@@ -61,16 +64,16 @@
   border-radius: 10px;
   background:
     linear-gradient(90deg, #0007, transparent 20% 80%, #0007),
-    repeating-linear-gradient(0deg, transparent 0 53px, color-mix(in srgb, var(--photon-glow) 18%, transparent) 54px 55px),
-    linear-gradient(90deg, var(--photon-floor), color-mix(in srgb, var(--photon-accent) 35%, var(--photon-floor)), var(--photon-floor));
-  box-shadow: inset 0 0 45px #0009, inset 0 0 0 1px var(--photon-glow);
+    repeating-linear-gradient(0deg, transparent 0 53px, color-mix(in srgb, var(--photon-track-glow) 18%, transparent) 54px 55px),
+    linear-gradient(90deg, var(--photon-track-floor), color-mix(in srgb, var(--photon-track-accent) 35%, var(--photon-track-floor)), var(--photon-track-floor));
+  box-shadow: inset 0 0 45px #0009, inset 0 0 0 1px var(--photon-track-glow);
   animation: photonArenaFlow 2.5s linear infinite;
 }
 .photon-futuristic .photon-arena::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(ellipse at 50% 0, color-mix(in srgb, var(--photon-glow) 22%, transparent), transparent 65%);
+  background: radial-gradient(ellipse at 50% 0, color-mix(in srgb, var(--photon-track-glow) 22%, transparent), transparent 65%);
   pointer-events: none;
 }
 .photon-futuristic .photon-arena::after {
@@ -79,15 +82,15 @@
   inset: 0;
   pointer-events: none;
   background: repeating-linear-gradient(0deg, #ffffff03 0 1px, transparent 1px 4px);
-  border-inline: 9px solid color-mix(in srgb, var(--photon-glow) 16%, transparent);
+  border-inline: 9px solid color-mix(in srgb, var(--photon-track-glow) 16%, transparent);
 }
 .photon-futuristic .photon-arena .lane-divider {
   width: 2px;
   height: 100%;
   opacity: .5;
-  background: var(--photon-glow);
+  background: var(--photon-track-glow);
   border: 0;
-  box-shadow: 0 0 9px var(--photon-glow);
+  box-shadow: 0 0 9px var(--photon-track-glow);
 }
 .photon-futuristic .photon-obstacle { filter: drop-shadow(0 0 9px var(--photon-glow)); z-index: 4; }
 .photon-futuristic .photon-obstacle.laser-target { pointer-events: auto; }
@@ -154,23 +157,23 @@
 .photon-futuristic .photon-playfield[data-paused="true"] * { animation-play-state: paused !important; }
 
 /* Seventeen distinct cosmetic deck treatments retain identical lane geometry. */
-.theme-photon_theme_cobalt .photon-arena::before { background: repeating-linear-gradient(45deg, transparent 0 35px, #41d9ff0c 36px 39px); }
-.theme-photon_theme_hangar .photon-arena::before { background: repeating-linear-gradient(0deg, transparent 0 90px, #94ffa21a 91px 106px); }
-.theme-photon_theme_terminal .photon-arena::before { background: repeating-linear-gradient(90deg, #fa8bff08 0 4%, transparent 4% 21%); }
-.theme-photon_theme_reactor .photon-arena::before { background: repeating-radial-gradient(ellipse at center, transparent 0 45px, #d0ff4314 47px 50px); }
-.theme-photon_theme_polar .photon-arena::before { background: repeating-linear-gradient(125deg, transparent 0 56px, #e0faff19 57px 61px); }
-.theme-photon_theme_sunset .photon-arena::before { background: radial-gradient(ellipse at top, #ffa47438, transparent 70%); }
-.theme-photon_theme_abyss .photon-arena::before { background: radial-gradient(ellipse at center, transparent, #000a), repeating-linear-gradient(0deg, transparent 0 14px, #686bff12 15px 17px); }
-.theme-photon_theme_quartz .photon-arena::before { background: repeating-conic-gradient(from 45deg, #e6b7ff0d 0 25%, transparent 25% 50%) 0 0 / 80px 80px; }
-.theme-photon_theme_mars .photon-arena::before { background: repeating-linear-gradient(15deg, transparent 0 65px, #ff75491c 67px 72px); }
-.theme-photon_theme_storm .photon-arena::before { background: repeating-conic-gradient(from 60deg at 50% 20%, transparent 0 40deg, #bde8ff12 41deg 44deg); }
-.theme-photon_theme_void .photon-arena::before { background: repeating-radial-gradient(ellipse at 50% -10%, transparent 0 60px, #f647e918 61px 63px); }
-.theme-photon_theme_garden .photon-arena::before { background: radial-gradient(ellipse at center, #47ffc819 0 8%, transparent 10%) 0 0 / 55px 80px; }
-.theme-photon_theme_nova .photon-arena::before { background: radial-gradient(ellipse at top, #ffe35a50, transparent 55%), repeating-linear-gradient(0deg, transparent 0 45px, #ec542a20 47px 49px); }
-.theme-photon_theme_chrono .photon-arena::before { background: repeating-conic-gradient(from 0deg at center, transparent 0 28deg, #77ffef14 29deg 30deg); }
-.theme-photon_theme_prism .photon-arena::before { background: repeating-linear-gradient(120deg, #ff71c912 0 30px, #77ffef12 31px 60px, #a495ff12 61px 90px); }
-.theme-photon_theme_singularity .photon-arena::before { background: repeating-radial-gradient(ellipse at 50% 0, #0006 0 35px, #7140ce30 36px 40px); }
-.theme-photon_theme_celestial .photon-arena::before { background: radial-gradient(circle, #ffe6a0a0 0 1px, transparent 2px) 0 0 / 53px 71px, radial-gradient(ellipse at top, #5c92d946, transparent 70%); }
+.theme-photon_theme_cobalt .photon-arena::before { background: repeating-linear-gradient(45deg, transparent 0 35px, #53ff930c 36px 39px); }
+.theme-photon_theme_hangar .photon-arena::before { background: repeating-linear-gradient(0deg, transparent 0 90px, #53ff931a 91px 106px); }
+.theme-photon_theme_terminal .photon-arena::before { background: repeating-linear-gradient(90deg, #53ff9308 0 4%, transparent 4% 21%); }
+.theme-photon_theme_reactor .photon-arena::before { background: repeating-radial-gradient(ellipse at center, transparent 0 45px, #53ff9314 47px 50px); }
+.theme-photon_theme_polar .photon-arena::before { background: repeating-linear-gradient(125deg, transparent 0 56px, #53ff9319 57px 61px); }
+.theme-photon_theme_sunset .photon-arena::before { background: radial-gradient(ellipse at top, #53ff9338, transparent 70%); }
+.theme-photon_theme_abyss .photon-arena::before { background: radial-gradient(ellipse at center, transparent, #000a), repeating-linear-gradient(0deg, transparent 0 14px, #53ff9312 15px 17px); }
+.theme-photon_theme_quartz .photon-arena::before { background: repeating-conic-gradient(from 45deg, #53ff930d 0 25%, transparent 25% 50%) 0 0 / 80px 80px; }
+.theme-photon_theme_mars .photon-arena::before { background: repeating-linear-gradient(15deg, transparent 0 65px, #53ff931c 67px 72px); }
+.theme-photon_theme_storm .photon-arena::before { background: repeating-conic-gradient(from 60deg at 50% 20%, transparent 0 40deg, #53ff9312 41deg 44deg); }
+.theme-photon_theme_void .photon-arena::before { background: repeating-radial-gradient(ellipse at 50% -10%, transparent 0 60px, #53ff9318 61px 63px); }
+.theme-photon_theme_garden .photon-arena::before { background: radial-gradient(ellipse at center, #53ff9319 0 8%, transparent 10%) 0 0 / 55px 80px; }
+.theme-photon_theme_nova .photon-arena::before { background: radial-gradient(ellipse at top, #53ff9350, transparent 55%), repeating-linear-gradient(0deg, transparent 0 45px, #53ff9320 47px 49px); }
+.theme-photon_theme_chrono .photon-arena::before { background: repeating-conic-gradient(from 0deg at center, transparent 0 28deg, #53ff9314 29deg 30deg); }
+.theme-photon_theme_prism .photon-arena::before { background: repeating-linear-gradient(120deg, #53ff9312 0 30px, #53ff9312 31px 60px, #53ff9312 61px 90px); }
+.theme-photon_theme_singularity .photon-arena::before { background: repeating-radial-gradient(ellipse at 50% 0, #0006 0 35px, #53ff9330 36px 40px); }
+.theme-photon_theme_celestial .photon-arena::before { background: radial-gradient(circle, #53ff93a0 0 1px, transparent 2px) 0 0 / 53px 71px, radial-gradient(ellipse at top, #53ff9346, transparent 70%); }
 @keyframes photonArenaFlow { to { background-position: 0 0, 0 55px, 0 0; } }
 @media (max-width: 600px) {
   .photon-futuristic .photon-heading { padding: 14px 12px; flex-wrap: wrap; gap: 12px; }

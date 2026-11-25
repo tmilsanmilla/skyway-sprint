@@ -6103,7 +6103,7 @@ footer p small {
   gap: 10px;
   padding: 15px;
 }
-.inventory-roster > button {
+.inventory-rarity-row > button {
   display: grid;
   grid-template-columns: 58px 1fr;
   grid-template-rows: 1fr auto;
@@ -6117,14 +6117,14 @@ footer p small {
   text-align: left;
   cursor: pointer;
 }
-.inventory-roster > button.focused {
+.inventory-rarity-row > button.focused {
   background: #dbe9ff;
   box-shadow: 4px 4px 0 #3167c7;
 }
-.inventory-roster > button.equipped {
+.inventory-rarity-row > button.equipped {
   border-color: var(--orange);
 }
-.inventory-roster > button.locked {
+.inventory-rarity-row > button.locked {
   opacity: 0.36;
   filter: grayscale(1);
   cursor: not-allowed;
@@ -6370,7 +6370,7 @@ footer p small {
     gap: 7px;
     padding: 9px;
   }
-  .inventory-roster > button {
+  .inventory-rarity-row > button {
     grid-template-columns: 43px 1fr;
     min-height: 82px;
     padding: 6px;
@@ -6433,7 +6433,7 @@ footer p small {
   .inventory-roster {
     grid-template-columns: 1fr;
   }
-  .inventory-roster > button {
+  .inventory-rarity-row > button {
     grid-template-columns: 55px 1fr;
   }
   .inventory-roster .character-portrait {
@@ -6538,13 +6538,13 @@ footer p small {
 }
 
 /* Locked characters remain inspectable, but only owned characters can be equipped. */
-.inventory-roster > button.locked {
+.inventory-rarity-row > button.locked {
   opacity: 0.62;
   filter: grayscale(0.8);
   cursor: pointer;
 }
-.inventory-roster > button.locked:hover,
-.inventory-roster > button.locked.focused {
+.inventory-rarity-row > button.locked:hover,
+.inventory-rarity-row > button.locked.focused {
   opacity: 0.88;
   filter: grayscale(0.35);
 }
@@ -6583,7 +6583,7 @@ footer p small {
     border-right-width: 4px;
     border-left-width: 4px;
   }
-  .inventory-roster > button {
+  .inventory-rarity-row > button {
     min-height: 108px;
   }
 }
@@ -12106,11 +12106,11 @@ footer p small {
 .inventory-test-mode {
   margin: 0 0 18px;
 }
-.inventory-roster > button.test-access {
+.inventory-rarity-row > button.test-access {
   background: #fff0b8;
   box-shadow: 3px 3px 0 #7b3db6;
 }
-.inventory-roster > button.test-access .character-rarity {
+.inventory-rarity-row > button.test-access .character-rarity {
   color: #6b298f;
 }
 .test-mode-run-banner {

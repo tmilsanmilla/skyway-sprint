@@ -10,7 +10,7 @@
 
 /* Arena scenery: distinct palettes and edge detail, with clear travel lanes.
    Owned environment cosmetics retain their existing appearance. */
-.playfield {
+.playfield:where(:not(.photon-playfield)) {
   --map-road: #265664;
   --map-road-alt: #2b626d;
   --map-edge: #6ce2bd;
@@ -28,26 +28,26 @@
 .map-grove { --map-road: #245e50; --map-road-alt: #2c6c59; --map-edge: #b0d878; --map-sky-top: #5cb8ba; --map-sky-bottom: #c6edb7; --map-scenery: #3a9470; }
 .map-meadow { --map-road: #426b49; --map-road-alt: #4e7a50; --map-edge: #ebd477; --map-sky-top: #65c6db; --map-sky-bottom: #e8f2b9; --map-scenery: #6ca54f; }
 .map-terminal { --map-road: #2f5267; --map-road-alt: #365f73; --map-edge: #f0c962; --map-sky-top: #477f9d; --map-sky-bottom: #b8d9d6; --map-scenery: #67b4b2; }
-.playfield:not([class*="environment-"]) > .road {
+.playfield:not(.photon-playfield):not([class*="environment-"]) > .road {
   background:
     linear-gradient(90deg, var(--map-edge) 0 1%, transparent 1% 99%, var(--map-edge) 99%),
     repeating-linear-gradient(0deg, var(--map-road) 0 48px, var(--map-road-alt) 48px 96px);
 }
-.playfield:not([class*="environment-"]) > .road::before {
+.playfield:not(.photon-playfield):not([class*="environment-"]) > .road::before {
   background:
     repeating-linear-gradient(0deg, transparent 0 22px, var(--map-edge) 22px 25px, transparent 25px 52px) left / 3% 100% no-repeat,
     repeating-linear-gradient(0deg, transparent 0 22px, var(--map-edge) 22px 25px, transparent 25px 52px) right / 3% 100% no-repeat;
   opacity: .45;
   pointer-events: none;
 }
-.playfield:not([class*="environment-"]) > .road .lane-divider {
+.playfield:not(.photon-playfield):not([class*="environment-"]) > .road .lane-divider {
   background: repeating-linear-gradient(var(--map-lane) 0 28px, transparent 28px 58px);
 }
-.playfield:not([class*="environment-"]) > .sky {
+.playfield:not(.photon-playfield):not([class*="environment-"]) > .sky {
   background: linear-gradient(155deg, var(--map-sky-top), var(--map-sky-bottom));
 }
-.playfield:not([class*="environment-"]) > .horizon span { background: var(--map-scenery); }
-.playfield:not([class*="environment-"]) > .horizon span:nth-child(3n) { background: var(--map-edge); }
+.playfield:not(.photon-playfield):not([class*="environment-"]) > .horizon span { background: var(--map-scenery); }
+.playfield:not(.photon-playfield):not([class*="environment-"]) > .horizon span:nth-child(3n) { background: var(--map-edge); }
 @media(max-width:600px) {
   .terminal-facing-controls { flex-wrap: wrap; justify-content: center; }
   .terminal-facing-controls button { min-height: 44px; }
